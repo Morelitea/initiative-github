@@ -9,8 +9,8 @@
  *   same secret, and so does this app. Neither sends it.
  * - **`/data/*` and `/actions/*`** — Initiative calling in, carrying a context
  *   token naming one guild, one install and one scope. Verified per call.
- * - **`/connect/*` and `/embed/*`** — a person's browser. The first runs the
- *   vendor's flow, the second renders a page inside an iframe.
+ * - **`/connect/*`** — a person's browser, running the vendor's flow. The one
+ *   page this app serves; it mounts no embedded surface of its own.
  *
  * Deliberately plain `node:http` with no framework. An app can use whatever it
  * likes; showing the protocol against the standard library keeps the parts that
@@ -29,9 +29,9 @@ import {
 
 import { config } from "./config.js";
 import { manifest } from "./manifest.config.js";
-import { openIssues, reviewQueue } from "./github/queries.js";
+import { createIssue } from "./github/actions.js";
+import { issueThroughput, openIssues, reviewQueue } from "./github/queries.js";
 import { beginOAuth, completeOAuth } from "./github/oauth.js";
-import { renderBoard } from "./routes/board.js";
 
 const jwks = new JwksCache();
 
@@ -58,14 +58,14 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
-function sendHtml(res: ServerResponse, status: number, html: string): void {
-  res.writeHead(status, {
+
+/** The one HTML this app serves: the page a member lands on after the vendor flow. */
+function sendPage(res: ServerResponse, html: string): void {
+  res.writeHead(200, {
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(html),
-    // This app's pages are framed by Initiative and nothing else. The platform
-    // scopes its own frame-src to the surface it is opening; this is the other
-    // half of that agreement.
-    "Content-Security-Policy": `frame-ancestors ${config.initiativeBaseUrl}`,
+    // Not framed by anyone: this app mounts no embedded surface.
+    "Content-Security-Policy": "frame-ancestors 'none'",
   });
   res.end(html);
 }
@@ -143,6 +143,28 @@ export const server = createServer(async (req, res) => {
       return send(res, 200, await reviewQueue(claims));
     }
 
+    if (req.method === "GET" && path === "/data/issue-throughput") {
+      const claims = await context(req, res, {
+        scope: "data",
+        sourceId: "issue-throughput",
+      });
+      if (!claims) return;
+      return send(res, 200, await issueThroughput(claims));
+    }
+
+    // --- actions, called by the automation service ------------------------
+    if (req.method === "POST" && path === "/actions/create-issue") {
+      // An `action` token, naming this operation. A token minted to fetch a
+      // source cannot run this — the scope is pinned per call.
+      const claims = await context(req, res, { scope: "action" });
+      if (!claims) return;
+      if (claims.action_id !== "create-issue") {
+        return send(res, 403, { error: "token is not for this operation" });
+      }
+      const body = JSON.parse((await readBody(req)).toString("utf-8"));
+      return send(res, 200, await createIssue(claims, body));
+    }
+
     // --- lifecycle ---------------------------------------------------------
     if (req.method === "POST" && path === "/v1/lifecycle") {
       const claims = await context(req, res, { scope: "lifecycle" });
@@ -165,13 +187,9 @@ export const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && path === "/connect/github/callback") {
       const html = await completeOAuth(url.searchParams);
-      return sendHtml(res, 200, html);
+      return sendPage(res, html);
     }
 
-    // --- the embedded surface ----------------------------------------------
-    if (req.method === "GET" && path === "/embed/board") {
-      return sendHtml(res, 200, renderBoard());
-    }
 
     return send(res, 404, { error: "no such route" });
   } catch (error) {

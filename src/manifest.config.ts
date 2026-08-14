@@ -7,14 +7,19 @@
  *
  * Read this file first if you are starting an app. It is the whole surface: a
  * connection each vendor account authorizes, sources the platform fetches,
- * widgets drawn from those sources, an embedded page, and the events this app
- * emits. Nothing here is an address — every route is a path, and the operator's
- * registration says where the app lives.
+ * widgets drawn from those sources, the events this app emits, and the
+ * automation nodes it contributes. Nothing here is an address — every route is
+ * a path, and the operator's registration says where the app lives.
+ *
+ * **No embedded page.** This app deliberately mounts no surface of its own:
+ * everything it offers lands inside Initiative's own — dashboard widgets and
+ * automation nodes — rather than in an iframe holding a second UI. An embed is
+ * for an app whose product *is* a page; an integration is better as parts.
  */
 
 import type { Manifest } from "initiative-app-kit";
 
-/** Namespaces everything this app publishes: widgets, events, its audience. */
+/** Namespaces everything this app publishes: widgets, events, automation nodes. */
 export const PUBLIC_ID = "morelitea.github";
 
 export const manifest: Manifest = {
@@ -23,7 +28,7 @@ export const manifest: Manifest = {
 
   // Declared and cross-checked against the blocks below, in both directions.
   // A feature with no block would advertise something this app cannot do.
-  features: ["data", "widgets", "embeds", "events"],
+  features: ["data", "widgets", "events", "automations"],
 
   default_name: "GitHub",
 
@@ -46,21 +51,22 @@ export const manifest: Manifest = {
       connect_path: "/connect/github",
       access_hint: {
         api: "GitHub",
-        // Read-only, and said out loud so an admin can see it before anyone
-        // authorizes. This app holds no write credential anywhere.
-        scopes: ["read:user", "repo:status", "public_repo"],
+        // Said out loud so an admin sees it before anyone authorizes. `repo` is
+        // here because the automation action below opens issues — an app that
+        // only read would ask for less, and should.
+        scopes: ["read:user", "repo"],
       },
     },
     {
-      // The guild-wide half: which repositories this guild cares about. Not a
+      // The guild-wide half: which repository this guild cares about. Not a
       // credential — a setting — but it rides the same form machinery.
       id: "workspace",
       scope: "static",
       label: {
-        en: "Repositories",
-        de: "Repositories",
-        es: "Repositorios",
-        fr: "Dépôts",
+        en: "Repository",
+        de: "Repository",
+        es: "Repositorio",
+        fr: "Dépôt",
       },
       fields: [
         {
@@ -114,8 +120,19 @@ export const manifest: Manifest = {
       cache_ttl_seconds: 60,
       requires: { all_of: ["workspace", "account"] },
     },
+    {
+      id: "issue-throughput",
+      path: "/data/issue-throughput",
+      visibility: "member",
+      // Five minutes: a fortnight of daily counts does not change by the second,
+      // and this is the most expensive call this app makes.
+      cache_ttl_seconds: 300,
+      requires: { all_of: ["workspace", "account"] },
+    },
   ],
 
+  // Three, because they show the three shapes a widget takes: one number, a
+  // list, and a series. A fourth of the same shape would teach nothing.
   widgets: [
     {
       id: "open-issues",
@@ -134,29 +151,71 @@ export const manifest: Manifest = {
         },
       },
       sources: ["open-issues"],
-      module_source: OPEN_ISSUES_WIDGET(),
+      module_source: METRIC_WIDGET(),
       // Rows for a preview that renders with no network call at all, so the
       // marketplace can show the widget before anything is connected.
+      sample_data: { "open-issues": { total: 42, delta: -3 } },
+      requires: { all_of: ["workspace", "account"] },
+    },
+    {
+      id: "review-queue",
+      meta: {
+        name: {
+          en: "Waiting on you",
+          de: "Wartet auf dich",
+          es: "Esperando por ti",
+          fr: "En attente de vous",
+        },
+        description: {
+          en: "Pull requests that asked for your review.",
+          de: "Pull Requests, die deine Review angefragt haben.",
+          es: "Pull requests que pidieron tu revisión.",
+          fr: "Pull requests qui ont demandé votre revue.",
+        },
+      },
+      sources: ["review-queue"],
+      module_source: LIST_WIDGET(),
       sample_data: {
-        "open-issues": { total: 42, delta: -3 },
+        "review-queue": {
+          total: 2,
+          items: [
+            { number: 812, title: "Cache the issue counts", url: "#" },
+            { number: 809, title: "Drop the unused index", url: "#" },
+          ],
+        },
       },
       requires: { all_of: ["workspace", "account"] },
     },
-  ],
-
-  embeds: [
     {
-      id: "board",
-      path: "/embed/board",
-      name: { en: "GitHub", de: "GitHub", es: "GitHub", fr: "GitHub" },
-      // Guild-wide and inside each initiative: the same page, told which
-      // initiative it was opened in.
-      scopes: ["guild", "initiative"],
-      visibility: "member",
-      // A frame is granted nothing it does not name, and this page needs one
-      // thing: copying an issue link.
-      capabilities: ["clipboard-write"],
-      requires: { all_of: ["workspace"] },
+      id: "issue-throughput",
+      meta: {
+        name: {
+          en: "Issues opened and closed",
+          de: "Geöffnete und geschlossene Issues",
+          es: "Incidencias abiertas y cerradas",
+          fr: "Tickets ouverts et fermés",
+        },
+        description: {
+          en: "A fortnight of opens against closes.",
+          de: "Zwei Wochen Öffnungen gegen Schließungen.",
+          es: "Dos semanas de aperturas frente a cierres.",
+          fr: "Deux semaines d'ouvertures contre fermetures.",
+        },
+      },
+      sources: ["issue-throughput"],
+      module_source: SERIES_WIDGET(),
+      sample_data: {
+        "issue-throughput": {
+          points: [
+            { day: "Mon", opened: 4, closed: 6 },
+            { day: "Tue", opened: 2, closed: 3 },
+            { day: "Wed", opened: 7, closed: 5 },
+            { day: "Thu", opened: 1, closed: 4 },
+            { day: "Fri", opened: 3, closed: 3 },
+          ],
+        },
+      },
+      requires: { all_of: ["workspace", "account"] },
     },
   ],
 
@@ -167,17 +226,136 @@ export const manifest: Manifest = {
     `app.${PUBLIC_ID}.issue-closed`,
     `app.${PUBLIC_ID}.review-requested`,
   ],
+
+  // What this app contributes to the automation canvas. Opaque to Initiative,
+  // which stores it verbatim; the automation service parses it against its own
+  // contract. See AUTOMATION.md for the shape and what it maps onto.
+  automation: {
+    contract: 1,
+    domain: {
+      id: "github",
+      label: { en: "GitHub", de: "GitHub", es: "GitHub", fr: "GitHub" },
+      icon: "Braces",
+    },
+    nodes: [
+      {
+        key: "issue-opened",
+        category: "trigger",
+        icon: "Zap",
+        label: {
+          en: "A GitHub issue is opened",
+          de: "Ein GitHub-Issue wird geöffnet",
+          es: "Se abre una incidencia de GitHub",
+          fr: "Un ticket GitHub est ouvert",
+        },
+        description: {
+          en: "Starts when someone opens an issue in the connected repository.",
+          de: "Startet, wenn jemand ein Issue im verbundenen Repository öffnet.",
+          es: "Empieza cuando alguien abre una incidencia en el repositorio conectado.",
+          fr: "Démarre quand quelqu'un ouvre un ticket dans le dépôt connecté.",
+        },
+        // Which emitted event fires it. Must be one this manifest declares —
+        // a trigger naming an event the app never emits could never fire.
+        event: `app.${PUBLIC_ID}.issue-opened`,
+        // The same closed field vocabulary a connection uses, so one renderer
+        // draws a node's form and a connection's alike.
+        fields: [
+          {
+            key: "label",
+            type: "string",
+            label: {
+              en: "Only issues with this label",
+              de: "Nur Issues mit diesem Label",
+              es: "Solo incidencias con esta etiqueta",
+              fr: "Uniquement les tickets avec ce label",
+            },
+          },
+        ],
+        // What the event carries into the run, for later nodes to read.
+        outputs: ["issue_number", "issue_title", "issue_url", "issue_labels"],
+      },
+      {
+        key: "review-requested",
+        category: "trigger",
+        icon: "Zap",
+        label: {
+          en: "A review is requested",
+          de: "Eine Review wird angefragt",
+          es: "Se solicita una revisión",
+          fr: "Une revue est demandée",
+        },
+        description: {
+          en: "Starts when a pull request asks someone for review.",
+          de: "Startet, wenn ein Pull Request jemanden um Review bittet.",
+          es: "Empieza cuando un pull request pide revisión a alguien.",
+          fr: "Démarre quand une pull request demande une revue.",
+        },
+        event: `app.${PUBLIC_ID}.review-requested`,
+        fields: [],
+        outputs: ["pull_number", "pull_title", "pull_url"],
+      },
+      {
+        key: "create-issue",
+        category: "action",
+        icon: "FolderPlus",
+        label: {
+          en: "Open a GitHub issue",
+          de: "Ein GitHub-Issue öffnen",
+          es: "Abrir una incidencia de GitHub",
+          fr: "Ouvrir un ticket GitHub",
+        },
+        description: {
+          en: "Opens an issue in the connected repository, as the member who owns the automation.",
+          de: "Öffnet ein Issue im verbundenen Repository, als das Mitglied, dem die Automatisierung gehört.",
+          es: "Abre una incidencia en el repositorio conectado, como el miembro dueño de la automatización.",
+          fr: "Ouvre un ticket dans le dépôt connecté, au nom du membre propriétaire de l'automatisation.",
+        },
+        // The operation this node calls, served at `operations[].path`.
+        operation: "create-issue",
+        fields: [
+          {
+            key: "title",
+            type: "string",
+            required: true,
+            label: { en: "Title", de: "Titel", es: "Título", fr: "Titre" },
+          },
+          {
+            key: "body",
+            type: "string",
+            label: { en: "Body", de: "Text", es: "Cuerpo", fr: "Corps" },
+          },
+          {
+            key: "label",
+            type: "string",
+            label: { en: "Label", de: "Label", es: "Etiqueta", fr: "Étiquette" },
+          },
+        ],
+        outputs: ["issue_number", "issue_url"],
+      },
+    ],
+    // Where each action is served. Called with a context token scoped to
+    // `action`, naming this operation and nothing else.
+    operations: [
+      {
+        id: "create-issue",
+        path: "/actions/create-issue",
+        // A write at the vendor, so it runs as the member who authorized it —
+        // never from an app-wide credential.
+        requires: { all_of: ["workspace", "account"] },
+      },
+    ],
+  },
 };
 
 /**
- * The widget's browser-side module, as source.
+ * The widgets' browser-side modules, as source.
  *
- * It runs in the platform's sandbox with no network, no DOM and no globals —
- * it is handed the data its `sources` declared and returns a scene to draw.
- * Kept as a string here because that is what a manifest carries; a larger app
- * would build this from its own file with the bundler of its choice.
+ * They run in the platform's sandbox with no network, no DOM and no globals —
+ * each is handed the data its `sources` declared and returns a scene to draw.
+ * Kept as strings here because that is what a manifest carries; a larger app
+ * would build these from their own files with the bundler of its choice.
  */
-function OPEN_ISSUES_WIDGET(): string {
+function METRIC_WIDGET(): string {
   return `
 export default function render({ data }) {
   const rows = data["open-issues"] ?? {};
@@ -191,6 +369,42 @@ export default function render({ data }) {
       value: (delta > 0 ? "+" : "") + delta,
       tone: delta > 0 ? "negative" : "positive",
     },
+  };
+}
+`.trim();
+}
+
+function LIST_WIDGET(): string {
+  return `
+export default function render({ data }) {
+  const rows = data["review-queue"] ?? {};
+  const items = rows.items ?? [];
+  if (!items.length) {
+    return { kind: "empty", label: "Nothing is waiting on you" };
+  }
+  return {
+    kind: "list",
+    items: items.map((item) => ({
+      label: "#" + item.number + " " + item.title,
+      href: item.url,
+    })),
+  };
+}
+`.trim();
+}
+
+function SERIES_WIDGET(): string {
+  return `
+export default function render({ data }) {
+  const rows = data["issue-throughput"] ?? {};
+  const points = rows.points ?? [];
+  return {
+    kind: "series",
+    x: points.map((point) => point.day),
+    series: [
+      { label: "Opened", values: points.map((point) => point.opened) },
+      { label: "Closed", values: points.map((point) => point.closed) },
+    ],
   };
 }
 `.trim();

@@ -98,3 +98,54 @@ export async function reviewQueue(
     })),
   };
 }
+
+export async function issueThroughput(
+  claims: ContextClaims
+): Promise<Record<string, unknown>> {
+  const account = credentialFor(claims.connection_refs?.account);
+  if (!account) return NOT_CONNECTED;
+
+  const workspace = workspaceFor(claims.app_install_id);
+  if (!workspace) return { unavailable: "not-configured" };
+
+  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  const response = await fetch(
+    `${config.github.apiBase}/repos/${workspace.owner}/${workspace.repo}` +
+      `/issues?state=all&per_page=100&since=${encodeURIComponent(since)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${account.accessToken}`,
+        Accept: "application/vnd.github+json",
+      },
+    }
+  );
+  if (!response.ok) return { unavailable: "vendor-error" };
+
+  const issues = (await response.json()) as Array<{
+    created_at: string;
+    closed_at: string | null;
+    pull_request?: unknown;
+  }>;
+
+  // Bucketed here rather than in the widget: a widget module runs in a sandbox
+  // with a time budget, and a fortnight of raw issues is not what it draws.
+  const days = new Map<string, { opened: number; closed: number }>();
+  const bucket = (iso: string) => {
+    const day = iso.slice(0, 10);
+    if (!days.has(day)) days.set(day, { opened: 0, closed: 0 });
+    return days.get(day)!;
+  };
+
+  for (const issue of issues) {
+    // GitHub returns pull requests from the issues endpoint; this counts issues.
+    if (issue.pull_request) continue;
+    bucket(issue.created_at).opened += 1;
+    if (issue.closed_at) bucket(issue.closed_at).closed += 1;
+  }
+
+  const points = [...days.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, counts]) => ({ day, ...counts }));
+
+  return { points };
+}

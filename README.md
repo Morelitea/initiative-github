@@ -20,11 +20,16 @@ It exercises the widest slice of the protocol on purpose:
 | **Guild-scoped connections** | Which repository the guild cares about — one setting a guild admin fills in once. |
 | **Data sources** | Answered per caller, from that member's own credential, returning only what the widget draws. |
 | **Widgets** | A sandboxed browser module handed its sources' data, returning a scene. |
-| **An embedded page** | Framed by Initiative, granted exactly the one browser capability it uses. |
 | **Events** | Namespaced under this app's own service id. |
-| **No write credential** | Read-only scopes throughout, which is what makes least privilege the demonstrated default rather than a claim. |
+| **Automation nodes** | Two triggers and an action, contributed to the canvas as descriptors — no code ships to it. See [AUTOMATION.md](AUTOMATION.md). |
+| **No app-wide credential** | This app does write at GitHub, and still holds nothing of its own: every call runs as the member who authorized it, and stops when they disconnect. |
 
 ## The shape worth copying
+
+**No embedded page, on purpose.** Everything this app offers lands inside
+Initiative's own surfaces — dashboard widgets and automation nodes — rather than
+in an iframe holding a second UI. An embed is for an app whose product *is* a
+page; an integration is better delivered as parts.
 
 **Your app learns a handle, not a person.** When Initiative calls a data source
 on a member's behalf, the context token carries `connection_refs` — opaque
@@ -42,9 +47,10 @@ one scope, and lives about a minute. The scope is checked per route — a token
 minted to fetch a source is not usable to run an action
 ([`src/server.ts`](src/server.ts)).
 
-**The handoff token arrives by `postMessage`, never in a URL.** A query string
-is logged, copied and shared. [`src/routes/board.ts`](src/routes/board.ts) waits
-for the host to post it.
+**An action runs as a member, never as the app.** The one thing this app writes
+— opening an issue — uses the credential the context token names, so an
+automation opens issues as the person who set it up and stops working when they
+withdraw. [`src/github/actions.ts`](src/github/actions.ts).
 
 ## Layout
 
@@ -56,8 +62,8 @@ src/
   github/
     oauth.ts           the member's own vendor flow, keyed by handle
     queries.ts         data sources, answered per caller
+    actions.ts         the one write, as the member who authorized it
     workspace.ts       the guild-scoped configuration
-  routes/board.ts      the embedded page
 scripts/
   build-manifest.ts    validates, then writes manifest.json
 test/manifest.test.ts  the test to copy into your own app

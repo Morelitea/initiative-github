@@ -16,6 +16,21 @@ import { validateManifest } from "initiative-app-kit";
 
 import { PUBLIC_ID, manifest } from "../src/manifest.config.js";
 
+/** The opaque block, typed just enough for these assertions. */
+const automation = () =>
+  (manifest.automation ?? {}) as {
+    contract?: number;
+    domain?: { id?: string };
+    nodes?: Array<{
+      key: string;
+      category: string;
+      event?: string;
+      operation?: string;
+      fields?: Array<{ type: string }>;
+    }>;
+    operations?: Array<{ id: string; path: string }>;
+  };
+
 describe("the manifest", () => {
   it("has nothing the kit can object to", () => {
     expect(validateManifest(manifest)).toEqual([]);
@@ -28,6 +43,7 @@ describe("the manifest", () => {
       ...(manifest.connections ?? []).map((c) => c.connect_path),
       ...(manifest.data_sources ?? []).map((s) => s.path),
       ...(manifest.embeds ?? []).map((e) => e.path),
+      ...(automation().operations ?? []).map((o: { path: string }) => o.path),
     ].filter(Boolean) as string[];
 
     expect(paths.length).toBeGreaterThan(0);
@@ -44,23 +60,76 @@ describe("the manifest", () => {
   });
 });
 
-describe("the choices this app makes", () => {
-  it("asks GitHub for read access only", () => {
-    // The reference app holds no write credential anywhere, which is what makes
-    // it a demonstration of the least-privilege default rather than a claim.
-    const account = manifest.connections?.find((c) => c.id === "account");
-    const scopes = account?.access_hint?.scopes ?? [];
-    expect(scopes.length).toBeGreaterThan(0);
-    for (const scope of scopes) {
-      expect(scope).not.toMatch(/\b(write|admin|delete)\b/);
+describe("the automation surface", () => {
+  it("declares a domain and a contract version", () => {
+    expect(automation().contract).toBe(1);
+    expect(automation().domain?.id).toBeTruthy();
+  });
+
+  it("only triggers on events this manifest actually emits", () => {
+    // A trigger naming an event the app never emits could never fire, and
+    // nothing downstream would say so.
+    const emitted = new Set(manifest.events ?? []);
+    for (const node of automation().nodes ?? []) {
+      if (node.category !== "trigger") continue;
+      expect(node.event).toBeTruthy();
+      expect(emitted.has(node.event!)).toBe(true);
     }
   });
 
-  it("asks for the one browser capability its page actually uses", () => {
-    // A frame gets nothing it did not name, and a guild admin sees the list at
-    // install — so a surface should name what it uses and stop there.
-    const board = manifest.embeds?.find((e) => e.id === "board");
-    expect(board?.capabilities).toEqual(["clipboard-write"]);
+  it("only acts through operations this manifest serves", () => {
+    const served = new Set((automation().operations ?? []).map((o) => o.id));
+    for (const node of automation().nodes ?? []) {
+      if (node.category !== "action") continue;
+      expect(node.operation).toBeTruthy();
+      expect(served.has(node.operation!)).toBe(true);
+    }
+  });
+
+  it("keeps secrets out of node config", () => {
+    // A node's config lives in an automation's graph and is shown in an editor.
+    // A credential belongs in a connection, which is held in custody.
+    for (const node of automation().nodes ?? []) {
+      for (const field of node.fields ?? []) {
+        expect(field.type).not.toBe("secret");
+      }
+    }
+  });
+
+  it("has both directions — something to start on, something to do", () => {
+    const categories = new Set((automation().nodes ?? []).map((n) => n.category));
+    expect(categories.has("trigger")).toBe(true);
+    expect(categories.has("action")).toBe(true);
+  });
+});
+
+describe("the choices this app makes", () => {
+  it("holds no credential of its own — every call is a member's", () => {
+    // This app does write at GitHub (the create-issue action), so the
+    // least-privilege story is not "read only". It is that there is no
+    // app-wide credential at all: the only connection that reaches GitHub is
+    // interactive, so every call runs as the member who authorized it and
+    // stops when they disconnect.
+    const reaching = (manifest.connections ?? []).filter((c) => c.access_hint?.api);
+    expect(reaching.length).toBeGreaterThan(0);
+    for (const connection of reaching) {
+      expect(connection.scope).toBe("interactive");
+    }
+  });
+
+  it("says what it will use the credential for", () => {
+    const account = manifest.connections?.find((c) => c.id === "account");
+    // Shown beside the form at install, so an admin sees the write scope
+    // before anybody authorizes rather than after.
+    expect(account?.access_hint?.scopes).toContain("repo");
+  });
+
+  it("mounts no embedded surface", () => {
+    // Everything this app offers lands inside Initiative's own surfaces —
+    // widgets and automation nodes — rather than in an iframe holding a second
+    // UI. An embed is for an app whose product *is* a page.
+    expect(manifest.embeds).toBeUndefined();
+    expect(manifest.features).not.toContain("embeds");
   });
 
   it("lets a member connect their own account rather than sharing one", () => {
