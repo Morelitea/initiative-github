@@ -56,6 +56,14 @@ const SCHEMA = [
      repo           TEXT NOT NULL,
      updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
    )`,
+  // The guild an install belongs to, so a GitHub delivery naming only a
+  // repository can be turned back into somewhere to emit. Added as its own
+  // statement rather than written into the CREATE above — that is the rule
+  // this list keeps, so a deployment that already ran gets it too.
+  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS guild_id BIGINT`,
+  // A delivery names a repository, which is the direction this is read in.
+  `CREATE INDEX IF NOT EXISTS workspaces_repo
+     ON workspaces (lower(owner), lower(repo))`,
 ];
 
 /** Apply the schema. Safe to run on every boot and on every replica. */

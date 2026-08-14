@@ -1,7 +1,8 @@
 /**
  * The whole protocol surface of an Initiative app, in one file.
  *
- * Four kinds of route, and the split is the point:
+ * Five kinds of route, and the split is the point — each is authenticated by a
+ * different party, which is why no two of them share a check:
  *
  * - **`/.well-known/initiative-app.json`** — unauthenticated. The manifest is
  *   public by design; it forbids anything whose secrecy could matter.
@@ -11,6 +12,14 @@
  *   token naming one guild, one install and one scope. Verified per call.
  * - **`/connect/*`** — a person's browser, running the vendor's flow. The one
  *   page this app serves; it mounts no embedded surface of its own.
+ * - **`/webhooks/github`** — the *vendor* calling in, verified against GitHub's
+ *   own webhook secret rather than against Initiative's. This is the trigger
+ *   half of the automation surface: a delivery here becomes an event in every
+ *   guild watching that repository.
+ *
+ * Calls in the other direction — pulling installs, emitting events — go through
+ * `initiative.ts`, and everything about which installs exist comes from
+ * `sync.ts` rather than from anything a caller asserts.
  *
  * Deliberately plain `node:http` with no framework. An app can use whatever it
  * likes; showing the protocol against the standard library keeps the parts that
@@ -33,8 +42,22 @@ import { manifest } from "./manifest.config.js";
 import { createIssue } from "./github/actions.js";
 import { issueThroughput, openIssues, reviewQueue } from "./github/queries.js";
 import { beginOAuth, completeOAuth } from "./github/oauth.js";
+import {
+  DELIVERY_HEADER,
+  EVENT_HEADER,
+  SIGNATURE_HEADER,
+  handleDelivery,
+  verifySignature,
+} from "./github/webhooks.js";
+import { forgetInstall, startSync, syncInstall } from "./sync.js";
 
 const jwks = new JwksCache();
+
+/** A header as one value; `node:http` gives an array for a repeated one. */
+function header(req: IncomingMessage, name: string): string | undefined {
+  const found = req.headers[name];
+  return Array.isArray(found) ? found[0] : found;
+}
 
 /** Read a request body as bytes. Signing and verification are over bytes. */
 async function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -186,8 +209,18 @@ export const server = createServer(async (req, res) => {
     if (req.method === "POST" && path === "/v1/lifecycle") {
       const claims = await context(req, res, { scope: "lifecycle" });
       if (!claims) return;
-      // An install changed — created, configured, or removed. An app that
-      // caches anything per install drops it here.
+      // An install changed — created, configured, or removed. The signal says
+      // which install, not what changed, so this refetches and lets the answer
+      // decide: a config pull that is refused because the app is gone is the
+      // removal, and there is nothing else to distinguish it from.
+      try {
+        await syncInstall(claims.guild_id);
+      } catch (error) {
+        console.error(`lifecycle sync failed for guild ${claims.guild_id}`, error);
+        await forgetInstall(claims.app_install_id);
+      }
+      // Answered regardless: the signal is not a request for this app's opinion,
+      // and the poll in `sync.ts` is what makes a missed one recoverable.
       return send(res, 204, null);
     }
 
@@ -207,6 +240,39 @@ export const server = createServer(async (req, res) => {
       return sendPage(res, html);
     }
 
+    // --- the vendor calling in ---------------------------------------------
+    if (req.method === "POST" && path === "/webhooks/github") {
+      // Read as bytes and verified before anything parses them: a signature is
+      // over what arrived, and a re-serialized object is different bytes.
+      const body = await readBody(req);
+      if (!verifySignature(body, header(req, SIGNATURE_HEADER))) {
+        return send(res, 401, { error: "bad signature" });
+      }
+
+      const event = header(req, EVENT_HEADER);
+      if (!event) return send(res, 400, { error: "no event type" });
+      // GitHub pings a new webhook before sending anything real; answering it
+      // is what turns the delivery green in the repository's settings.
+      if (event === "ping") return send(res, 200, { ok: true });
+
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(body.toString("utf-8")) as Record<string, unknown>;
+      } catch {
+        return send(res, 400, { error: "body is not json" });
+      }
+
+      const result = await handleDelivery(event, payload);
+      // 200 whatever the outcome. GitHub retries a failure, and a delivery this
+      // app has no install for is not going to succeed on the second attempt —
+      // the delivery id goes into the log so an admin can still find it.
+      if (result.reason) {
+        console.log(
+          `delivery ${header(req, DELIVERY_HEADER) ?? "?"} (${event}): ${result.reason}`
+        );
+      }
+      return send(res, 200, { emitted: result.emitted });
+    }
 
     return send(res, 404, { error: "no such route" });
   } catch (error) {
@@ -217,17 +283,24 @@ export const server = createServer(async (req, res) => {
   }
 });
 
+let sync: { stop: () => void } | null = null;
+
 async function start(): Promise<void> {
   // Idempotent and transactional, so every replica can run it on boot.
   await migrate();
   server.listen(config.port, () => {
     console.log(`${manifest.service.public_id} listening on :${config.port}`);
   });
+  // Started after the listener, not before: the reconcile talks to Initiative,
+  // and a platform that is slow to answer should delay this app's picture of
+  // its installs, never its readiness probe.
+  sync = startSync();
 }
 
 /** Stop taking new work, finish what is in flight, then let the pool go. */
 async function shutdown(signal: string): Promise<void> {
   console.log(`${signal} received, shutting down`);
+  sync?.stop();
   server.close(async () => {
     await close();
     process.exit(0);

@@ -1,7 +1,7 @@
 # initiative-github
 
 The reference app for [Initiative](https://github.com/Morelitea/initiative) —
-GitHub issues and reviews, as widgets, an embedded page, and events.
+GitHub issues and reviews, as dashboard widgets and automation nodes.
 
 It is a real app, and it is the one to clone when starting your own. There is
 deliberately no template repo: a template is a copy nobody runs, and the copy
@@ -52,21 +52,37 @@ minted to fetch a source is not usable to run an action
 automation opens issues as the person who set it up and stops working when they
 withdraw. [`src/github/actions.ts`](src/github/actions.ts).
 
+**Reconcile, do not trust a signal.** Which guilds have this app comes from
+asking Initiative ([`src/sync.ts`](src/sync.ts)), on a poll as well as on the
+lifecycle signal. A signal that arrives while this app is restarting is gone —
+nothing retries it — so an install configured during a deploy would otherwise
+stay unconfigured until somebody touched it again.
+
+**A vendor event has no guild in it.** A GitHub delivery names a repository and
+that is all. Turning it back into somewhere to emit is the app's own job, and
+the reverse lookup is the whole trigger side working
+([`src/github/webhooks.ts`](src/github/webhooks.ts)).
+
 ## Layout
 
 ```
-manifest.config.ts     the manifest, authored in TypeScript and built to JSON
+manifest.config.ts      the manifest, authored in TypeScript and built to JSON
 src/
-  server.ts            every protocol route, in one readable file
-  config.ts            what the operator supplies
+  server.ts             every protocol route, in one readable file
+  config.ts             what the operator supplies
+  initiative.ts         the one client for calling Initiative
+  sync.ts               keeping this app's picture of its installs true
   github/
-    oauth.ts           the member's own vendor flow, keyed by handle
-    queries.ts         data sources, answered per caller
-    actions.ts         the one write, as the member who authorized it
-    workspace.ts       the guild-scoped configuration
+    oauth.ts            the member's own vendor flow, keyed by handle
+    queries.ts          data sources, answered per caller
+    actions.ts          the one write, as the member who authorized it
+    webhooks.ts         a GitHub delivery becoming an Initiative event
+    workspace.ts        the guild-scoped configuration, read both ways
 scripts/
-  build-manifest.ts    validates, then writes manifest.json
-test/manifest.test.ts  the test to copy into your own app
+  build-manifest.ts     validates, then writes manifest.json
+test/manifest.test.ts   the test to copy into your own app
+test/webhooks.test.ts   the signature, the translation, and their agreement
+test/delivery.test.ts   repository back to guild — needs a database
 ```
 
 ## Running it
@@ -75,8 +91,15 @@ test/manifest.test.ts  the test to copy into your own app
 cp .env.example .env      # see below for what each value is
 npm install
 npm run manifest          # validates, then writes manifest.json
-npm test
+npm test                  # needs DATABASE_URL; see below
 npm run dev
+```
+
+The tests want a Postgres they may truncate. Any empty database will do:
+
+```bash
+createdb initiative_github_test
+DATABASE_URL=postgres://localhost/initiative_github_test npm test
 ```
 
 Then an operator registers it: the deployment fetches
@@ -102,6 +125,29 @@ the pool closes.
 | **An encryption key** | `APP_ENCRYPTION_KEY`, 32 bytes base64 (`openssl rand -base64 32`). Members' tokens are sealed at rest, so a database backup is not a pile of GitHub tokens. |
 | **A public hostname** | `APP_PUBLIC_URL`. GitHub redirects a browser back to `<APP_PUBLIC_URL>/connect/github/callback`, so this needs DNS and a proxy entry. |
 | **A GitHub OAuth app** | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`, scopes `read:user` and `repo`. You create this; nothing can generate it. Its callback must be the URL above. |
+| **A webhook secret** | `GITHUB_WEBHOOK_SECRET`, any long random string (`openssl rand -hex 32`). The same value goes into each repository's webhook settings; GitHub signs every delivery with it and this app verifies it before reading the body. |
+
+### Wiring the triggers
+
+The automation nodes this app contributes are only half of a trigger; the other
+half is GitHub actually telling it something happened. In each repository a
+guild has configured, add a webhook:
+
+| | |
+|---|---|
+| **Payload URL** | `<APP_PUBLIC_URL>/webhooks/github` |
+| **Content type** | `application/json` |
+| **Secret** | the same `GITHUB_WEBHOOK_SECRET` |
+| **Events** | *Issues* and *Pull requests* |
+
+GitHub sends a `ping` first; a green tick beside it means the secret matches.
+From then on a delivery reaches every guild whose install names that repository
+— matched from the configuration this app pulls, so a guild that has not filled
+in its repository receives nothing.
+
+Deliveries this app has no install for are answered `200` and logged rather than
+failed. GitHub retries a failure, and an event with nowhere to go will not
+succeed on the second attempt.
 
 ### Two addresses, deliberately separate
 

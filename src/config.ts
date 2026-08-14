@@ -37,7 +37,11 @@ export const config = {
   /** The shared secret this app's registration was wired with. */
   appSecret: required("INITIATIVE_APP_SECRET"),
 
-  /** Server-to-server: where this app fetches Initiative's verification keys. */
+  /**
+   * Server-to-server: where this app reaches Initiative — both to fetch the
+   * verification keys a context token is checked against, and to make its own
+   * signed calls back on the app-service channel.
+   */
   initiativeBaseUrl: required("INITIATIVE_BASE_URL"),
 
   /** Browser-facing: where GitHub redirects a member back to. */
@@ -53,5 +57,21 @@ export const config = {
     clientId: required("GITHUB_CLIENT_ID"),
     clientSecret: required("GITHUB_CLIENT_SECRET"),
     apiBase: process.env.GITHUB_API_BASE ?? "https://api.github.com",
+    /**
+     * What GitHub signs its deliveries with — the same value typed into each
+     * repository's webhook settings. Required like everything else here: the
+     * webhook route verifies against it on every delivery, so a deployment
+     * missing it serves a route that can accept nothing.
+     */
+    webhookSecret: required("GITHUB_WEBHOOK_SECRET"),
   },
+
+  /**
+   * How often to re-read which guilds have this app, in seconds.
+   *
+   * The lifecycle signal is the fast path; this is the floor under it. A signal
+   * that arrives while this app is restarting is simply missed, and without a
+   * poll that install stays unconfigured until something else moves.
+   */
+  syncIntervalSeconds: Number(process.env.SYNC_INTERVAL_SECONDS ?? 300),
 } as const;
