@@ -1,0 +1,28 @@
+{
+  "name": "initiative-github",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The reference Initiative app: GitHub issues and reviews, as widgets, an embedded page, and events.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "manifest": "tsx scripts/build-manifest.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "initiative-app-kit": "github:Morelitea/initiative-app-kit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}
