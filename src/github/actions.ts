@@ -35,10 +35,10 @@ export async function createIssue(
   claims: ContextClaims,
   input: CreateIssueInput
 ): Promise<Record<string, unknown>> {
-  const account = credentialFor(claims.connection_refs?.account);
+  const account = await credentialFor(claims.connection_refs?.account);
   if (!account) return { ok: false, reason: "not-connected" };
 
-  const workspace = workspaceFor(claims.app_install_id);
+  const workspace = await workspaceFor(claims.app_install_id);
   if (!workspace) return { ok: false, reason: "not-configured" };
 
   const title = readText(input.title, 250);

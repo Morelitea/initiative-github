@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The root the runtime entrypoint is resolved against. With the wider
+    // `rootDir` the tests and scripts force, `dist/server.js` would be
+    // `dist/src/server.js` — which only shows up when the image runs.
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src"]
+}

@@ -8,6 +8,17 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: initiative_github_test
+        options: >-
+          --health-cmd pg_isready --health-interval 10s
+          --health-timeout 5s --health-retries 5
+        ports:
+          - 5432:5432
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,6 +27,20 @@ jobs:
       - run: npm install
       - run: npm run typecheck
       - run: npm test
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/initiative_github_test
       # The manifest has to build, which validates it — a manifest a deployment
       # would refuse should never reach a commit.
       - run: npm run manifest
+
+  image:
+    name: Image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Built on every change, not only on a tag: a Dockerfile that only breaks
+      # at release time breaks when it is least convenient.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false

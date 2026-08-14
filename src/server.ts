@@ -28,6 +28,7 @@ import {
 } from "initiative-app-kit";
 
 import { config } from "./config.js";
+import { close, migrate, pool } from "./db.js";
 import { manifest } from "./manifest.config.js";
 import { createIssue } from "./github/actions.js";
 import { issueThroughput, openIssues, reviewQueue } from "./github/queries.js";
@@ -114,6 +115,22 @@ export const server = createServer(async (req, res) => {
   const path = url.pathname;
 
   try {
+    // --- liveness and readiness ---------------------------------------------
+    if (req.method === "GET" && path === "/healthz") {
+      return send(res, 200, { ok: true });
+    }
+    if (req.method === "GET" && path === "/readyz") {
+      // Ready means the database is reachable: without it this app can answer
+      // no source and complete no connection, so reporting ready would just
+      // route traffic at something that cannot serve it.
+      try {
+        await pool.query("SELECT 1");
+        return send(res, 200, { ok: true });
+      } catch {
+        return send(res, 503, { ok: false });
+      }
+    }
+
     // --- the manifest ------------------------------------------------------
     if (req.method === "GET" && path === "/.well-known/initiative-app.json") {
       return send(res, 200, manifest);
@@ -180,7 +197,7 @@ export const server = createServer(async (req, res) => {
       // them. It is the only name this app ever learns for that person.
       const connectionRef = url.searchParams.get("connection_ref");
       if (!connectionRef) return send(res, 400, { error: "no connection_ref" });
-      const redirect = beginOAuth(connectionRef);
+      const redirect = await beginOAuth(connectionRef);
       res.writeHead(302, { Location: redirect });
       return res.end();
     }
@@ -200,8 +217,32 @@ export const server = createServer(async (req, res) => {
   }
 });
 
-if (process.env.NODE_ENV !== "test") {
+async function start(): Promise<void> {
+  // Idempotent and transactional, so every replica can run it on boot.
+  await migrate();
   server.listen(config.port, () => {
     console.log(`${manifest.service.public_id} listening on :${config.port}`);
+  });
+}
+
+/** Stop taking new work, finish what is in flight, then let the pool go. */
+async function shutdown(signal: string): Promise<void> {
+  console.log(`${signal} received, shutting down`);
+  server.close(async () => {
+    await close();
+    process.exit(0);
+  });
+  // A pod gets a grace period; not exiting within it is a kill, which is worse
+  // than a bounded wait that gives in-flight requests a chance to finish.
+  setTimeout(() => process.exit(1), 10_000).unref();
+}
+
+if (process.env.NODE_ENV !== "test") {
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.on(signal, () => void shutdown(signal));
+  }
+  start().catch((error) => {
+    console.error("could not start", error);
+    process.exit(1);
   });
 }

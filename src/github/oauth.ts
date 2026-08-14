@@ -7,43 +7,50 @@
  * app ever has for that person: no user id, no email, no display name. The same
  * person looks unrelated across apps, and across guilds within this one.
  *
- * So the store below is keyed by the handle. When Initiative later calls a data
- * source on that member's behalf, the context token carries the same handle in
- * `connection_refs`, and this app looks up the credential without ever learning
- * whose it is.
+ * So the table is keyed by the handle. When Initiative later calls a data
+ * source or an action on that member's behalf, the context token carries the
+ * same handle in `connection_refs`, and this app looks up the credential
+ * without ever learning whose it is.
  *
- * The store is in-memory here because this is a reference app and a real one
- * has its own database. What a real one must keep is the shape: keyed by
- * handle, holding the vendor's token and nothing about the person.
+ * Two things are in Postgres rather than in memory, and the second is the one
+ * that bites first: the credential, because a restart must not disconnect
+ * everybody; and the in-flight OAuth state, because the browser leaves from one
+ * replica and comes back to whichever the load balancer picks.
  */
 
-import { config } from "../config.js";
+import { randomUUID } from "node:crypto";
 
-interface StoredAccount {
+import { config } from "../config.js";
+import { pool } from "../db.js";
+import { open, seal } from "../secrets.js";
+
+export interface StoredAccount {
   accessToken: string;
   /** What the member connected as, for display in their settings. */
-  accountLabel: string;
+  accountLabel: string | null;
 }
 
-/** connection_ref → the credential it stands for. Never keyed by a person. */
-const accounts = new Map<string, StoredAccount>();
-
-/** Pending OAuth states → the handle they belong to. */
-const pending = new Map<string, { connectionRef: string; expiresAt: number }>();
-
-const STATE_TTL_MS = 10 * 60 * 1000;
+const STATE_TTL_MINUTES = 10;
 
 /** Where to send the member so GitHub can authorize them. */
-export function beginOAuth(connectionRef: string): string {
-  const state = crypto.randomUUID();
-  pending.set(state, { connectionRef, expiresAt: Date.now() + STATE_TTL_MS });
+export async function beginOAuth(connectionRef: string): Promise<string> {
+  const state = randomUUID();
+  await pool.query(
+    `INSERT INTO oauth_states (state, connection_ref, expires_at)
+     VALUES ($1, $2, now() + ($3 || ' minutes')::interval)`,
+    [state, connectionRef, String(STATE_TTL_MINUTES)]
+  );
+  // Swept here rather than by a job: the table is small, and a sweep that runs
+  // when somebody connects cannot fall behind in a way that matters.
+  await pool.query("DELETE FROM oauth_states WHERE expires_at < now()");
 
   const url = new URL("https://github.com/login/oauth/authorize");
   url.searchParams.set("client_id", config.github.clientId);
   url.searchParams.set("redirect_uri", `${config.publicUrl}/connect/github/callback`);
-  // Read-only, and the same list the manifest's access_hint advertises so an
-  // admin sees before anyone authorizes what will actually be asked for.
-  url.searchParams.set("scope", "read:user repo:status public_repo");
+  // The same list the manifest's access_hint advertises, so an admin sees at
+  // install what will actually be asked for. `repo` is here because the
+  // create-issue action writes; an app that only read would ask for less.
+  url.searchParams.set("scope", "read:user repo");
   url.searchParams.set("state", state);
   return url.toString();
 }
@@ -52,10 +59,18 @@ export function beginOAuth(connectionRef: string): string {
 export async function completeOAuth(params: URLSearchParams): Promise<string> {
   const state = params.get("state") ?? "";
   const code = params.get("code") ?? "";
-  const entry = pending.get(state);
-  pending.delete(state);
 
-  if (!entry || entry.expiresAt < Date.now() || !code) {
+  // Claimed in one statement, so a replayed callback finds nothing rather than
+  // racing a second exchange of the same code.
+  const claimed = await pool.query<{ connection_ref: string }>(
+    `DELETE FROM oauth_states
+      WHERE state = $1 AND expires_at > now()
+      RETURNING connection_ref`,
+    [state]
+  );
+  const connectionRef = claimed.rows[0]?.connection_ref;
+
+  if (!connectionRef || !code) {
     return page("Could not connect", "That link has expired. Start again from the app's settings.");
   }
 
@@ -75,25 +90,53 @@ export async function completeOAuth(params: URLSearchParams): Promise<string> {
   }
 
   const who = await fetch(`${config.github.apiBase}/user`, {
-    headers: { Authorization: `Bearer ${body.access_token}`, Accept: "application/vnd.github+json" },
+    headers: {
+      Authorization: `Bearer ${body.access_token}`,
+      Accept: "application/vnd.github+json",
+    },
   });
   const user = (await who.json()) as { login?: string };
 
-  accounts.set(entry.connectionRef, {
-    accessToken: body.access_token,
-    accountLabel: user.login ? `@${user.login}` : "connected",
-  });
+  await pool.query(
+    `INSERT INTO connections (connection_ref, access_token, account_label)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (connection_ref) DO UPDATE
+        SET access_token = EXCLUDED.access_token,
+            account_label = EXCLUDED.account_label,
+            updated_at = now()`,
+    [connectionRef, seal(body.access_token), user.login ? `@${user.login}` : null]
+  );
 
-  // A real app also reports the result back to Initiative on the app channel,
-  // so the member's settings page stops saying "waiting to finish". That call
-  // is signed with `signedHeaders` from the kit.
+  // A real deployment also reports the result back to Initiative on the app
+  // channel, so the member's settings page stops saying "waiting to finish".
+  // That call is signed with `signedHeaders` from the kit.
   return page("Connected", "You can close this tab and go back to Initiative.");
 }
 
 /** The credential behind a handle, or null if that member has not connected. */
-export function credentialFor(connectionRef: string | undefined): StoredAccount | null {
+export async function credentialFor(
+  connectionRef: string | undefined
+): Promise<StoredAccount | null> {
   if (!connectionRef) return null;
-  return accounts.get(connectionRef) ?? null;
+  const found = await pool.query<{ access_token: string; account_label: string | null }>(
+    "SELECT access_token, account_label FROM connections WHERE connection_ref = $1",
+    [connectionRef]
+  );
+  const row = found.rows[0];
+  if (!row) return null;
+
+  const accessToken = open(row.access_token);
+  // A value that will not open is a credential that is no longer usable —
+  // after a key rotation, say — so it reads as "not connected" and the member
+  // is asked to connect again rather than the call failing obscurely.
+  if (!accessToken) return null;
+
+  return { accessToken, accountLabel: row.account_label };
+}
+
+/** Forget a member's credential. For the platform's revocation signal. */
+export async function forgetConnection(connectionRef: string): Promise<void> {
+  await pool.query("DELETE FROM connections WHERE connection_ref = $1", [connectionRef]);
 }
 
 function page(title: string, body: string): string {

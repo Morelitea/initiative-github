@@ -27,10 +27,10 @@ export async function openIssues(
   claims: ContextClaims,
   params: URLSearchParams
 ): Promise<Record<string, unknown>> {
-  const account = credentialFor(claims.connection_refs?.account);
+  const account = await credentialFor(claims.connection_refs?.account);
   if (!account) return NOT_CONNECTED;
 
-  const workspace = workspaceFor(claims.app_install_id);
+  const workspace = await workspaceFor(claims.app_install_id);
   if (!workspace) return { unavailable: "not-configured" };
 
   const query = new URLSearchParams({
@@ -62,10 +62,10 @@ export async function openIssues(
 export async function reviewQueue(
   claims: ContextClaims
 ): Promise<Record<string, unknown>> {
-  const account = credentialFor(claims.connection_refs?.account);
+  const account = await credentialFor(claims.connection_refs?.account);
   if (!account) return NOT_CONNECTED;
 
-  const workspace = workspaceFor(claims.app_install_id);
+  const workspace = await workspaceFor(claims.app_install_id);
   if (!workspace) return { unavailable: "not-configured" };
 
   const response = await fetch(
@@ -102,10 +102,10 @@ export async function reviewQueue(
 export async function issueThroughput(
   claims: ContextClaims
 ): Promise<Record<string, unknown>> {
-  const account = credentialFor(claims.connection_refs?.account);
+  const account = await credentialFor(claims.connection_refs?.account);
   if (!account) return NOT_CONNECTED;
 
-  const workspace = workspaceFor(claims.app_install_id);
+  const workspace = await workspaceFor(claims.app_install_id);
   if (!workspace) return { unavailable: "not-configured" };
 
   const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();

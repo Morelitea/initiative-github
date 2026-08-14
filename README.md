@@ -72,7 +72,7 @@ test/manifest.test.ts  the test to copy into your own app
 ## Running it
 
 ```bash
-cp .env.example .env      # fill in the secret, the base URL, and a GitHub OAuth app
+cp .env.example .env      # see below for what each value is
 npm install
 npm run manifest          # validates, then writes manifest.json
 npm test
@@ -83,15 +83,50 @@ Then an operator registers it: the deployment fetches
 `/.well-known/initiative-app.json`, posts a challenge to `/v1/handshake`, and
 both ends prove they hold the same secret without either sending it.
 
-## What is deliberately simple here
+## Deploying it
 
-The stores in `oauth.ts` and `workspace.ts` are in-memory maps. A real app has a
-database; what a real app must keep is the *shape* — keyed by the opaque handle,
-holding the vendor's credential and nothing about the person.
+```
+ghcr.io/morelitea/initiative-github:latest
+```
+
+Published on tag for `linux/amd64` and `linux/arm64`. `/healthz` is liveness;
+`/readyz` additionally proves the database is reachable, so a pod that cannot
+serve a source is not sent traffic. `SIGTERM` finishes in-flight requests before
+the pool closes.
+
+### What it needs
+
+| | |
+|---|---|
+| **Postgres** | `DATABASE_URL`. Members' credentials, in-flight vendor handshakes, per-install configuration. The schema is applied idempotently at boot, so every replica can run it. |
+| **An encryption key** | `APP_ENCRYPTION_KEY`, 32 bytes base64 (`openssl rand -base64 32`). Members' tokens are sealed at rest, so a database backup is not a pile of GitHub tokens. |
+| **A public hostname** | `APP_PUBLIC_URL`. GitHub redirects a browser back to `<APP_PUBLIC_URL>/connect/github/callback`, so this needs DNS and a proxy entry. |
+| **A GitHub OAuth app** | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`, scopes `read:user` and `repo`. You create this; nothing can generate it. Its callback must be the URL above. |
+
+### Two addresses, deliberately separate
+
+`INITIATIVE_BASE_URL` is **server-to-server** — where this app fetches the keys
+a context token is verified against. In a cluster it should be the in-cluster
+Service, so verification does not depend on the public ingress being up.
+
+`APP_PUBLIC_URL` is **browser-facing**, and only that.
+
+This app mounts no embedded surface, so it needs no third address for "where the
+iframe loads". An app that *does* embed needs one and must not reuse the
+server-to-server address for it: Initiative builds both the iframe URL and the
+page's `frame-src` from the registration's `embed_origin`, **falling back to
+`base_url` when it is unset** — which is how a cluster ends up framing an
+address no browser can resolve.
+
+## What is deliberately simple here
 
 The issue counts come back as a single number because that is what the widget
 draws. Sending the vendor's whole payload would put data nobody renders into a
 cache and into a browser.
+
+The schema is applied as idempotent DDL at boot rather than through a migration
+tool. Three tables of this shape do not earn the dependency — but the statements
+are additive on purpose, so a new column is a new statement rather than an edit.
 
 ## License
 

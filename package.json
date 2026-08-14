@@ -9,7 +9,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "manifest": "tsx scripts/build-manifest.ts",
@@ -17,7 +17,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "initiative-app-kit": "github:Morelitea/initiative-app-kit"
+    "@types/pg": "^8.21.0",
+    "initiative-app-kit": "github:Morelitea/initiative-app-kit",
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
