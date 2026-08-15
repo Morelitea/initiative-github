@@ -103,25 +103,78 @@ describe("the automation surface", () => {
   });
 });
 
-describe("the choices this app makes", () => {
-  it("holds no credential of its own — every call is a member's", () => {
-    // This app does write at GitHub (the create-issue action), so the
-    // least-privilege story is not "read only". It is that there is no
-    // app-wide credential at all: the only connection that reaches GitHub is
-    // interactive, so every call runs as the member who authorized it and
-    // stops when they disconnect.
-    const reaching = (manifest.connections ?? []).filter((c) => c.access_hint?.api);
-    expect(reaching.length).toBeGreaterThan(0);
-    for (const connection of reaching) {
-      expect(connection.scope).toBe("interactive");
+describe("who a source is answered for", () => {
+  const sourceById = (id: string) =>
+    manifest.data_sources?.find((source) => source.id === id);
+  const namedBy = (id: string) => sourceById(id)?.requires?.all_of ?? [];
+
+  it("answers a question about the repository from the guild's own access", () => {
+    // The rule this file exists to hold. How many issues are open is one
+    // answer for every member, so asking each of them to hand over a personal
+    // GitHub account to see it would be asking for a credential to do a job
+    // that needs none.
+    for (const id of ["open-issues", "issue-throughput"]) {
+      expect(namedBy(id)).toContain("shared_account");
+      expect(namedBy(id)).not.toContain("account");
     }
   });
 
-  it("says what it will use the credential for", () => {
+  it("answers a question about a person from that person's own account", () => {
+    // "Waiting on my review" resolves against whoever's credential it runs on,
+    // so the caller's is the only one that answers the question asked.
+    expect(namedBy("review-queue")).toContain("account");
+    expect(namedBy("review-queue")).not.toContain("shared_account");
+  });
+
+  it("names the repository setting on every source", () => {
+    for (const source of manifest.data_sources ?? []) {
+      expect(source.requires?.all_of).toContain("workspace");
+    }
+  });
+
+  it("writes only as a member, never as the guild", () => {
+    // An action opens an issue under somebody's name, so it runs on that
+    // member's own credential — the issue is theirs, and it stops working when
+    // they disconnect.
+    const automation = manifest.automation as
+      | { operations?: Array<{ id: string; requires?: { all_of?: string[] } }> }
+      | undefined;
+    for (const operation of automation?.operations ?? []) {
+      expect(operation.requires?.all_of).toContain("account");
+      expect(operation.requires?.all_of).not.toContain("shared_account");
+    }
+  });
+});
+
+describe("the choices this app makes", () => {
+  it("holds no credential of its own — every one belongs to somebody", () => {
+    // This app does write at GitHub (the create-issue action), so the
+    // least-privilege story is not "read only". It is that no credential here
+    // is the app's: each is either a member's, authorized by them and gone
+    // when they disconnect, or the guild's, supplied by an admin and gone when
+    // they clear it. Nothing is shared between guilds and nothing is the
+    // vendor's view of this app as a party in its own right.
+    const reaching = (manifest.connections ?? []).filter((c) => c.access_hint?.api);
+    expect(reaching.length).toBeGreaterThan(0);
+    for (const connection of reaching) {
+      expect(["interactive", "static"]).toContain(connection.scope);
+    }
+    // And the two tiers are both actually present, since the whole scoping
+    // story collapses if one of them quietly goes away.
+    const scopes = new Set(reaching.map((c) => c.scope));
+    expect(scopes).toEqual(new Set(["interactive", "static"]));
+  });
+
+  it("says what it will use each credential for", () => {
     const account = manifest.connections?.find((c) => c.id === "account");
     // Shown beside the form at install, so an admin sees the write scope
     // before anybody authorizes rather than after.
     expect(account?.access_hint?.scopes).toContain("repo");
+
+    // The shared one is asked to read and nothing else — which is the point of
+    // having split it out.
+    const shared = manifest.connections?.find((c) => c.id === "shared_account");
+    expect(shared?.access_hint?.scopes).toEqual(["issues:read"]);
   });
 
   it("mounts no embedded surface", () => {
@@ -140,6 +193,19 @@ describe("the choices this app makes", () => {
     expect(account?.connect_path).toBeTruthy();
     // And nothing for anyone to type: the vendor flow produces it.
     expect(account?.fields).toEqual([]);
+  });
+
+  it("takes the guild's shared access as a secret, from an admin", () => {
+    const shared = manifest.connections?.find((c) => c.id === "shared_account");
+    // Static, so it is the install's rather than any member's, and one admin
+    // fills it in once for everyone.
+    expect(shared?.scope).toBe("static");
+    // No vendor flow: a static connection is typed, and only an interactive
+    // one may carry a connect_path.
+    expect(shared?.connect_path).toBeUndefined();
+    // `secret` rather than `string`, so it is sealed at rest and never read
+    // back to the form.
+    expect(shared?.fields.map((field) => field.type)).toEqual(["secret"]);
   });
 
   it("ships sample data so a preview renders with no network call", () => {

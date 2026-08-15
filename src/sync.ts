@@ -25,6 +25,11 @@ import { ChannelError, type InstallConfig } from "initiative-app-kit";
 import { config } from "./config.js";
 import { initiative } from "./initiative.js";
 import {
+  forgetSharedAccess,
+  forgetSharedAccessExcept,
+  rememberSharedAccess,
+} from "./github/shared-access.js";
+import {
   forgetInstallsExcept,
   forgetWorkspace,
   rememberWorkspace,
@@ -45,6 +50,12 @@ function readWorkspace(
   return { owner, repo };
 }
 
+/** The guild's shared read token, if an admin has supplied one. */
+function readSharedAccess(installConfig: InstallConfig): string | null {
+  const token = installConfig.connections.shared_account?.token;
+  return typeof token === "string" && token.trim() ? token.trim() : null;
+}
+
 /**
  * Pull one install's configuration and record it.
  *
@@ -53,6 +64,15 @@ function readWorkspace(
  */
 export async function syncInstall(guildId: number): Promise<boolean> {
   const installConfig = await initiative.config(guildId);
+
+  // Held first and unconditionally, so clearing the field in Initiative drops
+  // it here on the very next pull rather than only when something else changes.
+  const sharedAccess = readSharedAccess(installConfig);
+  if (sharedAccess) {
+    rememberSharedAccess(installConfig.install_id, sharedAccess);
+  } else {
+    forgetSharedAccess(installConfig.install_id);
+  }
 
   const workspace = readWorkspace(installConfig);
   if (!workspace) {
@@ -75,6 +95,7 @@ export async function syncInstall(guildId: number): Promise<boolean> {
 
 /** Forget an install this app has been removed from. */
 export async function forgetInstall(installId: number): Promise<void> {
+  forgetSharedAccess(installId);
   await forgetWorkspace(installId);
 }
 
@@ -93,6 +114,7 @@ export async function syncAllInstalls(): Promise<void> {
     if (!install.enabled) {
       // Switched off is not uninstalled: the configuration is still the
       // guild's, and this app simply stops acting on it.
+      forgetSharedAccess(install.install_id);
       await forgetWorkspace(install.install_id);
       continue;
     }
@@ -106,7 +128,9 @@ export async function syncAllInstalls(): Promise<void> {
     }
   }
 
-  const dropped = await forgetInstallsExcept(installs.map((i) => i.install_id));
+  const present = installs.map((i) => i.install_id);
+  forgetSharedAccessExcept(present);
+  const dropped = await forgetInstallsExcept(present);
   if (dropped) console.log(`dropped ${dropped} install(s) this app is no longer in`);
 }
 

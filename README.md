@@ -17,7 +17,8 @@ It exercises the widest slice of the protocol on purpose:
 | | |
 |---|---|
 | **Per-member connections** | GitHub authorizes a *person*, so each member connects their own account and the app holds one credential per person. Installing never waits for anyone to do it. |
-| **Guild-scoped connections** | Which repository the guild cares about — one setting a guild admin fills in once. |
+| **Guild-scoped connections** | Which repository the guild cares about, and the read access the whole guild shares — both filled in once by an admin. |
+| **Two tiers of scope** | Every source is answered at the narrowest level that answers it: the repository's numbers from the guild's own access, one person's review queue from their own account. |
 | **Data sources** | Answered per caller, from that member's own credential, returning only what the widget draws. |
 | **Widgets** | A sandboxed browser module handed its sources' data, returning a scene. |
 | **Events** | Namespaced under this app's own service id. |
@@ -30,6 +31,26 @@ It exercises the widest slice of the protocol on purpose:
 Initiative's own surfaces — dashboard widgets and automation nodes — rather than
 in an iframe holding a second UI. An embed is for an app whose product *is* a
 page; an integration is better delivered as parts.
+
+**Scope each source to the narrowest thing that answers it.** How many issues
+are open is one answer for the whole guild, so it runs on the guild's shared
+read access and nobody hands over a personal GitHub account to see a number.
+Which pull requests are waiting on *your* review is one answer per person, so it
+runs on that member's own credential. The manifest says which, per source:
+
+```ts
+// open-issues, issue-throughput — one answer for everyone
+requires: { all_of: ["workspace", "shared_account"] }
+
+// review-queue — "waiting on me" has no meaning without a me
+requires: { all_of: ["workspace", "account"] }
+```
+
+Getting this backwards is the easy mistake and it hides well: answering a shared
+question from the caller's own token returns the right number, while quietly
+requiring every member to connect. It also costs real work — a source that names
+no per-member connection is cached **once per guild**, so twenty people opening a
+dashboard is one upstream call rather than twenty.
 
 **Your app learns a handle, not a person.** When Initiative calls a data source
 on a member's behalf, the context token carries `connection_refs` — opaque
@@ -74,15 +95,17 @@ src/
   sync.ts               keeping this app's picture of its installs true
   github/
     oauth.ts            the member's own vendor flow, keyed by handle
-    queries.ts          data sources, answered per caller
+    queries.ts          data sources, each at the scope that answers it
     actions.ts          the one write, as the member who authorized it
     webhooks.ts         a GitHub delivery becoming an Initiative event
-    workspace.ts        the guild-scoped configuration, read both ways
+    workspace.ts        which repository, read both ways
+    shared-access.ts    the guild's credential, held only while it is lent
 scripts/
   build-manifest.ts     validates, then writes manifest.json
 test/manifest.test.ts   the test to copy into your own app
 test/webhooks.test.ts   the signature, the translation, and their agreement
 test/delivery.test.ts   repository back to guild — needs a database
+test/shared-access.test.ts  clearing the guild's credential actually stops it
 ```
 
 ## Running it
@@ -124,7 +147,7 @@ the pool closes.
 | **Postgres** | `DATABASE_URL`. Members' credentials, in-flight vendor handshakes, per-install configuration. The schema is applied idempotently at boot, so every replica can run it. |
 | **An encryption key** | `APP_ENCRYPTION_KEY`, 32 bytes base64 (`openssl rand -base64 32`). Members' tokens are sealed at rest, so a database backup is not a pile of GitHub tokens. |
 | **A public hostname** | `APP_PUBLIC_URL`. GitHub redirects a browser back to `<APP_PUBLIC_URL>/connect/github/callback`, so this needs DNS and a proxy entry. |
-| **A GitHub OAuth app** | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`, scopes `read:user` and `repo`. You create this; nothing can generate it. Its callback must be the URL above. |
+| **A GitHub OAuth app** | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`, scopes `read:user` and `repo`. You create this; nothing can generate it. Its callback must be the URL above. Members use it for their own connection — the guild's shared read access is a token an admin pastes, and needs none of this. |
 | **A webhook secret** | `GITHUB_WEBHOOK_SECRET`, any long random string (`openssl rand -hex 32`). The same value goes into each repository's webhook settings; GitHub signs every delivery with it and this app verifies it before reading the body. |
 
 ### Wiring the triggers

@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.3.0]
+
+Scoping. Every source now runs at the narrowest level that answers it, rather
+than asking every member for a personal GitHub account to read a number that is
+the same for the whole guild.
+
+### Added
+
+- A `shared_account` guild connection: one token an admin supplies, used for
+  everything the whole guild sees the same answer to. A fine-grained token with
+  `Issues: read` on the repository is enough.
+- Held in memory rather than written down. It is Initiative's credential, lent
+  on each configuration pull, so clearing the field, switching the app off or
+  uninstalling stops it on the next pull — with tests for each of those.
+
+### Changed
+
+- `open-issues` and `issue-throughput` are answered from the guild's shared
+  access. Neither has a per-person component, and naming no per-member
+  connection also means the platform caches each **once per guild** instead of
+  once per member — twenty people on a dashboard is now one upstream call.
+- `review-queue` and the `create-issue` action stay per member, which is the
+  only thing they can be: one is "waiting on my review", the other opens an
+  issue under somebody's name.
+- Connecting a personal GitHub account is now optional. A member who never does
+  still sees the repository widgets.
+
+### Fixed
+
+- All three sources declared `requires: { all_of: ["workspace", "account"] }`,
+  so every widget refused with `CONNECTION_REQUIRED` until each member had
+  personally authorized — including the two that show identical numbers to
+  everyone.
+
 ## [0.2.0]
 
 The app talked about its installs without ever asking about them. It now holds

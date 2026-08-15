@@ -1,37 +1,51 @@
 /**
  * What this app answers when Initiative asks for a data source.
  *
- * Two rules a source has to keep, and both are visible here:
+ * **Scope each source to the narrowest thing that answers it**, and let the
+ * manifest say which. Two of these are guild-scoped: how many issues are open,
+ * and how the last fortnight went, are one answer for the whole guild. They run
+ * on the guild's shared read access, so nobody hands over a personal account to
+ * see a number — and because they name no per-member connection, the platform
+ * caches each once per guild rather than once per member.
  *
- * **Answer for the caller, not for the app.** The context token carries the
- * `connection_refs` for this call; the credential used is the one behind the
- * handle. A source that answered from some app-wide token would show every
- * member the same thing, and would show them things they cannot see at the
- * vendor — the platform cannot check that for you.
+ * The third is per member and could not be anything else: "waiting on my
+ * review" has no meaning without a me. It runs on the credential behind the
+ * handle the context token carries, so it shows that member exactly what they
+ * can see at GitHub and nothing they cannot.
+ *
+ * Getting this backwards is the easy mistake, and it hides well — answering a
+ * shared question from the caller's own token returns the right number, while
+ * quietly requiring every member to connect and turning one upstream call into
+ * one per person.
  *
  * **Return only what the widget draws.** A source's response is handed to a
- * sandboxed widget module and cached per guild. Sending the vendor's whole
- * payload would put data nobody renders into a cache and into a browser.
+ * sandboxed widget module and cached. Sending the vendor's whole payload would
+ * put data nobody renders into a cache and into a browser.
  */
 
 import { config } from "../config.js";
 import type { ContextClaims } from "initiative-app-kit";
 
 import { credentialFor } from "./oauth.js";
+import { sharedAccessFor } from "./shared-access.js";
 import { workspaceFor } from "./workspace.js";
 
-/** What a source returns when the member has not connected their account. */
+/** What a per-member source returns when that member has not connected. */
 const NOT_CONNECTED = { unavailable: "not-connected" } as const;
+
+/** What any source returns when the guild's own setup is incomplete. */
+const NOT_CONFIGURED = { unavailable: "not-configured" } as const;
 
 export async function openIssues(
   claims: ContextClaims,
   params: URLSearchParams
 ): Promise<Record<string, unknown>> {
-  const account = await credentialFor(claims.connection_refs?.account);
-  if (!account) return NOT_CONNECTED;
+  // Guild-scoped: the guild's own access, not the caller's.
+  const token = sharedAccessFor(claims.app_install_id);
+  if (!token) return NOT_CONFIGURED;
 
   const workspace = await workspaceFor(claims.app_install_id);
-  if (!workspace) return { unavailable: "not-configured" };
+  if (!workspace) return NOT_CONFIGURED;
 
   const query = new URLSearchParams({
     state: "open",
@@ -44,7 +58,7 @@ export async function openIssues(
     `${config.github.apiBase}/repos/${workspace.owner}/${workspace.repo}/issues?${query}`,
     {
       headers: {
-        Authorization: `Bearer ${account.accessToken}`,
+        Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
       },
     }
@@ -62,11 +76,13 @@ export async function openIssues(
 export async function reviewQueue(
   claims: ContextClaims
 ): Promise<Record<string, unknown>> {
+  // Per member: `review-requested:@me` resolves against whoever's credential
+  // this is, so this is the one source that has to be the caller's.
   const account = await credentialFor(claims.connection_refs?.account);
   if (!account) return NOT_CONNECTED;
 
   const workspace = await workspaceFor(claims.app_install_id);
-  if (!workspace) return { unavailable: "not-configured" };
+  if (!workspace) return NOT_CONFIGURED;
 
   const response = await fetch(
     `${config.github.apiBase}/search/issues?q=` +
@@ -102,11 +118,14 @@ export async function reviewQueue(
 export async function issueThroughput(
   claims: ContextClaims
 ): Promise<Record<string, unknown>> {
-  const account = await credentialFor(claims.connection_refs?.account);
-  if (!account) return NOT_CONNECTED;
+  // Guild-scoped: a fortnight of the repository's activity is the same answer
+  // for everybody, and this is the heaviest call this app makes — so it runs
+  // once per guild per TTL rather than once per member.
+  const token = sharedAccessFor(claims.app_install_id);
+  if (!token) return NOT_CONFIGURED;
 
   const workspace = await workspaceFor(claims.app_install_id);
-  if (!workspace) return { unavailable: "not-configured" };
+  if (!workspace) return NOT_CONFIGURED;
 
   const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
   const response = await fetch(
@@ -114,7 +133,7 @@ export async function issueThroughput(
       `/issues?state=all&per_page=100&since=${encodeURIComponent(since)}`,
     {
       headers: {
-        Authorization: `Bearer ${account.accessToken}`,
+        Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
       },
     }

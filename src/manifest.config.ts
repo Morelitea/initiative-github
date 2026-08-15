@@ -34,9 +34,14 @@ export const manifest: Manifest = {
 
   connections: [
     {
-      // GitHub authorizes a *person*, so each member connects their own
-      // account and the app holds one credential per person rather than one
-      // for the whole guild. Installing never waits for anybody to do this.
+      // The member's own GitHub account, for the two things that are about
+      // them specifically: which pull requests are waiting on their review,
+      // and opening an issue as themselves. Everything a whole guild sees the
+      // same answer to runs on `shared_account` below instead, so connecting
+      // this is optional and nobody is asked for it to read a number.
+      //
+      // GitHub authorizes a *person*, so the app holds one credential per
+      // person. Installing never waits for anybody to do this.
       id: "account",
       scope: "interactive",
       label: {
@@ -93,6 +98,43 @@ export const manifest: Manifest = {
         },
       ],
     },
+    {
+      // The guild's own read access, approved once by an admin and used for
+      // everyone. What it buys is that the repository's numbers — how many
+      // issues are open, how the last fortnight went — are the same answer for
+      // every member, so nobody should have to hand over a personal account to
+      // see one. The platform caches a source that names no per-member
+      // connection once per guild, so this is also one upstream call rather
+      // than one per person.
+      id: "shared_account",
+      scope: "static",
+      label: {
+        en: "Shared read access",
+        de: "Gemeinsamer Lesezugriff",
+        es: "Acceso de lectura compartido",
+        fr: "Accès en lecture partagé",
+      },
+      fields: [
+        {
+          key: "token",
+          type: "secret",
+          required: true,
+          label: {
+            en: "GitHub token with read access to the repository",
+            de: "GitHub-Token mit Lesezugriff auf das Repository",
+            es: "Token de GitHub con acceso de lectura al repositorio",
+            fr: "Jeton GitHub avec accès en lecture au dépôt",
+          },
+        },
+      ],
+      access_hint: {
+        api: "GitHub",
+        // A fine-grained token restricted to this repository, with `Issues:
+        // read` and nothing else, is enough for everything this connection is
+        // used for. Said here so an admin sees it before minting one.
+        scopes: ["issues:read"],
+      },
+    },
   ],
 
   data_sources: [
@@ -110,14 +152,21 @@ export const manifest: Manifest = {
           label: { en: "Label", de: "Label", es: "Etiqueta", fr: "Étiquette" },
         },
       ],
-      // Both: the guild says which repository, the member says who is asking.
-      requires: { all_of: ["workspace", "account"] },
+      // Guild-scoped, and this is the choice worth copying. How many issues
+      // are open is one answer for the whole guild, so it runs on the guild's
+      // own access and nobody has to connect a personal account to see it.
+      // Naming no per-member connection is also what lets the platform cache
+      // it once per guild instead of once per member.
+      requires: { all_of: ["workspace", "shared_account"] },
     },
     {
       id: "review-queue",
       path: "/data/review-queue",
       visibility: "member",
       cache_ttl_seconds: 60,
+      // Per member, and it could not be anything else: "waiting on me" has no
+      // meaning without a me. This is the one source that needs the member's
+      // own account, and the only reason this app asks for one.
       requires: { all_of: ["workspace", "account"] },
     },
     {
@@ -127,7 +176,10 @@ export const manifest: Manifest = {
       // Five minutes: a fortnight of daily counts does not change by the second,
       // and this is the most expensive call this app makes.
       cache_ttl_seconds: 300,
-      requires: { all_of: ["workspace", "account"] },
+      // Guild-scoped for the same reason as the issue count, and it matters
+      // more here: this is the heaviest call, and it now runs once per guild
+      // per five minutes rather than once per member.
+      requires: { all_of: ["workspace", "shared_account"] },
     },
   ],
 
