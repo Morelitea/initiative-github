@@ -29,10 +29,21 @@ the same for the whole guild.
 
 ### Fixed
 
+- The well-known document now carries the envelope a registrar requires, so the
+  app registers at all. Nothing it declares has changed. Released as 0.2.1.
 - All three sources declared `requires: { all_of: ["workspace", "account"] }`,
   so every widget refused with `CONNECTION_REQUIRED` until each member had
   personally authorized — including the two that show identical numbers to
   everyone.
+
+## [0.2.1]
+
+The same fix as above, on top of 0.2.0, so an app that could not be registered
+did not have to wait for the next feature.
+
+### Fixed
+
+- The well-known document now carries the envelope a registrar requires.
 
 ## [0.2.0]
 
