@@ -1,6 +1,6 @@
 {
   "name": "initiative-github",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "The reference Initiative app: GitHub issues and reviews, as dashboard widgets and automation nodes.",
   "license": "MIT",

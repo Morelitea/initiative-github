@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.1]
+
+This app could not be registered. It served its manifest bare at the well-known
+path, and a deployment refuses that — the manifest is the `definition` inside a
+document that also names the app and the protocol it speaks.
+
+### Fixed
+
+- The well-known document now carries the envelope a registrar requires, so the
+  app registers. Nothing it declares has changed.
+- The build refuses to write a manifest that could not be registered, rather
+  than only one that would not validate. That is the check that missed this.
+
 ## [0.2.0]
 
 The app talked about its installs without ever asking about them. It now holds
