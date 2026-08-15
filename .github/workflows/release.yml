@@ -1,5 +1,12 @@
 name: Release
 
+# Cutting a release is one deliberate action: pushing a `vX.Y.Z` tag. Nothing a
+# push to `main` can do stages or triggers one, which is why the version is not
+# written down anywhere on `main` — the tag IS the version, and it is passed
+# through to the image below. A file carrying the next version instead means an
+# ordinary feature commit can bump the release, and a reader cannot tell what is
+# released from what is merely staged.
+
 on:
   push:
     tags: ["v*"]
@@ -14,12 +21,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check the tag matches VERSION
+      # The tag is the version, so the only thing to check is that it is one.
+      # A mistyped tag would otherwise publish an image nothing can resolve and
+      # move `latest` to it.
+      - name: Check the tag is a version
         run: |
           TAG="${GITHUB_REF_NAME#v}"
-          FILE="$(cat VERSION)"
-          if [ "$TAG" != "$FILE" ]; then
-            echo "tag $TAG does not match VERSION ($FILE)" >&2
+          if ! printf '%s' "$TAG" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "tag ${GITHUB_REF_NAME} is not vMAJOR.MINOR.PATCH" >&2
             exit 1
           fi
 
