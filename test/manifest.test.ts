@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { validateManifest } from "initiative-app-kit";
+import { appDocument, validateDocument, validateManifest } from "initiative-app-kit";
 
 import { PUBLIC_ID, manifest } from "../src/manifest.config.js";
 
@@ -34,6 +34,20 @@ const automation = () =>
 describe("the manifest", () => {
   it("has nothing the kit can object to", () => {
     expect(validateManifest(manifest)).toEqual([]);
+  });
+
+  it("is servable as the document a registrar fetches", () => {
+    // The assertion above passes for a manifest that cannot be registered at
+    // all: a registrar never fetches a bare `Manifest`, it fetches the envelope
+    // around it. This app served the bare one and was unregisterable, with
+    // nothing on either side saying so — hence both checks, not one.
+    const document = appDocument(manifest);
+
+    expect(validateDocument(document)).toEqual([]);
+    expect(document.protocol_version).toBe(1);
+    expect(document.public_id).toBe(PUBLIC_ID);
+    expect(document.kind).toBe("app");
+    expect(document.definition).toBe(manifest);
   });
 
   it("names every route as a path, never an address", () => {
