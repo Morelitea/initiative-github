@@ -22,6 +22,21 @@ import type { Manifest } from "initiative-app-kit";
 /** Namespaces everything this app publishes: widgets, events, automation nodes. */
 export const PUBLIC_ID = "morelitea.github";
 
+/**
+ * What is *not* here, and where it goes.
+ *
+ * This file is the `definition` — what the app declares. The document served at
+ * `/.well-known/initiative-app.json` wraps it with the identity a registration
+ * is matched by, built by `appDocument` in `server.ts`. A `Manifest` served bare
+ * is well-formed and unregisterable, which is worth knowing before you write
+ * the route.
+ *
+ * The envelope also carries the catalog `uid` — publisher-assigned, immutable,
+ * the id that ties a verified registration to its listing. This app passes none,
+ * so it registers and names no listing: fine for a reference nobody installs
+ * from a catalog, and the one thing to change first if you publish yours.
+ */
+
 export const manifest: Manifest = {
   app_kind: "service",
   service: { public_id: PUBLIC_ID, protocol: 1 },

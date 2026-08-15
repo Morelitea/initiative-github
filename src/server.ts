@@ -31,6 +31,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import {
   JwksCache,
   answerChallenge,
+  appDocument,
   bearerToken,
   verifyContextToken,
   type ContextClaims,
@@ -74,13 +75,26 @@ async function readBody(req: IncomingMessage): Promise<Buffer> {
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body);
+  sendBytes(res, status, JSON.stringify(body));
+}
+
+/** For a body whose exact bytes matter — see MANIFEST_DOCUMENT. */
+function sendBytes(res: ServerResponse, status: number, payload: string): void {
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(payload),
   });
   res.end(payload);
 }
+
+/**
+ * The discovery document, rendered once.
+ *
+ * `manifest` is the `definition` inside it, not the whole of what a registrar
+ * fetches. Serving it bare is well-formed and unregisterable, which is the one
+ * mistake this file is worth reading for.
+ */
+const MANIFEST_DOCUMENT = JSON.stringify(appDocument(manifest));
 
 
 /** The one HTML this app serves: the page a member lands on after the vendor flow. */
@@ -155,8 +169,13 @@ export const server = createServer(async (req, res) => {
     }
 
     // --- the manifest ------------------------------------------------------
+    // The DOCUMENT, not the bare manifest: a registrar refuses anything without
+    // the envelope, and `manifest` is only its `definition`. Rendered once at
+    // module load, because a deployment hashes what it fetches and re-checks it
+    // hourly — two renderings that differ by a space read as the app having
+    // changed and send the registration back for re-verification.
     if (req.method === "GET" && path === "/.well-known/initiative-app.json") {
-      return send(res, 200, manifest);
+      return sendBytes(res, 200, MANIFEST_DOCUMENT);
     }
 
     // --- the handshake -----------------------------------------------------
