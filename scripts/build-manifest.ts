@@ -8,15 +8,16 @@
  */
 
 import { writeFileSync } from "node:fs";
-import { appDocument, validateDocument } from "initiative-app-kit";
+import { validateDocument } from "initiative-app-kit";
 
-import { manifest } from "../src/manifest.config.js";
+import { document } from "../src/listing.config.js";
 
-// The DOCUMENT, which is what a registrar fetches — `manifest` is its
+// The DOCUMENT, which is what a registrar fetches — the manifest is its
 // `definition`. Validating the manifest alone would pass a file that cannot be
 // registered, which is the failure this script exists to make impossible.
-const document = appDocument(manifest);
-
+//
+// Taken from `listing.config.ts` so the catalog uid it carries is the one the
+// listings publish under, and so the server serves this same object.
 const problems = validateDocument(document);
 if (problems.length > 0) {
   for (const problem of problems) {

@@ -1,5 +1,30 @@
 # Changelog
 
+## [Unreleased]
+
+The app was registered, live, healthy — and could not be installed by anybody,
+because it shipped no marketplace listing and nothing derives one from a served
+manifest.
+
+### Added
+
+- Two catalog listings, built from the manifest by `npm run catalog` and
+  attached to each release: the app itself, and **GitHub overview**, a companion
+  dashboard shipping a ready-made arrangement of this app's three widgets. An
+  operator publishes both by dropping them into their catalog directory.
+- A catalog `uid`, carried by the served document as well as by the listings.
+  Without one a registration verifies and names nothing, and a mandatory install
+  is skipped as "has not verified yet".
+
+### Fixed
+
+- The served document carried no `uid`, so nothing tied the verified
+  registration to a listing even once one existed.
+
+### Changed
+
+- Requires `initiative-app-kit` 0.4, for `appListing` and `dashboardListing`.
+
 ## [0.3.0]
 
 Scoping. Every source now runs at the narrowest level that answers it, rather

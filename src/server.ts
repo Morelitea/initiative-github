@@ -31,7 +31,6 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import {
   JwksCache,
   answerChallenge,
-  appDocument,
   bearerToken,
   verifyContextToken,
   type ContextClaims,
@@ -39,6 +38,7 @@ import {
 
 import { config } from "./config.js";
 import { close, migrate, pool } from "./db.js";
+import { document } from "./listing.config.js";
 import { manifest } from "./manifest.config.js";
 import { createIssue } from "./github/actions.js";
 import { issueThroughput, openIssues, reviewQueue } from "./github/queries.js";
@@ -93,8 +93,12 @@ function sendBytes(res: ServerResponse, status: number, payload: string): void {
  * `manifest` is the `definition` inside it, not the whole of what a registrar
  * fetches. Serving it bare is well-formed and unregisterable, which is the one
  * mistake this file is worth reading for.
+ *
+ * Built in `listing.config.ts` because the catalog uid it carries is the same
+ * one the listings publish under — that is what ties a verified registration to
+ * something a guild can install.
  */
-const MANIFEST_DOCUMENT = JSON.stringify(appDocument(manifest));
+const MANIFEST_DOCUMENT = JSON.stringify(document);
 
 
 /** The one HTML this app serves: the page a member lands on after the vendor flow. */

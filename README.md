@@ -18,6 +18,7 @@ It exercises the widest slice of the protocol on purpose:
 |---|---|
 | **Per-member connections** | GitHub authorizes a *person*, so each member connects their own account and the app holds one credential per person. Installing never waits for anyone to do it. |
 | **Guild-scoped connections** | Which repository the guild cares about, and the read access the whole guild shares — both filled in once by an admin. |
+| **Marketplace listings** | Two: the app itself, and a companion dashboard shipping a ready-made arrangement of its widgets. Built from the manifest, so neither can describe an app that no longer exists. |
 | **Two tiers of scope** | Every source is answered at the narrowest level that answers it: the repository's numbers from the guild's own access, one person's review queue from their own account. |
 | **Data sources** | Answered per caller, from that member's own credential, returning only what the widget draws. |
 | **Widgets** | A sandboxed browser module handed its sources' data, returning a scene. |
@@ -31,6 +32,25 @@ It exercises the widest slice of the protocol on purpose:
 Initiative's own surfaces — dashboard widgets and automation nodes — rather than
 in an iframe holding a second UI. An embed is for an app whose product *is* a
 page; an integration is better delivered as parts.
+
+**Serving a manifest is not being installable.** They are separate files with
+separate audiences: the document at `/.well-known/initiative-app.json` is what a
+*registrar* fetches to verify a container an operator already decided to run, and
+a **listing** is what a guild admin browses and installs. Nothing derives one
+from the other. This app shipped a release with no listing — registered, live,
+healthy, and impossible for anyone to add.
+
+```
+src/listing.config.ts   →  catalog/morelitea.github.json            (the app)
+                        →  catalog/morelitea.github-overview.json   (a dashboard)
+```
+
+**A companion listing ships a dashboard with the app.** The second file is a
+`kind: "dashboard"` entry in the same marketplace: a ready-made arrangement of
+this app's own three widgets, so a guild that installs both has something to look
+at without assembling it. It carries no code — a layout naming widget types the
+app's pinned definition already declares — and the only thing tying the two
+together is the catalog uid.
 
 **Scope each source to the narrowest thing that answers it.** How many issues
 are open is one answer for the whole guild, so it runs on the guild's shared
@@ -91,6 +111,7 @@ manifest.config.ts      the manifest, authored in TypeScript and built to JSON
 src/
   server.ts             every protocol route, in one readable file
   config.ts             what the operator supplies
+  listing.config.ts     what this app publishes — the app, and a dashboard
   initiative.ts         the one client for calling Initiative
   sync.ts               keeping this app's picture of its installs true
   github/
@@ -102,11 +123,32 @@ src/
     shared-access.ts    the guild's credential, held only while it is lent
 scripts/
   build-manifest.ts     validates, then writes manifest.json
+  build-listing.ts      validates, then writes catalog/*.json
 test/manifest.test.ts   the test to copy into your own app
+test/listing.test.ts    the listings stay tied to the manifest they publish
 test/webhooks.test.ts   the signature, the translation, and their agreement
 test/delivery.test.ts   repository back to guild — needs a database
 test/shared-access.test.ts  clearing the guild's credential actually stops it
 ```
+
+## Publishing it
+
+The catalog files are **built, not committed** — the tag is the version here, so
+a listing carrying one on `main` would let an ordinary commit stage a release.
+Each release attaches them; an operator publishes this app by dropping them into
+the directory their `MARKETPLACE_EXTRA_CATALOG_DIR` points at. No fork, no pull
+request, no release of Initiative. Removing a file withdraws the listing, and
+guilds that installed it keep what they have.
+
+```bash
+npm run catalog                        # catalog/*.json at 0.0.0-dev
+LISTING_VERSION=1.2.3 npm run catalog  # what the release does
+```
+
+The `uid` in [`src/listing.config.ts`](src/listing.config.ts) is
+publisher-assigned, immutable and never reused. It is what ties the verified
+registration to the listing, and what ties the companion dashboard's widgets to
+this app. Mint your own with `npx initiative-app uid`; do not reuse these.
 
 ## Running it
 

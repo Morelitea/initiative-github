@@ -32,6 +32,11 @@ jobs:
       # The manifest has to build, which validates it — a manifest a deployment
       # would refuse should never reach a commit.
       - run: npm run manifest
+      # And so do the listings. An invalid one is *skipped* during a catalog
+      # rescan and named in a log nobody is reading, which leaves the app
+      # registered, healthy and absent from the marketplace. This is the last
+      # place that is loud.
+      - run: npm run catalog
 
   image:
     name: Image builds

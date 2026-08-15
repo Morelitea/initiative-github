@@ -14,7 +14,8 @@
     "dev": "tsx watch src/server.ts",
     "manifest": "tsx scripts/build-manifest.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "catalog": "tsx scripts/build-listing.ts"
   },
   "dependencies": {
     "@types/pg": "^8.21.0",
