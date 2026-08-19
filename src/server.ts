@@ -10,8 +10,10 @@
  *   same secret, and so does this app. Neither sends it.
  * - **`/data/*` and `/actions/*`** — Initiative calling in, carrying a context
  *   token naming one guild, one install and one scope. Verified per call.
- * - **`/connect/*`** — a person's browser, running the vendor's flow. The one
- *   page this app serves; it mounts no embedded surface of its own.
+ * - **`/connect/*`, `/install/*`, `/setup/*`** — a person's browser, running
+ *   the vendor's flow. Three plain pages and no embedded surface: a member
+ *   connecting their own account, an org owner installing the GitHub App, and
+ *   where GitHub returns them afterwards.
  * - **`/webhooks/github`** — the *vendor* calling in, verified against GitHub's
  *   own webhook secret rather than against Initiative's. This is the trigger
  *   half of the automation surface: a delivery here becomes an event in every
@@ -40,9 +42,18 @@ import { config } from "./config.js";
 import { close, migrate, pool } from "./db.js";
 import { document } from "./listing.config.js";
 import { manifest } from "./manifest.config.js";
+import { page } from "./page.js";
+import {
+  CALLBACK_PATH,
+  CONNECT_PATH,
+  INSTALL_PATH,
+  SETUP_PATH,
+  WEBHOOK_PATH,
+} from "./routes.js";
 import { createIssue } from "./github/actions.js";
 import { issueThroughput, openIssues, reviewQueue } from "./github/queries.js";
-import { beginOAuth, completeOAuth } from "./github/oauth.js";
+import { installUrl } from "./github/app.js";
+import { beginInstall, beginOAuth, completeOAuth } from "./github/oauth.js";
 import {
   DELIVERY_HEADER,
   EVENT_HEADER,
@@ -101,7 +112,6 @@ function sendBytes(res: ServerResponse, status: number, payload: string): void {
 const MANIFEST_DOCUMENT = JSON.stringify(document);
 
 
-/** The one HTML this app serves: the page a member lands on after the vendor flow. */
 function sendPage(res: ServerResponse, html: string): void {
   res.writeHead(200, {
     "Content-Type": "text/html; charset=utf-8",
@@ -248,7 +258,7 @@ export const server = createServer(async (req, res) => {
     }
 
     // --- the member's own vendor flow --------------------------------------
-    if (req.method === "GET" && path === "/connect/github") {
+    if (req.method === "GET" && path === CONNECT_PATH) {
       // The platform sends the member here with the opaque handle it minted for
       // them. It is the only name this app ever learns for that person.
       const connectionRef = url.searchParams.get("connection_ref");
@@ -258,13 +268,53 @@ export const server = createServer(async (req, res) => {
       return res.end();
     }
 
-    if (req.method === "GET" && path === "/connect/github/callback") {
+    if (req.method === "GET" && path === CALLBACK_PATH) {
       const html = await completeOAuth(url.searchParams);
       return sendPage(res, html);
     }
 
+    // --- installing the GitHub App -----------------------------------------
+    // The other half of setting this app up, and the half Initiative has no
+    // vocabulary for: a guild admin fills in the repository there, and somebody
+    // who owns that organization installs the app here. Served as a redirect so
+    // there is one link to hand out — the app's own address rather than a
+    // GitHub URL nobody can reconstruct from the slug.
+    if (req.method === "GET" && path === INSTALL_PATH) {
+      // With a handle, installing and authorizing are one trip and the member
+      // comes back connected. Without one, it is just the install page.
+      const connectionRef = url.searchParams.get("connection_ref");
+      const redirect = connectionRef
+        ? await beginInstall(connectionRef)
+        : await installUrl();
+      if (!redirect) {
+        // GitHub would not say what this app is called, which means the private
+        // key is wrong or absent. Nothing here can recover from that.
+        return send(res, 503, { error: "this app is not registered at GitHub" });
+      }
+      res.writeHead(302, { Location: redirect });
+      return res.end();
+    }
+
+    // Where GitHub returns an org owner after they install. It deliberately
+    // shows nothing about the installation it was handed: the redirect carries
+    // an `installation_id` and no proof of anything, so a page that looked it
+    // up would report one organization's repositories to whoever guessed a
+    // number. What the visitor needs is the next step, and that is the same
+    // sentence for everybody.
+    if (req.method === "GET" && path === SETUP_PATH) {
+      return sendPage(
+        res,
+        page(
+          "Installed",
+          "Now open this app's settings in Initiative and set the owner and " +
+            "repository you want it to watch. If you already have, it will " +
+            "start working within a few minutes."
+        )
+      );
+    }
+
     // --- the vendor calling in ---------------------------------------------
-    if (req.method === "POST" && path === "/webhooks/github") {
+    if (req.method === "POST" && path === WEBHOOK_PATH) {
       // Read as bytes and verified before anything parses them: a signature is
       // over what arrived, and a re-serialized object is different bytes.
       const body = await readBody(req);
@@ -294,7 +344,10 @@ export const server = createServer(async (req, res) => {
           `delivery ${header(req, DELIVERY_HEADER) ?? "?"} (${event}): ${result.reason}`
         );
       }
-      return send(res, 200, { emitted: result.emitted });
+      return send(res, 200, {
+        emitted: result.emitted,
+        ...(result.resynced === undefined ? {} : { resynced: result.resynced }),
+      });
     }
 
     return send(res, 404, { error: "no such route" });

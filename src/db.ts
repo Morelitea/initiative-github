@@ -6,14 +6,18 @@
  *
  * - **`connections`** — a member's credential at GitHub. In memory, every
  *   restart silently disconnects everybody, and they would have no way to tell
- *   except that things stopped working.
+ *   except that things stopped working. A GitHub App's user token expires in
+ *   eight hours and is renewed with a refresh token that lasts six months, so
+ *   what is kept here is a rotating pair rather than one durable secret.
  * - **`oauth_states`** — the in-flight vendor handshake. This is the one that
  *   breaks first: the browser is redirected to GitHub by one replica and comes
  *   back to whichever replica the load balancer picks, so a map makes the flow
- *   fail roughly (n-1)/n of the time behind more than one pod.
+ *   fail roughly (n-1)/n of the time behind more than one pod. It also holds
+ *   the PKCE verifier, which by construction must never travel with the browser.
  * - **`workspaces`** — an install's configuration, refreshed from the platform
- *   on the lifecycle signal. Cheap to refetch but not free, and losing it makes
- *   every source answer "not configured" until something re-pulls.
+ *   on the lifecycle signal, plus the GitHub installation this app found for it.
+ *   Cheap to refetch but not free, and losing it makes every source answer
+ *   "not configured" until something re-pulls.
  *
  * The schema is applied idempotently at boot rather than through a migration
  * tool. Two tables of this shape do not earn the dependency, and an app is
@@ -41,11 +45,22 @@ const SCHEMA = [
      created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
      updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
    )`,
+  // A GitHub App's user token is short-lived and renewable, which an OAuth
+  // app's was not. Added as their own statements rather than written into the
+  // CREATE above — that is the rule this list keeps, so a deployment that
+  // already ran gets them too.
+  `ALTER TABLE connections ADD COLUMN IF NOT EXISTS refresh_token TEXT`,
+  `ALTER TABLE connections ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`,
+  `ALTER TABLE connections ADD COLUMN IF NOT EXISTS refresh_expires_at TIMESTAMPTZ`,
   `CREATE TABLE IF NOT EXISTS oauth_states (
      state          TEXT PRIMARY KEY,
      connection_ref TEXT NOT NULL,
      expires_at     TIMESTAMPTZ NOT NULL
    )`,
+  // The PKCE verifier. It stays on this side of the handshake by definition —
+  // only its hash is sent to GitHub — so an intercepted callback is worth
+  // nothing without the row.
+  `ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS code_verifier TEXT`,
   // Expired states are swept on use rather than by a job: the table is small,
   // and a sweep that runs only when somebody connects cannot fall behind in a
   // way that matters.
@@ -61,6 +76,10 @@ const SCHEMA = [
   // statement rather than written into the CREATE above — that is the rule
   // this list keeps, so a deployment that already ran gets it too.
   `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS guild_id BIGINT`,
+  // Which GitHub installation covers this install's repository. Discovered
+  // rather than typed, and held here so a restart does not have to ask GitHub
+  // again before it can answer anything.
+  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS installation_id BIGINT`,
   // A delivery names a repository, which is the direction this is read in.
   `CREATE INDEX IF NOT EXISTS workspaces_repo
      ON workspaces (lower(owner), lower(repo))`,

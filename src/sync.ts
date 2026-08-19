@@ -1,23 +1,30 @@
 /**
- * Keeping this app's picture of its installs true.
+ * Keeping this app's picture of its installs true — on both sides.
  *
- * An app is told about installs in two ways, and it needs both:
+ * This app is installed twice by two different people, and neither knows about
+ * the other. A guild admin installs it in Initiative and says which repository
+ * they care about; an organization owner installs the GitHub App at GitHub and
+ * says which repositories it may see. Nothing joins those up except this file,
+ * and until they agree there is nothing to answer with.
  *
- * - **The lifecycle signal** is the fast path. Initiative posts to
- *   `/v1/lifecycle` when an install is created, reconfigured, or removed, and
- *   this refetches that one install.
- * - **The poll** is the floor under it. A signal that arrives while this app is
- *   restarting is simply gone — nothing retries it — so an install configured
- *   during a deploy would stay unconfigured until somebody touched it again.
+ * So there are three ways this app learns something changed, and it needs all
+ * three:
  *
- * What it pulls is the guild-wide half of the configuration: which repository
- * the guild cares about. That is also what makes the *inbound* direction
- * possible at all — a GitHub delivery names a repository and nothing else, so
- * without this table there is no way back to a guild to emit into.
+ * - **The lifecycle signal** is the fast path on the Initiative side.
+ *   Initiative posts to `/v1/lifecycle` when an install is created,
+ *   reconfigured, or removed, and this refetches that one install.
+ * - **The webhook** is the fast path on the GitHub side. An `installation`
+ *   delivery is an org adding or removing the app, and it arrives in seconds.
+ * - **The poll** is the floor under both. A signal that arrives while this app
+ *   is restarting is simply gone — nothing retries it — and the two sides can
+ *   be put right in either order by two people who never speak, so an install
+ *   that was `invalid` at 10:00 because nobody had installed the GitHub App
+ *   becomes `ok` on the next pull rather than when somebody touches the form.
  *
  * Reporting the verdict matters as much as reading the values. An admin who
- * typed a repository this app cannot see gets `invalid` beside the install
- * rather than three widgets that quietly say "unavailable" with no cause.
+ * typed a repository this app cannot see gets `invalid` beside the install with
+ * a reason, rather than three widgets that quietly say "unavailable" with no
+ * cause and no clue whose problem it is.
  */
 
 import { ChannelError, type InstallConfig } from "initiative-app-kit";
@@ -25,14 +32,16 @@ import { ChannelError, type InstallConfig } from "initiative-app-kit";
 import { config } from "./config.js";
 import { initiative } from "./initiative.js";
 import {
-  forgetSharedAccess,
-  forgetSharedAccessExcept,
-  rememberSharedAccess,
-} from "./github/shared-access.js";
+  forgetInstallation,
+  forgetInstallationsExcept,
+  installationForRepo,
+} from "./github/app.js";
 import {
   forgetInstallsExcept,
   forgetWorkspace,
+  knownInstallations,
   rememberWorkspace,
+  workspaceFor,
 } from "./github/workspace.js";
 
 /** What a `static` connection's values look like once an admin has filled it in. */
@@ -50,33 +59,19 @@ function readWorkspace(
   return { owner, repo };
 }
 
-/** The guild's shared read token, if an admin has supplied one. */
-function readSharedAccess(installConfig: InstallConfig): string | null {
-  const token = installConfig.connections.shared_account?.token;
-  return typeof token === "string" && token.trim() ? token.trim() : null;
-}
-
 /**
- * Pull one install's configuration and record it.
+ * Pull one install's configuration, find its installation, and record both.
  *
  * Returns whether this app now considers the install usable, which is also
  * what it reports back.
  */
 export async function syncInstall(guildId: number): Promise<boolean> {
   const installConfig = await initiative.config(guildId);
-
-  // Held first and unconditionally, so clearing the field in Initiative drops
-  // it here on the very next pull rather than only when something else changes.
-  const sharedAccess = readSharedAccess(installConfig);
-  if (sharedAccess) {
-    rememberSharedAccess(installConfig.install_id, sharedAccess);
-  } else {
-    forgetSharedAccess(installConfig.install_id);
-  }
+  const installId = installConfig.install_id;
 
   const workspace = readWorkspace(installConfig);
   if (!workspace) {
-    await forgetWorkspace(installConfig.install_id);
+    await forgetInstall(installId);
     // `needs_config` already says an admin has not finished; saying `invalid`
     // as well would report a problem where there is only an unfinished form.
     if (!installConfig.needs_config) {
@@ -88,14 +83,36 @@ export async function syncInstall(guildId: number): Promise<boolean> {
     return false;
   }
 
-  await rememberWorkspace(installConfig.install_id, guildId, workspace);
+  // Asked every time rather than trusted from last time. An organization can
+  // narrow an installation to fewer repositories without uninstalling it, and
+  // that is invisible from every other angle — the token keeps minting and the
+  // calls start coming back empty.
+  const installationId = await installationForRepo(workspace.owner, workspace.repo);
+  await rememberWorkspace(installId, guildId, workspace, installationId);
+
+  if (installationId === null) {
+    // The form is filled in and the app is not installed where it points. That
+    // is somebody else's move to make — an organization owner, at GitHub — so
+    // it is reported as a distinct reason rather than as "not configured".
+    await initiative.reportStatus(guildId, {
+      state: "invalid",
+      detail: "github_app_not_installed",
+    });
+    return false;
+  }
+
   await initiative.reportStatus(guildId, { state: "ok" });
   return true;
 }
 
 /** Forget an install this app has been removed from. */
 export async function forgetInstall(installId: number): Promise<void> {
-  forgetSharedAccess(installId);
+  // Read before the row goes, so the held token can go with it rather than
+  // sitting in memory answering for a guild that is no longer asking.
+  const workspace = await workspaceFor(installId);
+  if (workspace?.installationId !== null && workspace?.installationId !== undefined) {
+    forgetInstallation(workspace.installationId);
+  }
   await forgetWorkspace(installId);
 }
 
@@ -114,8 +131,7 @@ export async function syncAllInstalls(): Promise<void> {
     if (!install.enabled) {
       // Switched off is not uninstalled: the configuration is still the
       // guild's, and this app simply stops acting on it.
-      forgetSharedAccess(install.install_id);
-      await forgetWorkspace(install.install_id);
+      await forgetInstall(install.install_id);
       continue;
     }
     try {
@@ -128,10 +144,13 @@ export async function syncAllInstalls(): Promise<void> {
     }
   }
 
-  const present = installs.map((i) => i.install_id);
-  forgetSharedAccessExcept(present);
+  const present = installs.filter((i) => i.enabled).map((i) => i.install_id);
   const dropped = await forgetInstallsExcept(present);
   if (dropped) console.log(`dropped ${dropped} install(s) this app is no longer in`);
+
+  // Held tokens outlive the rows they were minted for by up to an hour, so the
+  // sweep is what actually ends access rather than expiry doing it eventually.
+  forgetInstallationsExcept(await knownInstallations());
 }
 
 /**

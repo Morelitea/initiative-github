@@ -16,16 +16,24 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 // `vi.mock` is hoisted above every import, so the double has to be built in a
 // hoisted block too — the delivery path must get this rather than a client that
 // would try to reach a platform.
-const { emitEvent } = vi.hoisted(() => ({
+const { emitEvent, syncInstall } = vi.hoisted(() => ({
   emitEvent: vi.fn<(guildId: number, type: string, payload: unknown) => Promise<void>>(
     async () => {}
   ),
+  // An installation delivery re-runs the sync, which would otherwise want a
+  // platform to talk to. What matters here is *which* guilds it names.
+  syncInstall: vi.fn<(guildId: number) => Promise<boolean>>(async () => true),
 }));
 vi.mock("../src/initiative.js", () => ({ initiative: { emitEvent } }));
+vi.mock("../src/sync.js", () => ({ syncInstall }));
 
 import { close, migrate, pool } from "../src/db.js";
 import { EVENTS, handleDelivery } from "../src/github/webhooks.js";
-import { installsWatching, rememberWorkspace } from "../src/github/workspace.js";
+import {
+  installsForInstallation,
+  installsWatching,
+  rememberWorkspace,
+} from "../src/github/workspace.js";
 
 const OPENED = {
   action: "opened",
@@ -42,6 +50,7 @@ beforeEach(async () => {
   await migrate();
   await pool.query("TRUNCATE workspaces");
   emitEvent.mockClear();
+  syncInstall.mockClear();
 });
 
 afterAll(async () => {
@@ -50,7 +59,7 @@ afterAll(async () => {
 
 describe("which installs asked about this repository", () => {
   it("finds the install that named it", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" });
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" }, 9011);
 
     expect(await installsWatching("acme", "widgets")).toEqual([
       { appInstallId: 11, guildId: 500 },
@@ -58,20 +67,20 @@ describe("which installs asked about this repository", () => {
   });
 
   it("matches the way GitHub does, not the way an admin typed it", async () => {
-    await rememberWorkspace(11, 500, { owner: "Acme", repo: "Widgets" });
+    await rememberWorkspace(11, 500, { owner: "Acme", repo: "Widgets" }, 9011);
 
     expect(await installsWatching("acme", "widgets")).toHaveLength(1);
   });
 
   it("finds nobody for a repository no install named", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" });
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" }, 9011);
 
     expect(await installsWatching("acme", "gadgets")).toEqual([]);
   });
 
   it("keeps one row per install as its configuration changes", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" });
-    await rememberWorkspace(11, 500, { owner: "acme", repo: "gadgets" });
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" }, 9011);
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "gadgets" }, 9011);
 
     expect(await installsWatching("acme", "widgets")).toEqual([]);
     expect(await installsWatching("acme", "gadgets")).toHaveLength(1);
@@ -80,7 +89,7 @@ describe("which installs asked about this repository", () => {
 
 describe("where a delivery goes", () => {
   it("emits into the guild watching the repository", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" });
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" }, 9011);
 
     expect(await handleDelivery("issues", OPENED)).toEqual({ emitted: 1 });
     expect(emitEvent).toHaveBeenCalledWith(500, EVENTS.issueOpened, {
@@ -94,15 +103,15 @@ describe("where a delivery goes", () => {
   it("emits into every guild watching it", async () => {
     // Two guilds can both watch one public repository, and each is entitled to
     // its own event — neither knows the other exists.
-    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" });
-    await rememberWorkspace(12, 600, { owner: "acme", repo: "widgets" });
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" }, 9011);
+    await rememberWorkspace(12, 600, { owner: "acme", repo: "widgets" }, 9012);
 
     expect(await handleDelivery("issues", OPENED)).toEqual({ emitted: 2 });
     expect(emitEvent.mock.calls.map((call) => call[0])).toEqual([500, 600]);
   });
 
   it("emits nothing for a repository nobody installed against", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repo: "gadgets" });
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "gadgets" }, 9011);
 
     expect(await handleDelivery("issues", OPENED)).toEqual({
       emitted: 0,
@@ -112,7 +121,7 @@ describe("where a delivery goes", () => {
   });
 
   it("emits nothing for a verb no trigger asked about", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" });
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" }, 9011);
 
     expect(await handleDelivery("issues", { ...OPENED, action: "labeled" })).toEqual({
       emitted: 0,
@@ -124,7 +133,7 @@ describe("where a delivery goes", () => {
   });
 
   it("emits nothing when the payload names no repository", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" });
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" }, 9011);
     const { repository: _dropped, ...noRepo } = OPENED;
 
     expect(await handleDelivery("issues", noRepo)).toEqual({
@@ -137,11 +146,98 @@ describe("where a delivery goes", () => {
     // A guild that disabled the app refuses its event. Retrying the delivery to
     // reach the others would deliver it twice everywhere it already landed, so
     // the failure is counted and stepped over.
-    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" });
-    await rememberWorkspace(12, 600, { owner: "acme", repo: "widgets" });
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" }, 9011);
+    await rememberWorkspace(12, 600, { owner: "acme", repo: "widgets" }, 9012);
     emitEvent.mockRejectedValueOnce(new Error("refused"));
 
     expect(await handleDelivery("issues", OPENED)).toEqual({ emitted: 1 });
     expect(emitEvent).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("which installs this installation answers for", () => {
+  it("finds them by installation, for a delivery naming no repository", async () => {
+    // An `installation` delivery for a removal carries the installation and
+    // nothing else useful, so this is the only way back to a guild.
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" }, 9011);
+
+    expect(await installsForInstallation(9011)).toEqual([
+      { appInstallId: 11, guildId: 500 },
+    ]);
+    expect(await installsForInstallation(9999)).toEqual([]);
+  });
+});
+
+describe("when the relationship changes rather than the repository", () => {
+  /** What GitHub sends when an org removes the app. */
+  const REMOVED = {
+    action: "deleted",
+    installation: { id: 9011 },
+  };
+
+  /** What it sends when an org adds it, before this app has ever seen it. */
+  const ADDED = {
+    action: "created",
+    installation: { id: 7000 },
+    repositories: [{ full_name: "acme/widgets" }],
+  };
+
+  it("emits nothing and re-syncs the installs it answered for", async () => {
+    // Nobody asked to be told that an org owner clicked a button, and no event
+    // in the manifest could carry it. What it changes is whether the app can
+    // answer at all.
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" }, 9011);
+
+    expect(await handleDelivery("installation", REMOVED)).toEqual({
+      emitted: 0,
+      resynced: 1,
+      reason: "installation",
+    });
+    expect(emitEvent).not.toHaveBeenCalled();
+    expect(syncInstall).toHaveBeenCalledWith(500);
+  });
+
+  it("finds the guild by repository when the installation is brand new", async () => {
+    // The guild that has been sitting at `github_app_not_installed` waiting for
+    // exactly this. Its row names no installation yet, so the installation id
+    // finds nothing and the repository is the only handle there is.
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" }, null);
+
+    expect(await handleDelivery("installation", ADDED)).toEqual({
+      emitted: 0,
+      resynced: 1,
+      reason: "installation",
+    });
+    expect(syncInstall).toHaveBeenCalledWith(500);
+  });
+
+  it("re-syncs a guild once when both handles find it", async () => {
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "widgets" }, 7000);
+
+    await handleDelivery("installation", ADDED);
+
+    expect(syncInstall).toHaveBeenCalledTimes(1);
+  });
+
+  it("follows repositories added to an installation that already existed", async () => {
+    await rememberWorkspace(11, 500, { owner: "acme", repo: "gadgets" }, null);
+
+    const result = await handleDelivery("installation_repositories", {
+      action: "added",
+      installation: { id: 7000 },
+      repositories_added: [{ full_name: "acme/gadgets" }],
+    });
+
+    expect(result).toEqual({ emitted: 0, resynced: 1, reason: "installation" });
+    expect(syncInstall).toHaveBeenCalledWith(500);
+  });
+
+  it("says so when the change touches nobody here", async () => {
+    expect(await handleDelivery("installation", ADDED)).toEqual({
+      emitted: 0,
+      resynced: 0,
+      reason: "installation",
+    });
+    expect(syncInstall).not.toHaveBeenCalled();
   });
 });

@@ -13,6 +13,7 @@
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "manifest": "tsx scripts/build-manifest.ts",
+    "github-app": "tsx scripts/build-github-app.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "catalog": "tsx scripts/build-listing.ts"

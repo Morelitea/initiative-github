@@ -37,6 +37,12 @@ jobs:
       # registered, healthy and absent from the marketplace. This is the last
       # place that is loud.
       - run: npm run catalog
+      # And the GitHub App registration. It is the half no deployment checks —
+      # an operator fills it in once from what this prints, and nothing fetches
+      # it afterwards to notice it stopped matching.
+      - run: npm run github-app
+        env:
+          APP_PUBLIC_URL: https://github-app.example.com
 
   image:
     name: Image builds

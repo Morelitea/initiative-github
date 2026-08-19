@@ -122,14 +122,14 @@ describe("who a source is answered for", () => {
     manifest.data_sources?.find((source) => source.id === id);
   const namedBy = (id: string) => sourceById(id)?.requires?.all_of ?? [];
 
-  it("answers a question about the repository from the guild's own access", () => {
-    // The rule this file exists to hold. How many issues are open is one
-    // answer for every member, so asking each of them to hand over a personal
-    // GitHub account to see it would be asking for a credential to do a job
-    // that needs none.
+  it("answers a question about the repository without asking anyone for an account", () => {
+    // The rule this file exists to hold. How many issues are open is one answer
+    // for every member, so asking each of them to hand over a personal GitHub
+    // account to see it would be asking for a credential to do a job that needs
+    // none. It is answered from the organization's installation — which is not
+    // a connection, so it is named by nothing here.
     for (const id of ["open-issues", "issue-throughput"]) {
-      expect(namedBy(id)).toContain("shared_account");
-      expect(namedBy(id)).not.toContain("account");
+      expect(namedBy(id)).toEqual(["workspace"]);
     }
   });
 
@@ -137,7 +137,6 @@ describe("who a source is answered for", () => {
     // "Waiting on my review" resolves against whoever's credential it runs on,
     // so the caller's is the only one that answers the question asked.
     expect(namedBy("review-queue")).toContain("account");
-    expect(namedBy("review-queue")).not.toContain("shared_account");
   });
 
   it("names the repository setting on every source", () => {
@@ -146,49 +145,82 @@ describe("who a source is answered for", () => {
     }
   });
 
-  it("writes only as a member, never as the guild", () => {
+  it("asks a widget for no more than its own sources ask for", () => {
+    // The failure this catches is invisible from the source side and was live
+    // for a release: a tile answered from the guild's own access, requiring the
+    // caller's personal account anyway, refuses with `CONNECTION_REQUIRED` for
+    // everyone who has not connected one — and the number behind it never
+    // needed them.
+    for (const widget of manifest.widgets ?? []) {
+      const needed = new Set(
+        (widget.sources ?? []).flatMap((id) => namedBy(id))
+      );
+      for (const term of widget.requires?.all_of ?? []) {
+        expect(
+          needed.has(term),
+          `widget ${widget.id} requires ${term}, which none of its sources do`
+        ).toBe(true);
+      }
+    }
+  });
+
+  it("writes only as a member, never as the app", () => {
     // An action opens an issue under somebody's name, so it runs on that
     // member's own credential — the issue is theirs, and it stops working when
-    // they disconnect.
+    // they disconnect. The app has a credential of its own now and this is
+    // exactly where it must not be used.
     const automation = manifest.automation as
       | { operations?: Array<{ id: string; requires?: { all_of?: string[] } }> }
       | undefined;
     for (const operation of automation?.operations ?? []) {
       expect(operation.requires?.all_of).toContain("account");
-      expect(operation.requires?.all_of).not.toContain("shared_account");
     }
   });
 });
 
 describe("the choices this app makes", () => {
-  it("holds no credential of its own — every one belongs to somebody", () => {
-    // This app does write at GitHub (the create-issue action), so the
-    // least-privilege story is not "read only". It is that no credential here
-    // is the app's: each is either a member's, authorized by them and gone
-    // when they disconnect, or the guild's, supplied by an admin and gone when
-    // they clear it. Nothing is shared between guilds and nothing is the
-    // vendor's view of this app as a party in its own right.
+  it("asks a person for exactly one credential, and it is their own", () => {
+    // The story changed with the GitHub App and got stronger. This app does
+    // hold a credential of its own now — the private key its registration is
+    // signed with — and it is the only one it will ever hold: it identifies the
+    // app rather than a person, it reaches nothing until an organization
+    // installs the app, and it stops reaching the moment they remove it.
+    //
+    // So what is asked of *people* is one thing: a member's own account, for
+    // the two answers that are about them. Everything else the app either works
+    // out or is granted.
     const reaching = (manifest.connections ?? []).filter((c) => c.access_hint?.api);
-    expect(reaching.length).toBeGreaterThan(0);
-    for (const connection of reaching) {
-      expect(["interactive", "static"]).toContain(connection.scope);
-    }
-    // And the two tiers are both actually present, since the whole scoping
-    // story collapses if one of them quietly goes away.
-    const scopes = new Set(reaching.map((c) => c.scope));
-    expect(scopes).toEqual(new Set(["interactive", "static"]));
+    expect(reaching.map((c) => c.id)).toEqual(["account"]);
+    expect(reaching[0].scope).toBe("interactive");
   });
 
-  it("says what it will use each credential for", () => {
-    const account = manifest.connections?.find((c) => c.id === "account");
-    // Shown beside the form at install, so an admin sees the write scope
-    // before anybody authorizes rather than after.
-    expect(account?.access_hint?.scopes).toContain("repo");
+  it("asks an admin for a setting, never for a credential", () => {
+    // The regression this guards is the easy one to make and hard to see: a
+    // `secret` field on a guild connection is somebody's personal access token
+    // wearing the guild's name — it carries everything that person can reach,
+    // it outlives their interest in the guild, and revoking it means finding
+    // whoever minted it.
+    const guildWide = (manifest.connections ?? []).filter((c) => c.scope === "static");
+    expect(guildWide.length).toBeGreaterThan(0);
+    for (const connection of guildWide) {
+      for (const field of connection.fields) {
+        expect(field.type).not.toBe("secret");
+      }
+      // No vendor flow either: a static connection is typed, and only an
+      // interactive one may carry a connect_path.
+      expect(connection.connect_path).toBeUndefined();
+    }
+  });
 
-    // The shared one is asked to read and nothing else — which is the point of
-    // having split it out.
-    const shared = manifest.connections?.find((c) => c.id === "shared_account");
-    expect(shared?.access_hint?.scopes).toEqual(["issues:read"]);
+  it("says what it will use the member's credential for", () => {
+    const account = manifest.connections?.find((c) => c.id === "account");
+    // Shown beside the form, so a member sees the write before they authorize
+    // rather than after. `issues:write` is there because the automation action
+    // opens issues — an app that only read would ask for less, and should.
+    expect(account?.access_hint?.scopes).toContain("issues:write");
+    // Permissions, not scopes. `repo` is an OAuth app's vocabulary and grants
+    // everything that person can reach in every repository they can reach.
+    expect(account?.access_hint?.scopes).not.toContain("repo");
   });
 
   it("mounts no embedded surface", () => {
@@ -209,17 +241,16 @@ describe("the choices this app makes", () => {
     expect(account?.fields).toEqual([]);
   });
 
-  it("takes the guild's shared access as a secret, from an admin", () => {
-    const shared = manifest.connections?.find((c) => c.id === "shared_account");
-    // Static, so it is the install's rather than any member's, and one admin
-    // fills it in once for everyone.
-    expect(shared?.scope).toBe("static");
-    // No vendor flow: a static connection is typed, and only an interactive
-    // one may carry a connect_path.
-    expect(shared?.connect_path).toBeUndefined();
-    // `secret` rather than `string`, so it is sealed at rest and never read
-    // back to the form.
-    expect(shared?.fields.map((field) => field.type)).toEqual(["secret"]);
+  it("takes the repository as two fields rather than one", () => {
+    // An admin who typed `acme/widgets` into a single box would produce a path
+    // with an extra segment in it, and every call would 404 with nothing saying
+    // why. Two required fields is the form making that impossible.
+    const workspace = manifest.connections?.find((c) => c.id === "workspace");
+    expect(workspace?.scope).toBe("static");
+    expect(workspace?.fields.map((field) => field.key)).toEqual(["owner", "repo"]);
+    for (const field of workspace?.fields ?? []) {
+      expect(field.required).toBe(true);
+    }
   });
 
   it("ships sample data so a preview renders with no network call", () => {

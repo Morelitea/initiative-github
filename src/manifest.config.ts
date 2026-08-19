@@ -19,8 +19,24 @@
 
 import type { Manifest } from "initiative-app-kit";
 
+import { PERMISSIONS } from "./github/registration.js";
+import { CONNECT_PATH } from "./routes.js";
+
 /** Namespaces everything this app publishes: widgets, events, automation nodes. */
 export const PUBLIC_ID = "morelitea.github";
+
+/**
+ * What an admin is shown that this app will be able to do, in GitHub's own
+ * words, read from the registration rather than restated beside it.
+ *
+ * A GitHub App has permissions, not scopes — `issues: write` rather than
+ * `repo` — and the difference is worth seeing at install time, because it is
+ * the difference between "this app can act on issues in the repositories we
+ * chose" and "this app can do anything we can do, in everything we own".
+ */
+const ACCESS_HINT_SCOPES = Object.entries(PERMISSIONS).map(
+  ([permission, level]) => `${permission}:${level}`
+);
 
 /**
  * What is *not* here, and where it goes.
@@ -52,8 +68,8 @@ export const manifest: Manifest = {
       // The member's own GitHub account, for the two things that are about
       // them specifically: which pull requests are waiting on their review,
       // and opening an issue as themselves. Everything a whole guild sees the
-      // same answer to runs on `shared_account` below instead, so connecting
-      // this is optional and nobody is asked for it to read a number.
+      // same answer to runs on the organization's own installation instead, so
+      // connecting this is optional and nobody is asked for it to read a number.
       //
       // GitHub authorizes a *person*, so the app holds one credential per
       // person. Installing never waits for anybody to do this.
@@ -65,21 +81,31 @@ export const manifest: Manifest = {
         es: "Tu cuenta de GitHub",
         fr: "Votre compte GitHub",
       },
-      // No fields: the vendor flow produces the credential, and this app writes
-      // it back itself rather than anyone typing it in.
+      // No fields: the vendor flow produces the credential, and this app holds
+      // it rather than anyone typing it in.
       fields: [],
-      connect_path: "/connect/github",
+      connect_path: CONNECT_PATH,
       access_hint: {
         api: "GitHub",
-        // Said out loud so an admin sees it before anyone authorizes. `repo` is
-        // here because the automation action below opens issues — an app that
-        // only read would ask for less, and should.
-        scopes: ["read:user", "repo"],
+        // What a GitHub App's user token can do is the installation's
+        // permissions narrowed to what this member already reaches — so what is
+        // shown here is the app's registration, and it is a ceiling rather than
+        // a grant. A member who cannot see the repository still cannot.
+        scopes: ACCESS_HINT_SCOPES,
       },
     },
     {
-      // The guild-wide half: which repository this guild cares about. Not a
-      // credential — a setting — but it rides the same form machinery.
+      // The guild-wide half, and now the *only* thing an admin types: which
+      // repository this guild cares about. Not a credential — a setting — but
+      // it rides the same form machinery.
+      //
+      // What used to sit beside it was a token an admin pasted so the whole
+      // guild could read the repository. A GitHub App does not need one: the
+      // organization installs the app, and the app asks GitHub which
+      // installation covers what was typed here. So the guild's access is the
+      // organization's own grant — visible in its settings, scoped to the
+      // repositories it chose, and revoked by a button that belongs to it —
+      // rather than one person's credential wearing the guild's name.
       id: "workspace",
       scope: "static",
       label: {
@@ -113,43 +139,6 @@ export const manifest: Manifest = {
         },
       ],
     },
-    {
-      // The guild's own read access, approved once by an admin and used for
-      // everyone. What it buys is that the repository's numbers — how many
-      // issues are open, how the last fortnight went — are the same answer for
-      // every member, so nobody should have to hand over a personal account to
-      // see one. The platform caches a source that names no per-member
-      // connection once per guild, so this is also one upstream call rather
-      // than one per person.
-      id: "shared_account",
-      scope: "static",
-      label: {
-        en: "Shared read access",
-        de: "Gemeinsamer Lesezugriff",
-        es: "Acceso de lectura compartido",
-        fr: "Accès en lecture partagé",
-      },
-      fields: [
-        {
-          key: "token",
-          type: "secret",
-          required: true,
-          label: {
-            en: "GitHub token with read access to the repository",
-            de: "GitHub-Token mit Lesezugriff auf das Repository",
-            es: "Token de GitHub con acceso de lectura al repositorio",
-            fr: "Jeton GitHub avec accès en lecture au dépôt",
-          },
-        },
-      ],
-      access_hint: {
-        api: "GitHub",
-        // A fine-grained token restricted to this repository, with `Issues:
-        // read` and nothing else, is enough for everything this connection is
-        // used for. Said here so an admin sees it before minting one.
-        scopes: ["issues:read"],
-      },
-    },
   ],
 
   data_sources: [
@@ -168,11 +157,15 @@ export const manifest: Manifest = {
         },
       ],
       // Guild-scoped, and this is the choice worth copying. How many issues
-      // are open is one answer for the whole guild, so it runs on the guild's
-      // own access and nobody has to connect a personal account to see it.
-      // Naming no per-member connection is also what lets the platform cache
-      // it once per guild instead of once per member.
-      requires: { all_of: ["workspace", "shared_account"] },
+      // are open is one answer for the whole guild, so it runs on the
+      // organization's installation and nobody has to connect a personal
+      // account to see it. Naming no per-member connection is also what lets
+      // the platform cache it once per guild instead of once per member.
+      //
+      // The installation is not named here because it is not a connection: an
+      // admin does not supply it, so there is nothing for Initiative to hold or
+      // to ask for. `workspace` is what this source needs from a person.
+      requires: { all_of: ["workspace"] },
     },
     {
       id: "review-queue",
@@ -182,6 +175,8 @@ export const manifest: Manifest = {
       // Per member, and it could not be anything else: "waiting on me" has no
       // meaning without a me. This is the one source that needs the member's
       // own account, and the only reason this app asks for one.
+      // The one widget that does need a member, because the one source behind
+      // it does.
       requires: { all_of: ["workspace", "account"] },
     },
     {
@@ -192,9 +187,9 @@ export const manifest: Manifest = {
       // and this is the most expensive call this app makes.
       cache_ttl_seconds: 300,
       // Guild-scoped for the same reason as the issue count, and it matters
-      // more here: this is the heaviest call, and it now runs once per guild
-      // per five minutes rather than once per member.
-      requires: { all_of: ["workspace", "shared_account"] },
+      // more here: this is the heaviest call, and it runs once per guild per
+      // five minutes rather than once per member.
+      requires: { all_of: ["workspace"] },
     },
   ],
 
@@ -222,7 +217,13 @@ export const manifest: Manifest = {
       // Rows for a preview that renders with no network call at all, so the
       // marketplace can show the widget before anything is connected.
       sample_data: { "open-issues": { total: 42, delta: -3 } },
-      requires: { all_of: ["workspace", "account"] },
+      // The same terms as the source it draws, and that is the rule rather
+      // than a coincidence. A widget that names more than its sources do is
+      // refused with `CONNECTION_REQUIRED` before either is called — so a tile
+      // answered from the guild's own access, asking each member for a personal
+      // account, refuses for everyone who has not connected one and shows a
+      // number that never needed them.
+      requires: { all_of: ["workspace"] },
     },
     {
       id: "review-queue",
@@ -251,6 +252,8 @@ export const manifest: Manifest = {
           ],
         },
       },
+      // The one widget that does need a member, because the one source behind
+      // it does.
       requires: { all_of: ["workspace", "account"] },
     },
     {
@@ -282,7 +285,7 @@ export const manifest: Manifest = {
           ],
         },
       },
-      requires: { all_of: ["workspace", "account"] },
+      requires: { all_of: ["workspace"] },
     },
   ],
 

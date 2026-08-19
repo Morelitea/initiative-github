@@ -7,9 +7,12 @@
  *
  * The trip, and why each step is where it is:
  *
- * 1. **GitHub signs its delivery**, and this verifies it against the secret the
- *    repository's webhook settings were given. That check is what establishes
- *    the caller, the way a context token does on the platform's own routes.
+ * 1. **GitHub signs its delivery**, and this verifies it against the secret on
+ *    the *app's own registration*. One secret, typed once, covering every
+ *    organization that installs it — where an OAuth app would have needed a
+ *    webhook added to every repository by hand, and would silently receive
+ *    nothing from the one somebody forgot. That check is what establishes the
+ *    caller, the way a context token does on the platform's own routes.
  * 2. **The delivery names a repository, and nothing else this app can use.**
  *    There is no guild in it. The `workspaces` table — filled by the install
  *    sync — is what turns `owner/repo` back into the installs that asked about
@@ -22,6 +25,13 @@
  * Only the fields the trigger nodes declared as `outputs` are carried across.
  * A GitHub issue payload is large and mostly about people; a run's state is not
  * the place for it, and a later node can only read what was named anyway.
+ *
+ * **Not every delivery is an event.** A GitHub App is also told about its own
+ * installation — an org adding it, removing it, or changing which repositories
+ * it may see. Those are not things to emit into a guild; they are things that
+ * change whether this app can answer at all, so they re-run the sync for the
+ * installs they affect. It is the difference between news about the repository
+ * and news about the relationship.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -31,7 +41,9 @@ import { ChannelError } from "initiative-app-kit";
 import { config } from "../config.js";
 import { initiative } from "../initiative.js";
 import { PUBLIC_ID } from "../manifest.config.js";
-import { installsWatching } from "./workspace.js";
+import { syncInstall } from "../sync.js";
+import { forgetInstallation } from "./app.js";
+import { installsForInstallation, installsWatching } from "./workspace.js";
 
 /** GitHub's own headers on a delivery. */
 export const EVENT_HEADER = "x-github-event";
@@ -145,7 +157,81 @@ export function translate(
 /** What a delivery did, for the answer GitHub sees in its own log. */
 export interface DeliveryResult {
   emitted: number;
-  reason?: "unhandled" | "no-repository" | "no-install";
+  /** Installs re-synced because the relationship changed, not the repository. */
+  resynced?: number;
+  reason?: "unhandled" | "no-repository" | "no-install" | "installation";
+}
+
+/** The deliveries that are about this app rather than about a repository. */
+const LIFECYCLE_EVENTS = new Set(["installation", "installation_repositories"]);
+
+/** `owner/repo` out of whichever list of repositories a payload carries. */
+function readRepositories(payload: Record<string, unknown>): Repository[] {
+  const lists = ["repositories", "repositories_added", "repositories_removed"];
+  const found: Repository[] = [];
+  for (const key of lists) {
+    const value = payload[key];
+    if (!Array.isArray(value)) continue;
+    for (const entry of value) {
+      const fullName = (entry as { full_name?: unknown } | null)?.full_name;
+      if (typeof fullName !== "string") continue;
+      const [owner, repo] = fullName.split("/");
+      if (owner && repo) found.push({ owner, repo });
+    }
+  }
+  return found;
+}
+
+/**
+ * An organization added, removed, or re-scoped this app's installation.
+ *
+ * Nothing is emitted: no guild asked to be told that an org owner clicked a
+ * button, and there is no event in the manifest that would carry it. What it
+ * changes is whether the guild-scoped sources can answer, so the affected
+ * installs are re-synced — which re-runs the discovery and reports the verdict
+ * back to Initiative, so the install flips between `ok` and
+ * `github_app_not_installed` within seconds instead of at the next poll.
+ *
+ * Both directions have to be found, and by different means. An install being
+ * *removed* names an installation this app already recorded, so the lookup is
+ * by installation id. An install being *created* names repositories this app
+ * has never seen an installation for, so the lookup is by repository — which is
+ * exactly the guild that has been sitting at `github_app_not_installed` waiting
+ * for this to happen.
+ */
+async function handleInstallation(
+  payload: Record<string, unknown>
+): Promise<DeliveryResult> {
+  const installation = payload.installation as { id?: unknown } | undefined;
+  const installationId =
+    typeof installation?.id === "number" ? installation.id : null;
+
+  const guilds = new Map<number, number>();
+  if (installationId !== null) {
+    // Whatever just happened, the token held for it is no longer trustworthy:
+    // it may have been revoked, or narrowed to fewer repositories.
+    forgetInstallation(installationId);
+    for (const install of await installsForInstallation(installationId)) {
+      guilds.set(install.appInstallId, install.guildId);
+    }
+  }
+  for (const repository of readRepositories(payload)) {
+    for (const install of await installsWatching(repository.owner, repository.repo)) {
+      guilds.set(install.appInstallId, install.guildId);
+    }
+  }
+
+  let resynced = 0;
+  for (const guildId of guilds.values()) {
+    try {
+      await syncInstall(guildId);
+      resynced += 1;
+    } catch (error) {
+      // One guild's failure is not the others', and the poll will catch it.
+      console.error(`could not re-sync guild ${guildId} after an install change`, error);
+    }
+  }
+  return { emitted: 0, resynced, reason: "installation" };
 }
 
 /**
@@ -160,6 +246,8 @@ export async function handleDelivery(
   event: string,
   payload: Record<string, unknown>
 ): Promise<DeliveryResult> {
+  if (LIFECYCLE_EVENTS.has(event)) return handleInstallation(payload);
+
   const translated = translate(event, payload);
   if (!translated) return { emitted: 0, reason: "unhandled" };
 

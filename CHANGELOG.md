@@ -2,28 +2,83 @@
 
 ## [Unreleased]
 
-The app was registered, live, healthy — and could not be installed by anybody,
-because it shipped no marketplace listing and nothing derives one from a served
-manifest.
+It is a GitHub App now, rather than an OAuth app calling itself one. That is a
+second registration with its own audience — an organization owner rather than a
+guild admin — and everything below follows from having one.
 
 ### Added
 
+- A GitHub App registration, generated from the code that uses it
+  (`src/github/registration.ts`, `npm run github-app`). The permissions and the
+  webhook events on it are the ones this app actually asks for and actually
+  handles, and `test/github-app.test.ts` is what keeps that true. A registration
+  typed into a form drifts in two directions that both look like nothing
+  happening: an event nobody subscribed to never arrives, and a permission
+  nobody uses is granted by every organization forever.
+- The app's own identity at GitHub (`src/github/app.ts`): a JWT signed with the
+  private key, exchanged for an installation token that lasts an hour and is
+  held in memory only.
+- `/install/github`, which redirects to this registration's install page —
+  derived from the slug GitHub reports for the private key, so it cannot name a
+  different app from the one running. And `/setup/github`, where GitHub returns
+  somebody afterwards. It deliberately reports nothing about the installation it
+  was handed: the redirect carries an `installation_id` and no proof of
+  anything.
+- PKCE on the member's flow, so an authorization code caught in a redirect
+  cannot be exchanged by whoever caught it.
+- `installation` and `installation_repositories` deliveries re-sync the installs
+  they affect, so an organization installing or removing the app is reflected in
+  Initiative within seconds rather than at the next poll. They emit nothing:
+  nobody subscribed to hear that somebody clicked a button.
+- `GITHUB_WEB_BASE`, beside the API base it always had. On GitHub Enterprise the
+  API and the pages a person visits are different hosts, so configuring one and
+  hardcoding the other worked everywhere except there.
 - Two catalog listings, built from the manifest by `npm run catalog` and
   attached to each release: the app itself, and **GitHub overview**, a companion
   dashboard shipping a ready-made arrangement of this app's three widgets. An
-  operator publishes both by dropping them into their catalog directory.
+  operator publishes both by dropping them into their catalog directory. The app
+  was registered, live, healthy — and could not be installed by anybody, because
+  nothing derives a listing from a served manifest.
 - A catalog `uid`, carried by the served document as well as by the listings.
   Without one a registration verifies and names nothing, and a mandatory install
   is skipped as "has not verified yet".
+
+### Changed
+
+- **The guild's access is the organization's installation, not a token an admin
+  pasted.** The `shared_account` connection is gone. An admin fills in the
+  repository — the thing they were always going to fill in — and the app asks
+  GitHub which installation covers it. A personal access token was a *person's*
+  credential wearing the guild's name: it carried everything that person could
+  reach, outlived their interest in the guild, and revoking it meant finding
+  whoever minted it. An installation is listed in the organization's own
+  settings, scoped to the repositories it picked, and revoked by a button that
+  belongs to it.
+- An install whose repository nobody has installed the app on reports
+  `github_app_not_installed` rather than looking unconfigured. It is a different
+  problem with a different owner.
+- A member's credential is a rotating pair. A GitHub App's user token lasts
+  eight hours; it is renewed on use, under a row lock, because refresh tokens
+  are single-use and two replicas renewing at once would have one of them
+  overwrite a good credential with nothing.
+- No scopes on the member's flow. A GitHub App's user token carries the
+  installation's permissions narrowed to what that member already reaches, so
+  `read:user repo` had nowhere to land.
+- One webhook, on the registration, covering every organization that installs
+  the app — instead of one added by hand to every repository a guild configured,
+  which silently received nothing from the one somebody forgot.
+- Requires `initiative-app-kit` 0.4, for `appListing` and `dashboardListing`.
 
 ### Fixed
 
 - The served document carried no `uid`, so nothing tied the verified
   registration to a listing even once one existed.
-
-### Changed
-
-- Requires `initiative-app-kit` 0.4, for `appListing` and `dashboardListing`.
+- All three widgets required a member's personal account while only one of their
+  sources did, so two tiles refused with `CONNECTION_REQUIRED` for every member
+  who had not connected one — to draw numbers that never needed them. 0.3.0
+  fixed this on the sources and left the widgets behind, which changed nothing
+  anybody could see. `test/manifest.test.ts` now checks a widget against its own
+  sources.
 
 ## [0.3.0]
 

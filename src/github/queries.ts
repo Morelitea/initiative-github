@@ -4,9 +4,10 @@
  * **Scope each source to the narrowest thing that answers it**, and let the
  * manifest say which. Two of these are guild-scoped: how many issues are open,
  * and how the last fortnight went, are one answer for the whole guild. They run
- * on the guild's shared read access, so nobody hands over a personal account to
- * see a number — and because they name no per-member connection, the platform
- * caches each once per guild rather than once per member.
+ * on the **installation** — the grant an organization made when it installed
+ * this GitHub App — so nobody hands over a personal account to see a number,
+ * and because they name no per-member connection the platform caches each once
+ * per guild rather than once per member.
  *
  * The third is per member and could not be anything else: "waiting on my
  * review" has no meaning without a me. It runs on the credential behind the
@@ -23,12 +24,12 @@
  * put data nobody renders into a cache and into a browser.
  */
 
-import { config } from "../config.js";
 import type { ContextClaims } from "initiative-app-kit";
 
+import { config } from "../config.js";
+import { installationToken } from "./app.js";
 import { credentialFor } from "./oauth.js";
-import { sharedAccessFor } from "./shared-access.js";
-import { workspaceFor } from "./workspace.js";
+import { workspaceFor, type StoredWorkspace } from "./workspace.js";
 
 /** What a per-member source returns when that member has not connected. */
 const NOT_CONNECTED = { unavailable: "not-connected" } as const;
@@ -36,21 +37,41 @@ const NOT_CONNECTED = { unavailable: "not-connected" } as const;
 /** What any source returns when the guild's own setup is incomplete. */
 const NOT_CONFIGURED = { unavailable: "not-configured" } as const;
 
+/**
+ * What a guild-scoped source returns when nobody has installed the app.
+ *
+ * Distinct from `not-configured` on purpose, because the remedy is different
+ * and belongs to a different person: `not-configured` is a form a guild admin
+ * has not finished in Initiative, and this is a GitHub App an organization
+ * owner has not installed at GitHub. One tile saying "unavailable" for both
+ * would send the wrong person looking.
+ */
+const NOT_INSTALLED = { unavailable: "not-installed" } as const;
+
+/** What the whole guild reads this repository with. */
+async function guildAccess(
+  workspace: StoredWorkspace | null
+): Promise<{ token: string; workspace: StoredWorkspace } | { unavailable: string }> {
+  if (!workspace) return NOT_CONFIGURED;
+  if (workspace.installationId === null) return NOT_INSTALLED;
+  const token = await installationToken(workspace.installationId);
+  // Recorded as installed and now refusing to mint: the org removed the app
+  // between the last sync and this call. The reconcile is what corrects the
+  // record; this call has only to not pretend.
+  if (!token) return NOT_INSTALLED;
+  return { token, workspace };
+}
+
 export async function openIssues(
   claims: ContextClaims,
   params: URLSearchParams
 ): Promise<Record<string, unknown>> {
-  // Guild-scoped: the guild's own access, not the caller's.
-  const token = sharedAccessFor(claims.app_install_id);
-  if (!token) return NOT_CONFIGURED;
+  // Guild-scoped: the organization's own grant, not the caller's account.
+  const access = await guildAccess(await workspaceFor(claims.app_install_id));
+  if ("unavailable" in access) return access;
+  const { token, workspace } = access;
 
-  const workspace = await workspaceFor(claims.app_install_id);
-  if (!workspace) return NOT_CONFIGURED;
-
-  const query = new URLSearchParams({
-    state: "open",
-    per_page: "1",
-  });
+  const query = new URLSearchParams({ state: "open", per_page: "1" });
   const label = params.get("label");
   if (label) query.set("labels", label);
 
@@ -118,14 +139,12 @@ export async function reviewQueue(
 export async function issueThroughput(
   claims: ContextClaims
 ): Promise<Record<string, unknown>> {
-  // Guild-scoped: a fortnight of the repository's activity is the same answer
-  // for everybody, and this is the heaviest call this app makes — so it runs
-  // once per guild per TTL rather than once per member.
-  const token = sharedAccessFor(claims.app_install_id);
-  if (!token) return NOT_CONFIGURED;
-
-  const workspace = await workspaceFor(claims.app_install_id);
-  if (!workspace) return NOT_CONFIGURED;
+  // Guild-scoped for the same reason as the count, and it matters more here:
+  // this is the heaviest call this app makes, and it runs once per guild per
+  // TTL rather than once per member.
+  const access = await guildAccess(await workspaceFor(claims.app_install_id));
+  if ("unavailable" in access) return access;
+  const { token, workspace } = access;
 
   const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
   const response = await fetch(

@@ -5,3 +5,4 @@ manifest.json
 *.tsbuildinfo
 .DS_Store
 catalog/
+github-app.json

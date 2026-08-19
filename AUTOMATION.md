@@ -102,6 +102,14 @@ An app that wrote from its own credential would leave automations running for
 people who had withdrawn, which no amount of platform enforcement can fix from
 outside.
 
+This app has an app-wide credential now — it is a GitHub App, and the
+installation an organization granted it can open issues perfectly well. That
+makes the rule a choice rather than a limitation, and it is still the right one.
+An issue opened by the installation is attributed to the app, so the automation
+outlives the person who set it up and there is nobody to ask about it. The
+guild-scoped tier is for questions that have one answer for everybody; a write
+has an author.
+
 ## Status
 
 The platform stores and serves this block today. The automation service's half —
