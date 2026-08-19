@@ -28,7 +28,15 @@ import { pool } from "../db.js";
 
 export interface Workspace {
   owner: string;
-  repo: string;
+  /**
+   * The repositories a guild narrowed itself to.
+   *
+   * Empty means *every repository the installation covers*, which is the
+   * useful default: an organization already chose which repositories to grant
+   * when it installed the app, and making an admin restate that list in
+   * Initiative is asking them to keep two copies of one decision in step.
+   */
+  repos: string[];
 }
 
 /** A workspace as it comes back, with what this app found out about it. */
@@ -51,15 +59,26 @@ export async function rememberWorkspace(
   installationId: number | null
 ): Promise<void> {
   await pool.query(
-    `INSERT INTO workspaces (app_install_id, guild_id, owner, repo, installation_id)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO workspaces (app_install_id, guild_id, owner, repo, repos, installation_id)
+     VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (app_install_id) DO UPDATE
         SET guild_id = EXCLUDED.guild_id,
             owner = EXCLUDED.owner,
             repo = EXCLUDED.repo,
+            repos = EXCLUDED.repos,
             installation_id = EXCLUDED.installation_id,
             updated_at = now()`,
-    [appInstallId, guildId, workspace.owner, workspace.repo, installationId]
+    [
+      appInstallId,
+      guildId,
+      workspace.owner,
+      // `repo` predates the list and is `NOT NULL`. Kept written rather than
+      // dropped, so a rollback to the previous version finds the column it
+      // expects rather than a row it cannot read.
+      workspace.repos[0] ?? "",
+      workspace.repos,
+      installationId,
+    ]
   );
 }
 
@@ -70,16 +89,18 @@ export async function workspaceFor(
   const found = await pool.query<{
     owner: string;
     repo: string;
+    repos: string[] | null;
     installation_id: string | null;
   }>(
-    "SELECT owner, repo, installation_id FROM workspaces WHERE app_install_id = $1",
+    "SELECT owner, repo, repos, installation_id FROM workspaces WHERE app_install_id = $1",
     [appInstallId]
   );
   const row = found.rows[0];
   if (!row) return null;
   return {
     owner: row.owner,
-    repo: row.repo,
+    // A row written by the version before the list has only the single column.
+    repos: row.repos ?? (row.repo ? [row.repo] : []),
     // `pg` hands back BIGINT as a string, since not every value fits a JS
     // number. An installation id comfortably does, so it is narrowed once here.
     installationId: row.installation_id === null ? null : Number(row.installation_id),
@@ -94,21 +115,31 @@ function watching(rows: Array<{ app_install_id: string; guild_id: string }>) {
 }
 
 /**
- * Which installs pointed at this repository.
+ * Which installs a delivery about this repository belongs to.
  *
  * A list, not one row: two guilds may both watch the same repository, and each
- * is entitled to its own event. Matched case-insensitively because GitHub
- * treats owner and repo names that way and an admin types them by hand.
+ * is entitled to its own event.
+ *
+ * Matched on the **installation** first rather than on the owner's name. A
+ * delivery carries the installation that produced it, which is a fact GitHub
+ * asserts; an owner is a string an admin typed and a repository can be renamed
+ * or transferred under one. Then narrowed by the guild's own list, where it has
+ * one — an empty list means every repository the installation covers, so any
+ * delivery from that installation is theirs by construction.
  */
 export async function installsWatching(
-  owner: string,
+  installationId: number,
   repo: string
 ): Promise<WatchingInstall[]> {
   const found = await pool.query<{ app_install_id: string; guild_id: string }>(
     `SELECT app_install_id, guild_id
        FROM workspaces
-      WHERE lower(owner) = lower($1) AND lower(repo) = lower($2)`,
-    [owner, repo]
+      WHERE installation_id = $1
+        AND (repos IS NULL
+             OR cardinality(repos) = 0
+             OR EXISTS (SELECT 1 FROM unnest(repos) AS r
+                         WHERE lower(r) = lower($2)))`,
+    [installationId, repo]
   );
   return watching(found.rows);
 }
@@ -128,6 +159,30 @@ export async function installsForInstallation(
   const found = await pool.query<{ app_install_id: string; guild_id: string }>(
     "SELECT app_install_id, guild_id FROM workspaces WHERE installation_id = $1",
     [installationId]
+  );
+  return watching(found.rows);
+}
+
+/**
+ * Which installs are waiting for somebody to install the app on their account.
+ *
+ * The other half of the lifecycle lookup, and the one that is easy to leave
+ * out. An `installation.created` delivery is the first time this app has ever
+ * heard of that installation, so no row names it yet — matching on the
+ * installation id finds nothing, and the guild that has been sitting at
+ * `github_app_not_installed` waiting for exactly this would wait for the poll
+ * instead.
+ *
+ * So this matches the other way: by the account an admin typed, among installs
+ * that have not found an installation. Case-insensitively, because GitHub
+ * treats account names that way and an admin types them by hand.
+ */
+export async function installsAwaiting(owner: string): Promise<WatchingInstall[]> {
+  const found = await pool.query<{ app_install_id: string; guild_id: string }>(
+    `SELECT app_install_id, guild_id
+       FROM workspaces
+      WHERE lower(owner) = lower($1) AND installation_id IS NULL`,
+    [owner]
   );
   return watching(found.rows);
 }

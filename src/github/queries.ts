@@ -27,7 +27,7 @@
 import type { ContextClaims } from "initiative-app-kit";
 
 import { config } from "../config.js";
-import { installationToken } from "./app.js";
+import { installationToken, resolveRepository } from "./app.js";
 import { credentialFor } from "./oauth.js";
 import { workspaceFor, type StoredWorkspace } from "./workspace.js";
 
@@ -48,18 +48,34 @@ const NOT_CONFIGURED = { unavailable: "not-configured" } as const;
  */
 const NOT_INSTALLED = { unavailable: "not-installed" } as const;
 
-/** What the whole guild reads this repository with. */
-async function guildAccess(
-  workspace: StoredWorkspace | null
-): Promise<{ token: string; workspace: StoredWorkspace } | { unavailable: string }> {
-  if (!workspace) return NOT_CONFIGURED;
-  if (workspace.installationId === null) return NOT_INSTALLED;
-  const token = await installationToken(workspace.installationId);
+interface Access {
+  token: string;
+  owner: string;
+  repo: string;
+}
+
+/**
+ * Which repository this call is about, and the token to read it with.
+ *
+ * The repository half is {@link resolveRepository}, which the write path uses
+ * too; this adds the credential a guild-scoped read runs on.
+ */
+async function access(
+  workspace: StoredWorkspace | null,
+  params?: URLSearchParams
+): Promise<Access | { unavailable: string }> {
+  const choice = await resolveRepository(workspace, params?.get("repo"));
+  if ("unavailable" in choice) return choice;
+
+  // Non-null by construction: `resolveRepository` refuses before this when
+  // there is no installation to mint against.
+  const token = await installationToken(workspace!.installationId!);
   // Recorded as installed and now refusing to mint: the org removed the app
   // between the last sync and this call. The reconcile is what corrects the
   // record; this call has only to not pretend.
   if (!token) return NOT_INSTALLED;
-  return { token, workspace };
+
+  return { token, owner: choice.owner, repo: choice.repo };
 }
 
 export async function openIssues(
@@ -67,16 +83,26 @@ export async function openIssues(
   params: URLSearchParams
 ): Promise<Record<string, unknown>> {
   // Guild-scoped: the organization's own grant, not the caller's account.
-  const access = await guildAccess(await workspaceFor(claims.app_install_id));
-  if ("unavailable" in access) return access;
-  const { token, workspace } = access;
+  const where = await access(await workspaceFor(claims.app_install_id), params);
+  if ("unavailable" in where) return where;
+  const { token, owner, repo } = where;
 
   const query = new URLSearchParams({ state: "open", per_page: "1" });
-  const label = params.get("label");
-  if (label) query.set("labels", label);
+  // Each of these narrows the same question to one team's slice of it, which is
+  // how one widget serves several initiatives: the dashboard binding carries
+  // the values, so team-alpha's tile and team-beta's tile are one source
+  // answered twice and cached apart.
+  for (const [param, upstream] of [
+    ["label", "labels"],
+    ["milestone", "milestone"],
+    ["assignee", "assignee"],
+  ] as const) {
+    const value = params.get(param)?.trim();
+    if (value) query.set(upstream, value);
+  }
 
   const response = await fetch(
-    `${config.github.apiBase}/repos/${workspace.owner}/${workspace.repo}/issues?${query}`,
+    `${config.github.apiBase}/repos/${owner}/${repo}/issues?${query}`,
     {
       headers: {
         Authorization: `Bearer ${token}`,
@@ -95,21 +121,24 @@ export async function openIssues(
 }
 
 export async function reviewQueue(
-  claims: ContextClaims
+  claims: ContextClaims,
+  params: URLSearchParams
 ): Promise<Record<string, unknown>> {
   // Per member: `review-requested:@me` resolves against whoever's credential
   // this is, so this is the one source that has to be the caller's.
   const account = await credentialFor(claims.connection_refs?.account);
   if (!account) return NOT_CONNECTED;
 
-  const workspace = await workspaceFor(claims.app_install_id);
-  if (!workspace) return NOT_CONFIGURED;
+  // Which repository is still the guild's question, and still checked against
+  // the organization's grant — the member's token narrows what they see inside
+  // it, and cannot widen which repository is asked about.
+  const where = await access(await workspaceFor(claims.app_install_id), params);
+  if ("unavailable" in where) return where;
+  const { owner, repo } = where;
 
   const response = await fetch(
     `${config.github.apiBase}/search/issues?q=` +
-      encodeURIComponent(
-        `repo:${workspace.owner}/${workspace.repo} is:pr is:open review-requested:@me`
-      ),
+      encodeURIComponent(`repo:${owner}/${repo} is:pr is:open review-requested:@me`),
     {
       headers: {
         Authorization: `Bearer ${account.accessToken}`,
@@ -136,20 +165,99 @@ export async function reviewQueue(
   };
 }
 
+/** How severe an alert is, worst first — the order the widget draws them in. */
+const SEVERITIES = ["critical", "high", "medium", "low"] as const;
+
+export async function dependabotAlerts(
+  claims: ContextClaims,
+  params: URLSearchParams
+): Promise<Record<string, unknown>> {
+  // Guild-scoped: how exposed the repository is right now is one answer for
+  // everybody, and the people who most need to see it are the ones least likely
+  // to have connected a personal GitHub account.
+  const where = await access(await workspaceFor(claims.app_install_id), params);
+  if ("unavailable" in where) return where;
+  const { token, owner, repo } = where;
+
+  // A floor rather than a filter: a team that has decided low-severity advisories
+  // are noise wants "critical and high", not "high only".
+  const floor = params.get("severity")?.trim().toLowerCase();
+  const wanted = new Set<string>(
+    floor && SEVERITIES.includes(floor as (typeof SEVERITIES)[number])
+      ? SEVERITIES.slice(0, SEVERITIES.indexOf(floor as (typeof SEVERITIES)[number]) + 1)
+      : SEVERITIES
+  );
+
+  const response = await fetch(
+    `${config.github.apiBase}/repos/${owner}/${repo}` +
+      "/dependabot/alerts?state=open&per_page=100",
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+      },
+    }
+  );
+  // A repository with Dependabot disabled answers 403 rather than an empty
+  // list, which is a different thing from "this app may not look" and reads the
+  // same from here. Both mean there is nothing to draw.
+  if (!response.ok) return { unavailable: "vendor-error" };
+
+  const alerts = (await response.json()) as Array<{
+    security_advisory?: { severity?: string };
+  }>;
+
+  const counts = new Map<string, number>();
+  let total = 0;
+  for (const alert of alerts) {
+    const severity = alert.security_advisory?.severity;
+    if (typeof severity !== "string" || !wanted.has(severity)) continue;
+    counts.set(severity, (counts.get(severity) ?? 0) + 1);
+    total += 1;
+  }
+
+  // Bucketed and ordered here rather than in the widget, for the same reason
+  // the throughput series is: a widget module runs in a sandbox with a time
+  // budget, and a hundred advisories is not what it draws.
+  //
+  // One page, so a repository with more than a hundred open alerts undercounts.
+  // Said rather than hidden — a number that quietly stops rising at 100 is
+  // worse than one that is known to.
+  const severities = SEVERITIES.filter((severity) => counts.has(severity)).map(
+    (severity) => ({ severity, count: counts.get(severity)! })
+  );
+
+  return {
+    total,
+    severities,
+    // The one place a member can act on this, carried because the widget draws
+    // it as a link and has no other way to build a URL.
+    url: `${config.github.webBase}/${owner}/${repo}/security/dependabot`,
+  };
+}
+
 export async function issueThroughput(
-  claims: ContextClaims
+  claims: ContextClaims,
+  params: URLSearchParams
 ): Promise<Record<string, unknown>> {
   // Guild-scoped for the same reason as the count, and it matters more here:
   // this is the heaviest call this app makes, and it runs once per guild per
   // TTL rather than once per member.
-  const access = await guildAccess(await workspaceFor(claims.app_install_id));
-  if ("unavailable" in access) return access;
-  const { token, workspace } = access;
+  const where = await access(await workspaceFor(claims.app_install_id), params);
+  if ("unavailable" in where) return where;
+  const { token, owner, repo } = where;
 
   const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  const query = new URLSearchParams({
+    state: "all",
+    per_page: "100",
+    since,
+  });
+  const label = params.get("label")?.trim();
+  if (label) query.set("labels", label);
+
   const response = await fetch(
-    `${config.github.apiBase}/repos/${workspace.owner}/${workspace.repo}` +
-      `/issues?state=all&per_page=100&since=${encodeURIComponent(since)}`,
+    `${config.github.apiBase}/repos/${owner}/${repo}/issues?${query}`,
     {
       headers: {
         Authorization: `Bearer ${token}`,

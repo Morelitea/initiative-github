@@ -115,6 +115,14 @@ export const config = {
      */
     webhookSecret: required("GITHUB_WEBHOOK_SECRET"),
 
+    /**
+     * Turns on the one-click registration flow, and is the only thing guarding
+     * it. Unset by default, which is what an operator should return it to once
+     * they have their credentials: the route it opens creates a GitHub App and
+     * shows its secrets, and it is needed exactly once in a deployment's life.
+     */
+    setupToken: process.env.GITHUB_APP_SETUP_TOKEN || null,
+
     /** Where the API answers. */
     apiBase: (process.env.GITHUB_API_BASE ?? "https://api.github.com").replace(/\/+$/, ""),
 

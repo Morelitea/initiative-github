@@ -36,3 +36,23 @@ export const INSTALL_PATH = "/install/github";
 
 /** The app's one webhook endpoint — registered once, not per repository. */
 export const WEBHOOK_PATH = "/webhooks/github";
+
+/**
+ * Where an operator creates this deployment's own GitHub App in one click.
+ *
+ * Off unless `GITHUB_APP_SETUP_TOKEN` is set, and 404 rather than 403 when it
+ * is not — a route that answers differently depending on whether a feature is
+ * configured tells an unauthenticated caller which deployments to come back to.
+ */
+export const REGISTER_PATH = "/setup/github/register";
+
+/**
+ * Where GitHub returns the operator, with a code worth four credentials.
+ *
+ * This is the manifest's `redirect_url`, which is a different thing from the
+ * `callback_urls` a member's authorization returns to and from the `setup_url`
+ * an installation returns to. Three redirects, three audiences, one app — and
+ * pointing any of them at another's route fails at whichever moment somebody
+ * happens to exercise it.
+ */
+export const REGISTERED_PATH = "/setup/github/registered";

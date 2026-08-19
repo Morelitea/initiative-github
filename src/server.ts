@@ -11,9 +11,10 @@
  * - **`/data/*` and `/actions/*`** — Initiative calling in, carrying a context
  *   token naming one guild, one install and one scope. Verified per call.
  * - **`/connect/*`, `/install/*`, `/setup/*`** — a person's browser, running
- *   the vendor's flow. Three plain pages and no embedded surface: a member
- *   connecting their own account, an org owner installing the GitHub App, and
- *   where GitHub returns them afterwards.
+ *   the vendor's flow. Plain pages and no embedded surface: a member connecting
+ *   their own account, an org owner installing the GitHub App, and — only while
+ *   an operator has switched it on — the two that register the GitHub App in
+ *   the first place.
  * - **`/webhooks/github`** — the *vendor* calling in, verified against GitHub's
  *   own webhook secret rather than against Initiative's. This is the trigger
  *   half of the automation surface: a delivery here becomes an event in every
@@ -47,13 +48,28 @@ import {
   CALLBACK_PATH,
   CONNECT_PATH,
   INSTALL_PATH,
+  REGISTERED_PATH,
+  REGISTER_PATH,
   SETUP_PATH,
   WEBHOOK_PATH,
 } from "./routes.js";
 import { createIssue } from "./github/actions.js";
-import { issueThroughput, openIssues, reviewQueue } from "./github/queries.js";
+import {
+  dependabotAlerts,
+  issueThroughput,
+  openIssues,
+  reviewQueue,
+} from "./github/queries.js";
 import { installUrl } from "./github/app.js";
 import { beginInstall, beginOAuth, completeOAuth } from "./github/oauth.js";
+import {
+  authorized,
+  convert,
+  credentialsPage,
+  registerPage,
+  setupEnabled,
+  verifyState,
+} from "./github/setup.js";
 import {
   DELIVERY_HEADER,
   EVENT_HEADER,
@@ -112,12 +128,21 @@ function sendBytes(res: ServerResponse, status: number, payload: string): void {
 const MANIFEST_DOCUMENT = JSON.stringify(document);
 
 
-function sendPage(res: ServerResponse, html: string): void {
+function sendPage(
+  res: ServerResponse,
+  html: string,
+  options: { secret?: boolean } = {}
+): void {
   res.writeHead(200, {
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(html),
     // Not framed by anyone: this app mounts no embedded surface.
     "Content-Security-Policy": "frame-ancestors 'none'",
+    // One page here renders credentials. It must not sit in a shared cache, and
+    // the setup token must not travel onward in a Referer header to GitHub.
+    ...(options.secret
+      ? { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" }
+      : {}),
   });
   res.end(html);
 }
@@ -213,7 +238,16 @@ export const server = createServer(async (req, res) => {
     if (req.method === "GET" && path === "/data/review-queue") {
       const claims = await context(req, res, { scope: "data", sourceId: "review-queue" });
       if (!claims) return;
-      return send(res, 200, await reviewQueue(claims));
+      return send(res, 200, await reviewQueue(claims, url.searchParams));
+    }
+
+    if (req.method === "GET" && path === "/data/dependabot-alerts") {
+      const claims = await context(req, res, {
+        scope: "data",
+        sourceId: "dependabot-alerts",
+      });
+      if (!claims) return;
+      return send(res, 200, await dependabotAlerts(claims, url.searchParams));
     }
 
     if (req.method === "GET" && path === "/data/issue-throughput") {
@@ -222,7 +256,7 @@ export const server = createServer(async (req, res) => {
         sourceId: "issue-throughput",
       });
       if (!claims) return;
-      return send(res, 200, await issueThroughput(claims));
+      return send(res, 200, await issueThroughput(claims, url.searchParams));
     }
 
     // --- actions, called by the automation service ------------------------
@@ -311,6 +345,51 @@ export const server = createServer(async (req, res) => {
             "start working within a few minutes."
         )
       );
+    }
+
+    // --- registering this deployment's own GitHub App ----------------------
+    // Two routes that exist only while `GITHUB_APP_SETUP_TOKEN` is set. They
+    // create a GitHub App and show its secrets, which is a thing to be able to
+    // do once and then not be able to do — so "off" is `404`, indistinguishable
+    // from a deployment that never had the feature.
+    if (req.method === "GET" && (path === REGISTER_PATH || path === REGISTERED_PATH)) {
+      if (!setupEnabled()) return send(res, 404, { error: "no such route" });
+
+      if (path === REGISTER_PATH) {
+        if (!authorized(url.searchParams.get("token"))) {
+          return send(res, 404, { error: "no such route" });
+        }
+        const org = url.searchParams.get("org");
+        // An organization login is a path segment on GitHub's own URL, and this
+        // one arrived in a query string.
+        if (org !== null && !/^[A-Za-z0-9-]{1,39}$/.test(org)) {
+          return send(res, 400, { error: "that is not an organization login" });
+        }
+        return sendPage(res, registerPage(org), { secret: true });
+      }
+
+      // GitHub returns the operator here with a code and the state this app
+      // signed. The setup token is not in the redirect, so the state is what
+      // carries the authority — see `setup.ts`.
+      if (!verifyState(url.searchParams.get("state"))) {
+        return send(res, 404, { error: "no such route" });
+      }
+      const code = url.searchParams.get("code");
+      if (!code) return send(res, 400, { error: "no code" });
+
+      const credentials = await convert(code);
+      if (!credentials) {
+        return sendPage(
+          res,
+          page(
+            "Could not finish",
+            "GitHub would not exchange that code. It is good for an hour and " +
+              "for one attempt — start again from the setup link."
+          ),
+          { secret: true }
+        );
+      }
+      return sendPage(res, credentialsPage(credentials), { secret: true });
     }
 
     // --- the vendor calling in ---------------------------------------------

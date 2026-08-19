@@ -42,8 +42,12 @@ import { config } from "../config.js";
 import { initiative } from "../initiative.js";
 import { PUBLIC_ID } from "../manifest.config.js";
 import { syncInstall } from "../sync.js";
-import { forgetInstallation } from "./app.js";
-import { installsForInstallation, installsWatching } from "./workspace.js";
+import { forgetInstallation, forgetRepositories } from "./app.js";
+import {
+  installsAwaiting,
+  installsForInstallation,
+  installsWatching,
+} from "./workspace.js";
 
 /** GitHub's own headers on a delivery. */
 export const EVENT_HEADER = "x-github-event";
@@ -121,6 +125,16 @@ export function translate(
   event: string,
   payload: Record<string, unknown>
 ): Translated | null {
+  // Which repository it happened in, on every event.
+  //
+  // An install may cover several, so a run started by an issue has to know
+  // where the issue is — to file a task against the right project, to move the
+  // right board, to tag the right release. Carried on every event rather than
+  // added when the first automation needs it: an event's outputs are part of
+  // the pinned definition a guild installed, so widening them later is a
+  // version every guild has to take.
+  const repository = readRepository(payload)?.repo;
+
   if (event === "issues") {
     const action = payload.action;
     if (action !== "opened" && action !== "closed") return null;
@@ -130,6 +144,7 @@ export function translate(
       type: action === "opened" ? EVENTS.issueOpened : EVENTS.issueClosed,
       // Exactly the trigger node's declared outputs.
       payload: {
+        repository,
         issue_number: issue.number,
         issue_title: issue.title,
         issue_url: issue.html_url,
@@ -144,6 +159,7 @@ export function translate(
     return {
       type: EVENTS.reviewRequested,
       payload: {
+        repository,
         pull_number: pull.number,
         pull_title: pull.title,
         pull_url: pull.html_url,
@@ -159,28 +175,16 @@ export interface DeliveryResult {
   emitted: number;
   /** Installs re-synced because the relationship changed, not the repository. */
   resynced?: number;
-  reason?: "unhandled" | "no-repository" | "no-install" | "installation";
+  reason?:
+    | "unhandled"
+    | "no-repository"
+    | "no-installation"
+    | "no-install"
+    | "installation";
 }
 
 /** The deliveries that are about this app rather than about a repository. */
 const LIFECYCLE_EVENTS = new Set(["installation", "installation_repositories"]);
-
-/** `owner/repo` out of whichever list of repositories a payload carries. */
-function readRepositories(payload: Record<string, unknown>): Repository[] {
-  const lists = ["repositories", "repositories_added", "repositories_removed"];
-  const found: Repository[] = [];
-  for (const key of lists) {
-    const value = payload[key];
-    if (!Array.isArray(value)) continue;
-    for (const entry of value) {
-      const fullName = (entry as { full_name?: unknown } | null)?.full_name;
-      if (typeof fullName !== "string") continue;
-      const [owner, repo] = fullName.split("/");
-      if (owner && repo) found.push({ owner, repo });
-    }
-  }
-  return found;
-}
 
 /**
  * An organization added, removed, or re-scoped this app's installation.
@@ -202,21 +206,35 @@ function readRepositories(payload: Record<string, unknown>): Repository[] {
 async function handleInstallation(
   payload: Record<string, unknown>
 ): Promise<DeliveryResult> {
-  const installation = payload.installation as { id?: unknown } | undefined;
+  const installation = payload.installation as
+    | { id?: unknown; account?: { login?: unknown } }
+    | undefined;
   const installationId =
     typeof installation?.id === "number" ? installation.id : null;
+  const owner =
+    typeof installation?.account?.login === "string"
+      ? installation.account.login
+      : null;
 
   const guilds = new Map<number, number>();
+
   if (installationId !== null) {
-    // Whatever just happened, the token held for it is no longer trustworthy:
-    // it may have been revoked, or narrowed to fewer repositories.
+    // Whatever just happened, what is held for it is no longer trustworthy: the
+    // token may have been revoked, and the repository list is the very thing
+    // this delivery is usually about.
     forgetInstallation(installationId);
+    forgetRepositories(installationId);
     for (const install of await installsForInstallation(installationId)) {
       guilds.set(install.appInstallId, install.guildId);
     }
   }
-  for (const repository of readRepositories(payload)) {
-    for (const install of await installsWatching(repository.owner, repository.repo)) {
+
+  // And the installs that have never seen an installation, matched by the
+  // account instead. An `installation.created` delivery is the first time this
+  // app has heard of that installation, so no row names it yet — and the guild
+  // waiting for exactly this event is precisely one of those rows.
+  if (owner) {
+    for (const install of await installsAwaiting(owner)) {
       guilds.set(install.appInstallId, install.guildId);
     }
   }
@@ -254,7 +272,15 @@ export async function handleDelivery(
   const repository = readRepository(payload);
   if (!repository) return { emitted: 0, reason: "no-repository" };
 
-  const installs = await installsWatching(repository.owner, repository.repo);
+  // Keyed on the installation GitHub says produced this, then narrowed by the
+  // guild's own list. An owner is a string an admin typed and a repository can
+  // be renamed or transferred under one; the installation is a fact.
+  const installation = payload.installation as { id?: unknown } | undefined;
+  if (typeof installation?.id !== "number") {
+    return { emitted: 0, reason: "no-installation" };
+  }
+
+  const installs = await installsWatching(installation.id, repository.repo);
   if (installs.length === 0) return { emitted: 0, reason: "no-install" };
 
   let emitted = 0;

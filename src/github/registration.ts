@@ -31,6 +31,7 @@
 
 import {
   CALLBACK_PATH,
+  REGISTERED_PATH,
   SETUP_PATH,
   WEBHOOK_PATH,
 } from "../routes.js";
@@ -45,16 +46,32 @@ import {
  *     `create-issue` automation action is the write. Read alone would be enough
  *     for the dashboard, and is not enough for the automation node.
  *   * `pull_requests: read` — "which pull requests are waiting on my review".
+ *   * `vulnerability_alerts: read` — open Dependabot alerts, by severity. Note
+ *     the key: the permission is called "Dependabot alerts" everywhere a person
+ *     reads it and `vulnerability_alerts` everywhere a machine does, and a key
+ *     GitHub does not recognize is not an error — it is a permission that
+ *     silently was not asked for.
  *   * `metadata: read` — mandatory for every GitHub App, and granted implicitly
- *     by the two above. Stated so the list is the whole truth.
+ *     by the others. Stated so the list is the whole truth.
+ *
+ * Every one of them is repository-scoped. Nothing here reads an organization's
+ * members, its teams, or its settings, and `test/github-app.test.ts` refuses a
+ * permission whose name says otherwise.
  *
  * Widening this is not free and not silent: GitHub asks every organization that
  * has already installed the app to approve the new permission, and the app
- * keeps the old grant until they do.
+ * keeps the old grant until they do — so a permission added later arrives
+ * broken for everybody who installed before it. That asymmetry is a real
+ * argument for asking early, and it is not the one this list follows: a
+ * permission with nothing reading it is one an organization grants for no
+ * feature, and a reviewer cannot tell the difference between "not used yet" and
+ * "used for something not described". Each of these arrived with the code that
+ * reads it.
  */
 export const PERMISSIONS: Readonly<Record<string, string>> = {
   issues: "write",
   pull_requests: "read",
+  vulnerability_alerts: "read",
   metadata: "read",
 };
 
@@ -67,6 +84,24 @@ export const PERMISSIONS: Readonly<Record<string, string>> = {
  * so it is not listed here and is still handled.
  */
 export const WEBHOOK_EVENTS: readonly string[] = ["issues", "pull_request"];
+
+/**
+ * Where somebody deciding whether to install this app goes to read about it.
+ *
+ * The one URL on the registration that is **not** an address this deployment
+ * answers on. Everything else here — the callback, the setup page, the webhook
+ * — is matched exactly by GitHub against a live host, which is why each
+ * deployment registers its own app. This is a link on a page, so it should be
+ * the same stable place for all of them, and the project's own page is the only
+ * thing that is stable across self-hosters.
+ *
+ * An operator with somewhere better to send people overrides it. A private
+ * deployment pointing at an internal runbook is a perfectly good answer, and a
+ * URL nobody outside the company can open is not, which is why this is not
+ * defaulted to the deployment's own address: a homepage no reader can reach is
+ * worse than one that is merely generic.
+ */
+export const HOMEPAGE = "https://github.com/Morelitea/initiative-github";
 
 /** The registration, as GitHub's own manifest format. */
 export interface GithubAppManifest {
@@ -101,19 +136,34 @@ export interface GithubAppManifest {
  *     re-reads that on the next delivery anyway.
  *
  * @param publicUrl the deployment's `APP_PUBLIC_URL`, without a trailing slash
+ * @param options.homepage where to send a reader; not an address this app serves
  */
 export function githubAppManifest(
   publicUrl: string,
-  options: { name?: string; description?: string; public?: boolean } = {}
+  options: {
+    name?: string;
+    description?: string;
+    homepage?: string;
+    public?: boolean;
+  } = {}
 ): GithubAppManifest {
   const base = publicUrl.replace(/\/+$/, "");
   return {
     name: options.name ?? "Initiative for GitHub",
-    url: base,
+    // Deliberately not `base`. See HOMEPAGE: this is the one field a reader
+    // follows rather than a machine.
+    url: options.homepage ?? HOMEPAGE,
     hook_attributes: { url: `${base}${WEBHOOK_PATH}`, active: true },
-    // Where GitHub returns a person after they authorize, and — because
-    // `request_oauth_on_install` is on — after they install as well.
-    redirect_url: `${base}${CALLBACK_PATH}`,
+    // Three redirects, three audiences, and they are not interchangeable —
+    // which is easy to get wrong because all three are "where GitHub sends
+    // somebody afterwards":
+    //
+    //   * `redirect_url` — the *operator*, once, immediately after this
+    //     manifest creates the app. It carries the code that is exchanged for
+    //     the app's credentials, and it is never used again.
+    //   * `callback_urls` — a *member*, every time they authorize.
+    //   * `setup_url` — an *organization owner*, after they install.
+    redirect_url: `${base}${REGISTERED_PATH}`,
     callback_urls: [`${base}${CALLBACK_PATH}`],
     setup_url: `${base}${SETUP_PATH}`,
     description:

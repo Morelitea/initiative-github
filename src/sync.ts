@@ -29,12 +29,14 @@
 
 import { ChannelError, type InstallConfig } from "initiative-app-kit";
 
+import type { Workspace } from "./github/workspace.js";
+
 import { config } from "./config.js";
 import { initiative } from "./initiative.js";
 import {
   forgetInstallation,
   forgetInstallationsExcept,
-  installationForRepo,
+  installationForOwner,
 } from "./github/app.js";
 import {
   forgetInstallsExcept,
@@ -44,19 +46,46 @@ import {
   workspaceFor,
 } from "./github/workspace.js";
 
-/** What a `static` connection's values look like once an admin has filled it in. */
-function readWorkspace(
-  installConfig: InstallConfig
-): { owner: string; repo: string } | null {
+/**
+ * What a `static` connection's values look like once an admin has filled it in.
+ *
+ * One required field and one optional one. `repos` is a comma-separated list
+ * because the field vocabulary a connection form draws from has no array in it
+ * — deliberately, since one closed set of field types is what lets one renderer
+ * draw every app's settings page — so a list arrives as a string and is split
+ * here rather than anywhere a person can see.
+ *
+ * Blank means *every repository the installation covers*, which is the useful
+ * default: the organization already chose which repositories to grant when it
+ * installed the app, and asking an admin to restate that list is asking them to
+ * keep two copies of one decision in step.
+ */
+function readWorkspace(installConfig: InstallConfig): Workspace | null {
   const values = installConfig.connections.workspace;
   if (!values) return null;
+
   const owner = typeof values.owner === "string" ? values.owner.trim() : "";
-  const repo = typeof values.repo === "string" ? values.repo.trim() : "";
-  if (!owner || !repo) return null;
-  // A repository is `owner/repo`, and an admin who typed the whole thing into
-  // one box would otherwise produce a path with an extra segment in it.
-  if (owner.includes("/") || repo.includes("/")) return null;
-  return { owner, repo };
+  // An owner is one path segment. Somebody who typed `acme/widgets` into it
+  // would otherwise build every URL with an extra segment in it.
+  if (!owner || owner.includes("/")) return null;
+
+  const listed = typeof values.repos === "string" ? values.repos : "";
+  const repos = listed
+    .split(",")
+    .map((name) => name.trim())
+    // A repository typed as `acme/widgets` when the owner is already named
+    // separately is the same mistake one field over; take the last segment,
+    // which is what they meant.
+    .map((name) => (name.includes("/") ? name.slice(name.lastIndexOf("/") + 1) : name))
+    .filter(Boolean);
+
+  // Written by a version of this app that took exactly one repository. An
+  // install that has not been reconfigured since still has its value here, and
+  // reading it is the difference between upgrading and breaking.
+  const legacy = typeof values.repo === "string" ? values.repo.trim() : "";
+  if (!repos.length && legacy && !legacy.includes("/")) repos.push(legacy);
+
+  return { owner, repos };
 }
 
 /**
@@ -87,11 +116,11 @@ export async function syncInstall(guildId: number): Promise<boolean> {
   // narrow an installation to fewer repositories without uninstalling it, and
   // that is invisible from every other angle — the token keeps minting and the
   // calls start coming back empty.
-  const installationId = await installationForRepo(workspace.owner, workspace.repo);
+  const installationId = await installationForOwner(workspace.owner);
   await rememberWorkspace(installId, guildId, workspace, installationId);
 
   if (installationId === null) {
-    // The form is filled in and the app is not installed where it points. That
+    // The form is filled in and the app is not installed on that account. That
     // is somebody else's move to make — an organization owner, at GitHub — so
     // it is reported as a distinct reason rather than as "not configured".
     await initiative.reportStatus(guildId, {

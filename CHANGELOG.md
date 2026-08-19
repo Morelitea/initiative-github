@@ -26,10 +26,31 @@ guild admin — and everything below follows from having one.
   anything.
 - PKCE on the member's flow, so an authorization code caught in a redirect
   cannot be exchanged by whoever caught it.
+- One-click registration of the GitHub App itself, at `/setup/github/register`
+  (`src/github/setup.ts`). It posts the generated manifest to GitHub and shows
+  the four credentials once; nothing is stored, so `config.ts` keeps its promise
+  that credentials are read at boot and a running deployment's identity cannot
+  be changed by reaching a URL. Off unless `GITHUB_APP_SETUP_TOKEN` is set, and
+  `404` rather than `403` when it is not — a route that answers differently once
+  a feature is configured tells an unauthenticated caller which deployments to
+  return to. The return leg cannot be guarded by the token, since GitHub sends
+  only a code and a `state`, so the state is signed with the token: rotating it
+  ends every flow it authorized.
 - `installation` and `installation_repositories` deliveries re-sync the installs
   they affect, so an organization installing or removing the app is reflected in
   Initiative within seconds rather than at the next poll. They emit nothing:
   nobody subscribed to hear that somebody clicked a button.
+- **Dependabot alerts**, as a guild-scoped source and a fourth widget: open
+  alerts by severity, worst first, answered from the installation. The tier
+  matters more here than anywhere else — the people who most need to see how
+  exposed a repository is are the ones least likely to have connected a personal
+  GitHub account. It arrives with the `vulnerability_alerts: read` permission
+  that reads it, which is the rule the permission list follows: a permission
+  with no feature behind it is one an organization grants for nothing, and a
+  reviewer cannot tell "not used yet" from "used for something not described".
+  Note the key — the permission is called *Dependabot alerts* everywhere a
+  person reads it and `vulnerability_alerts` everywhere a machine does, and
+  GitHub does not complain about the wrong one; it grants nothing.
 - `GITHUB_WEB_BASE`, beside the API base it always had. On GitHub Enterprise the
   API and the pages a person visits are different hosts, so configuring one and
   hardcoding the other worked everywhere except there.
@@ -45,6 +66,33 @@ guild admin — and everything below follows from having one.
 
 ### Changed
 
+- **An install covers repositories, not a repository.** The `workspace`
+  connection now takes an account and an optional list, where blank means every
+  repository the installation covers — the organization already chose when it
+  installed the app, and asking an admin to restate that is two copies of one
+  decision. Every source takes a `repo` parameter, so a dashboard says which one
+  a tile is about; since dashboards are initiative-scoped, binding it there is
+  what pins one team to one repository. The app enforces "inside what the
+  organization granted" and cannot enforce "inside what this team may see" —
+  a context token names a guild and an install and nothing finer, so what holds
+  that boundary is who may edit the dashboard.
+- Sources narrow further from the same place: `milestone` and `assignee` on
+  `open-issues`, `label` on `issue-throughput`, a severity floor on
+  `dependabot-alerts`. The platform caches per parameter set, so two teams' tiles
+  are one source answered twice rather than one answer shared.
+- Every event and the `create-issue` action carry `repository`. Added now rather
+  than when the first automation needs it: outputs are part of the pinned
+  definition a guild installed, so widening them later is a version every guild
+  has to take.
+- An installation is discovered from the **account** rather than from one
+  repository — one grant covers every repository the organization chose, so
+  asking per repository was one call per repository to learn the same id.
+- A delivery is matched to installs by the installation that produced it, then
+  narrowed by the guild's list. An owner is a string an admin typed and a
+  repository can be renamed or transferred under one; the installation is a
+  fact GitHub asserts. An `installation.created` delivery names an installation
+  nothing has recorded yet, so that one is matched by account instead — which is
+  exactly the guild sitting at `github_app_not_installed` waiting for it.
 - **The guild's access is the organization's installation, not a token an admin
   pasted.** The `shared_account` connection is gone. An admin fills in the
   repository — the thing they were always going to fill in — and the app asks
@@ -73,6 +121,12 @@ guild admin — and everything below follows from having one.
 
 - The served document carried no `uid`, so nothing tied the verified
   registration to a listing even once one existed.
+- The GitHub registration's `redirect_url` pointed at the member's OAuth
+  callback. It is not that URL: `redirect_url` is where GitHub returns the
+  *operator* once, after a manifest creates the app — a different audience and a
+  different moment from `callback_urls` and `setup_url`. All three are "where
+  GitHub sends somebody afterwards", which is why they get conflated, and each
+  one fails only when somebody happens to exercise that path.
 - All three widgets required a member's personal account while only one of their
   sources did, so two tiles refused with `CONNECTION_REQUIRED` for every member
   who had not connected one — to draw numbers that never needed them. 0.3.0

@@ -27,6 +27,7 @@ const automation = () =>
       event?: string;
       operation?: string;
       fields?: Array<{ type: string }>;
+      outputs?: string[];
     }>;
     operations?: Array<{ id: string; path: string }>;
   };
@@ -77,7 +78,15 @@ describe("the manifest", () => {
 describe("the automation surface", () => {
   it("declares a domain and a contract version", () => {
     expect(automation().contract).toBe(1);
-    expect(automation().domain?.id).toBeTruthy();
+    expect(automation().domain?.label).toBeTruthy();
+  });
+
+  it("does not name its own drawer", () => {
+    // The drawer is `app.<public_id>`, derived from the registration. An id
+    // chosen here could collide with a built-in one, and both ways that fails
+    // are silent — nodes filed into Initiative's own tag drawer, or a whole
+    // drawer inheriting a scope rule that hides it inside an initiative.
+    expect(automation().domain).not.toHaveProperty("id");
   });
 
   it("only triggers on events this manifest actually emits", () => {
@@ -241,15 +250,67 @@ describe("the choices this app makes", () => {
     expect(account?.fields).toEqual([]);
   });
 
-  it("takes the repository as two fields rather than one", () => {
-    // An admin who typed `acme/widgets` into a single box would produce a path
-    // with an extra segment in it, and every call would 404 with nothing saying
-    // why. Two required fields is the form making that impossible.
+  it("asks an admin for an account, and for nothing it can work out itself", () => {
+    // The owner is the one thing this app cannot derive. Which repositories it
+    // may see is the organization's own answer, given when it installed the
+    // app — so the field that narrows further is optional, and blank means
+    // "everything you granted" rather than "nothing".
     const workspace = manifest.connections?.find((c) => c.id === "workspace");
     expect(workspace?.scope).toBe("static");
-    expect(workspace?.fields.map((field) => field.key)).toEqual(["owner", "repo"]);
-    for (const field of workspace?.fields ?? []) {
-      expect(field.required).toBe(true);
+    expect(workspace?.fields.map((field) => field.key)).toEqual(["owner", "repos"]);
+
+    const byKey = Object.fromEntries(
+      (workspace?.fields ?? []).map((field) => [field.key, field])
+    );
+    expect(byKey.owner.required).toBe(true);
+    expect(byKey.repos.required).toBeUndefined();
+  });
+
+  it("lets a dashboard say which repository a tile is about", () => {
+    // The whole of how one widget serves several teams. A source cannot be told
+    // which initiative is asking, so the dashboard says which repository — and
+    // a dashboard belongs to exactly one initiative. Every source has to accept
+    // it or the ones that do not are stuck on whatever the install defaults to.
+    for (const source of manifest.data_sources ?? []) {
+      const params = (source.params_schema ?? []).map((param) => param.key);
+      expect(params, `${source.id} cannot be pointed at a repository`).toContain(
+        "repo"
+      );
+    }
+  });
+
+  it("tells an automation which repository fired it", () => {
+    // An install may cover several, so a run that guessed would act on the
+    // wrong one. Carried on every event rather than added when the first
+    // automation needs it: outputs are part of the pinned definition a guild
+    // installed, so widening them later is a version every guild has to take.
+    for (const node of automation().nodes ?? []) {
+      const carried = (node.outputs ?? []).map((output) => output.key);
+      expect(carried, `${node.key} does not name a repository`).toContain("repository");
+    }
+  });
+
+  it("types every output, so a binding into a later node can be checked", () => {
+    // A bare name can only be checked when the automation runs. The type is
+    // what lets the editor refuse a URL dropped into a number field at the
+    // moment somebody is still looking at it.
+    for (const node of automation().nodes ?? []) {
+      for (const output of node.outputs ?? []) {
+        expect(output.type, `${node.key}.${output.key} has no type`).toBeTruthy();
+      }
+    }
+  });
+
+  it("points every trigger filter at an output of its own node", () => {
+    // A filter naming nothing is the failure this catalogue exists to refuse:
+    // it registers, sits enabled, and never matches.
+    for (const node of automation().nodes ?? []) {
+      if (node.category !== "trigger") continue;
+      const carried = new Set((node.outputs ?? []).map((output) => output.key));
+      for (const field of node.fields ?? []) {
+        const matches = field.matches ?? field.key;
+        expect(carried.has(matches), `${node.key}.${field.key} matches nothing`).toBe(true);
+      }
     }
   });
 

@@ -25,6 +25,7 @@ import { describe, expect, it } from "vitest";
 import { config } from "../src/config.js";
 import { appJwt } from "../src/github/app.js";
 import {
+  HOMEPAGE,
   PERMISSIONS,
   WEBHOOK_EVENTS,
   githubAppManifest,
@@ -35,6 +36,7 @@ import {
   CALLBACK_PATH,
   CONNECT_PATH,
   INSTALL_PATH,
+  REGISTERED_PATH,
   SETUP_PATH,
   WEBHOOK_PATH,
 } from "../src/routes.js";
@@ -97,27 +99,56 @@ describe("saying who this app is", () => {
 });
 
 describe("the registration this app needs at GitHub", () => {
-  it("builds every URL from the one public address", () => {
+  it("builds every address it answers on from the one public address", () => {
     // A callback on one host and a webhook on another is a deployment that
     // half-works, and nothing at either end says which half.
-    const urls = [
-      registration.url,
+    const served = [
       registration.hook_attributes.url,
       registration.redirect_url,
       registration.setup_url,
       ...registration.callback_urls,
     ];
-    for (const url of urls) expect(url.startsWith(PUBLIC_URL)).toBe(true);
+    for (const url of served) expect(url.startsWith(PUBLIC_URL)).toBe(true);
+  });
+
+  it("points its homepage somewhere a reader can actually go", () => {
+    // The one field on the registration that is not an address this deployment
+    // answers on — it is a link, shown to whoever is deciding whether to
+    // install. Defaulting it to the deployment's own URL would send every
+    // reader at a container that serves them no page, and on a private
+    // deployment at a host they cannot resolve.
+    expect(registration.url).toBe(HOMEPAGE);
+    expect(registration.url.startsWith("https://")).toBe(true);
+    expect(registration.url.startsWith(PUBLIC_URL)).toBe(false);
+  });
+
+  it("lets an operator send readers somewhere of their own", () => {
+    const own = githubAppManifest(PUBLIC_URL, { homepage: "https://runbook.acme.test" });
+    expect(own.url).toBe("https://runbook.acme.test");
+    // And changing it moves nothing that GitHub matches.
+    expect(own.callback_urls).toEqual(registration.callback_urls);
+    expect(own.hook_attributes.url).toBe(registration.hook_attributes.url);
   });
 
   it("names the routes this app serves, not ones it might", () => {
     expect(registration.hook_attributes.url).toBe(`${PUBLIC_URL}${WEBHOOK_PATH}`);
     expect(registration.setup_url).toBe(`${PUBLIC_URL}${SETUP_PATH}`);
     expect(registration.callback_urls).toEqual([`${PUBLIC_URL}${CALLBACK_PATH}`]);
-    // The redirect after installing has to be the same place as the redirect
-    // after authorizing, because with `request_oauth_on_install` they are one
-    // journey and one handler.
-    expect(registration.redirect_url).toBe(registration.callback_urls[0]);
+    expect(registration.redirect_url).toBe(`${PUBLIC_URL}${REGISTERED_PATH}`);
+  });
+
+  it("keeps its three redirects apart", () => {
+    // All three are "where GitHub sends somebody afterwards", which is exactly
+    // why they get conflated. They have three audiences and three moments: the
+    // operator once, at creation; a member every time they authorize; an
+    // organization owner when they install. Pointing one at another's route
+    // fails only when somebody happens to exercise that path.
+    const redirects = [
+      registration.redirect_url,
+      registration.callback_urls[0],
+      registration.setup_url,
+    ];
+    expect(new Set(redirects).size).toBe(3);
   });
 
   it("sends the member's connection to the callback it registered", () => {
@@ -143,16 +174,38 @@ describe("the registration this app needs at GitHub", () => {
 });
 
 describe("asking for no more than it uses", () => {
-  it("asks for three permissions and no others", () => {
+  it("asks for these permissions and no others", () => {
     // Written out rather than derived, because this is the list an organization
     // reviews, and a test that computed it from the code would agree with any
-    // change the code made.
+    // change the code made. Note `vulnerability_alerts` rather than
+    // `dependabot_alerts`: the permission has a name for people and a key for
+    // machines, and GitHub does not complain about the wrong one — it just
+    // grants nothing.
     expect(PERMISSIONS).toEqual({
       issues: "write",
       pull_requests: "read",
+      vulnerability_alerts: "read",
       metadata: "read",
     });
     expect(registration.default_permissions).toEqual(PERMISSIONS);
+  });
+
+  it("has something reading every permission it asks for", () => {
+    // The rule the list above follows. A permission with no feature behind it
+    // is one an organization grants for nothing, and a reviewer cannot tell
+    // "not used yet" from "used for something not described".
+    const sources = (manifest.data_sources ?? []).map((source) => source.id);
+    const readers: Record<string, string> = {
+      issues: "open-issues",
+      pull_requests: "review-queue",
+      vulnerability_alerts: "dependabot-alerts",
+    };
+    for (const permission of Object.keys(PERMISSIONS)) {
+      // Granted implicitly by the rest and required of every GitHub App.
+      if (permission === "metadata") continue;
+      expect(readers[permission], `nothing declared reads ${permission}`).toBeDefined();
+      expect(sources).toContain(readers[permission]);
+    }
   });
 
   it("asks for nothing about the organization or its people", () => {

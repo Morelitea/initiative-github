@@ -127,14 +127,22 @@ export const manifest: Manifest = {
           },
         },
         {
-          key: "repo",
+          // Optional, and blank is the answer to reach for. The organization
+          // already chose which repositories to grant when it installed the
+          // app; asking an admin to restate that list here is asking them to
+          // keep two copies of one decision in step. Filled in only to narrow
+          // *further* than the installation does.
+          //
+          // Comma-separated because a connection's fields draw from one closed
+          // set of types and there is no array in it — deliberately, since that
+          // is what lets one renderer draw every app's settings page.
+          key: "repos",
           type: "string",
-          required: true,
           label: {
-            en: "Repository",
-            de: "Repository",
-            es: "Repositorio",
-            fr: "Dépôt",
+            en: "Repositories (comma-separated; blank for all)",
+            de: "Repositories (kommagetrennt; leer für alle)",
+            es: "Repositorios (separados por comas; vacío para todos)",
+            fr: "Dépôts (séparés par des virgules ; vide pour tous)",
           },
         },
       ],
@@ -151,9 +159,47 @@ export const manifest: Manifest = {
       cache_ttl_seconds: 60,
       params_schema: [
         {
+          // Which repository this tile is about, and the whole of how one
+          // widget serves several teams. A source cannot be told which
+          // initiative is asking — a context token names a guild and an install
+          // and nothing finer — so the *dashboard* says, through a fixed value
+          // on its binding. A dashboard belongs to exactly one initiative, so
+          // binding it there is what pins one team to one repository.
+          //
+          // Optional: an install covering one repository needs nobody to say so.
+          key: "repo",
+          type: "string",
+          label: {
+            en: "Repository",
+            de: "Repository",
+            es: "Repositorio",
+            fr: "Dépôt",
+          },
+        },
+        {
           key: "label",
           type: "string",
           label: { en: "Label", de: "Label", es: "Etiqueta", fr: "Étiquette" },
+        },
+        {
+          key: "milestone",
+          type: "string",
+          label: {
+            en: "Milestone",
+            de: "Meilenstein",
+            es: "Hito",
+            fr: "Jalon",
+          },
+        },
+        {
+          key: "assignee",
+          type: "string",
+          label: {
+            en: "Assignee",
+            de: "Zuständige Person",
+            es: "Persona asignada",
+            fr: "Personne assignée",
+          },
         },
       ],
       // Guild-scoped, and this is the choice worth copying. How many issues
@@ -172,6 +218,26 @@ export const manifest: Manifest = {
       path: "/data/review-queue",
       visibility: "member",
       cache_ttl_seconds: 60,
+      params_schema: [
+        {
+          // Which repository this tile is about, and the whole of how one
+          // widget serves several teams. A source cannot be told which
+          // initiative is asking — a context token names a guild and an install
+          // and nothing finer — so the *dashboard* says, through a fixed value
+          // on its binding. A dashboard belongs to exactly one initiative, so
+          // binding it there is what pins one team to one repository.
+          //
+          // Optional: an install covering one repository needs nobody to say so.
+          key: "repo",
+          type: "string",
+          label: {
+            en: "Repository",
+            de: "Repository",
+            es: "Repositorio",
+            fr: "Dépôt",
+          },
+        },
+      ],
       // Per member, and it could not be anything else: "waiting on me" has no
       // meaning without a me. This is the one source that needs the member's
       // own account, and the only reason this app asks for one.
@@ -180,12 +246,82 @@ export const manifest: Manifest = {
       requires: { all_of: ["workspace", "account"] },
     },
     {
+      id: "dependabot-alerts",
+      path: "/data/dependabot-alerts",
+      visibility: "member",
+      // Five minutes. An advisory is published, not typed, so this changes on
+      // GitHub's schedule rather than a member's.
+      cache_ttl_seconds: 300,
+      params_schema: [
+        {
+          // Which repository this tile is about, and the whole of how one
+          // widget serves several teams. A source cannot be told which
+          // initiative is asking — a context token names a guild and an install
+          // and nothing finer — so the *dashboard* says, through a fixed value
+          // on its binding. A dashboard belongs to exactly one initiative, so
+          // binding it there is what pins one team to one repository.
+          //
+          // Optional: an install covering one repository needs nobody to say so.
+          key: "repo",
+          type: "string",
+          label: {
+            en: "Repository",
+            de: "Repository",
+            es: "Repositorio",
+            fr: "Dépôt",
+          },
+        },
+        {
+          // A floor, not a filter: a team that has decided low-severity
+          // advisories are noise wants "critical and high", not "high only".
+          key: "severity",
+          type: "select",
+          options: ["critical", "high", "medium", "low"],
+          label: {
+            en: "Lowest severity to show",
+            de: "Niedrigste anzuzeigende Schwere",
+            es: "Severidad mínima a mostrar",
+            fr: "Gravité minimale à afficher",
+          },
+        },
+      ],
+      // Guild-scoped, and the tier matters more here than anywhere else: the
+      // people who most need to see how exposed a repository is are the ones
+      // least likely to have connected a personal GitHub account.
+      requires: { all_of: ["workspace"] },
+    },
+    {
       id: "issue-throughput",
       path: "/data/issue-throughput",
       visibility: "member",
       // Five minutes: a fortnight of daily counts does not change by the second,
       // and this is the most expensive call this app makes.
       cache_ttl_seconds: 300,
+      params_schema: [
+        {
+          // Which repository this tile is about, and the whole of how one
+          // widget serves several teams. A source cannot be told which
+          // initiative is asking — a context token names a guild and an install
+          // and nothing finer — so the *dashboard* says, through a fixed value
+          // on its binding. A dashboard belongs to exactly one initiative, so
+          // binding it there is what pins one team to one repository.
+          //
+          // Optional: an install covering one repository needs nobody to say so.
+          key: "repo",
+          type: "string",
+          label: {
+            en: "Repository",
+            de: "Repository",
+            es: "Repositorio",
+            fr: "Dépôt",
+          },
+        },
+        {
+          key: "label",
+          type: "string",
+          label: { en: "Label", de: "Label", es: "Etiqueta", fr: "Étiquette" },
+        },
+      ],
       // Guild-scoped for the same reason as the issue count, and it matters
       // more here: this is the heaviest call, and it runs once per guild per
       // five minutes rather than once per member.
@@ -193,8 +329,11 @@ export const manifest: Manifest = {
     },
   ],
 
-  // Three, because they show the three shapes a widget takes: one number, a
-  // list, and a series. A fourth of the same shape would teach nothing.
+  // Three shapes a widget takes — one number, a list, and a series — and four
+  // widgets, because the fourth is not here to demonstrate a shape. It reuses
+  // the list deliberately: it exists because `vulnerability_alerts` is a
+  // permission every organization installing this app has to grant, and a
+  // permission with nothing reading it is one they should refuse.
   widgets: [
     {
       id: "open-issues",
@@ -257,6 +396,37 @@ export const manifest: Manifest = {
       requires: { all_of: ["workspace", "account"] },
     },
     {
+      id: "dependabot-alerts",
+      meta: {
+        name: {
+          en: "Dependabot alerts",
+          de: "Dependabot-Warnungen",
+          es: "Alertas de Dependabot",
+          fr: "Alertes Dependabot",
+        },
+        description: {
+          en: "Open dependency alerts, worst first.",
+          de: "Offene Abhängigkeitswarnungen, die schlimmsten zuerst.",
+          es: "Alertas de dependencias abiertas, las peores primero.",
+          fr: "Alertes de dépendances ouvertes, les pires d'abord.",
+        },
+      },
+      sources: ["dependabot-alerts"],
+      module_source: ALERTS_WIDGET(),
+      sample_data: {
+        "dependabot-alerts": {
+          total: 7,
+          severities: [
+            { severity: "critical", count: 1 },
+            { severity: "high", count: 2 },
+            { severity: "medium", count: 4 },
+          ],
+          url: "#",
+        },
+      },
+      requires: { all_of: ["workspace"] },
+    },
+    {
       id: "issue-throughput",
       meta: {
         name: {
@@ -302,8 +472,11 @@ export const manifest: Manifest = {
   // contract. See AUTOMATION.md for the shape and what it maps onto.
   automation: {
     contract: 1,
+    // No id: the drawer is always `app.<public_id>`, derived from the
+    // registration Initiative matched this app by. A publisher-chosen id could
+    // collide with a built-in drawer — `tags` would file these nodes into
+    // Initiative's own tag drawer — and both ways that fails are silent.
     domain: {
-      id: "github",
       label: { en: "GitHub", de: "GitHub", es: "GitHub", fr: "GitHub" },
       icon: "Braces",
     },
@@ -331,8 +504,28 @@ export const manifest: Manifest = {
         // draws a node's form and a connection's alike.
         fields: [
           {
+            // Which repository, for an install that covers several. Blank means
+            // every one it covers — a trigger narrowing itself is the same
+            // choice a dashboard makes with its `repo` binding, made by whoever
+            // is building the automation instead.
+            key: "repository",
+            type: "string",
+            label: {
+              en: "Only this repository",
+              de: "Nur dieses Repository",
+              es: "Solo este repositorio",
+              fr: "Uniquement ce dépôt",
+            },
+          },
+          {
             key: "label",
             type: "string",
+            // The one filter here whose field and output are not the same
+            // word: an issue carries several labels, so this asks whether the
+            // list CONTAINS what was typed. Left unsaid it would default to an
+            // output called `label`, which does not exist — and a filter that
+            // can never match is refused rather than quietly never firing.
+            matches: "issue_labels",
             label: {
               en: "Only issues with this label",
               de: "Nur Issues mit diesem Label",
@@ -342,7 +535,18 @@ export const manifest: Manifest = {
           },
         ],
         // What the event carries into the run, for later nodes to read.
-        outputs: ["issue_number", "issue_title", "issue_url", "issue_labels"],
+        // `repository` leads, because an install may cover several and a run
+        // that guessed would act on the wrong one — file the task against the
+        // wrong project, move the wrong board, tag the wrong release.
+        outputs: [
+          { key: "repository", type: "string", label: { en: "Repository" } },
+          { key: "issue_number", type: "int", label: { en: "Issue number" } },
+          { key: "issue_title", type: "string", label: { en: "Issue title" } },
+          { key: "issue_url", type: "url", label: { en: "Issue URL" } },
+          // Several, so it can be filtered by containment and cannot be bound
+          // into a field that takes one value.
+          { key: "issue_labels", type: "string", list: true, label: { en: "Labels" } },
+        ],
       },
       {
         key: "review-requested",
@@ -361,8 +565,28 @@ export const manifest: Manifest = {
           fr: "Démarre quand une pull request demande une revue.",
         },
         event: `app.${PUBLIC_ID}.review-requested`,
-        fields: [],
-        outputs: ["pull_number", "pull_title", "pull_url"],
+        fields: [
+          {
+            // Which repository, for an install that covers several. Blank means
+            // every one it covers — a trigger narrowing itself is the same
+            // choice a dashboard makes with its `repo` binding, made by whoever
+            // is building the automation instead.
+            key: "repository",
+            type: "string",
+            label: {
+              en: "Only this repository",
+              de: "Nur dieses Repository",
+              es: "Solo este repositorio",
+              fr: "Uniquement ce dépôt",
+            },
+          },
+        ],
+        outputs: [
+          { key: "repository", type: "string", label: { en: "Repository" } },
+          { key: "pull_number", type: "int", label: { en: "Pull request number" } },
+          { key: "pull_title", type: "string", label: { en: "Pull request title" } },
+          { key: "pull_url", type: "url", label: { en: "Pull request URL" } },
+        ],
       },
       {
         key: "create-issue",
@@ -384,6 +608,20 @@ export const manifest: Manifest = {
         operation: "create-issue",
         fields: [
           {
+            // Where to open it. Optional, because an install covering one
+            // repository needs nobody to say so — and refused rather than
+            // guessed when it covers several, since an issue opened in the
+            // wrong repository is not something a later run can take back.
+            key: "repository",
+            type: "string",
+            label: {
+              en: "Repository",
+              de: "Repository",
+              es: "Repositorio",
+              fr: "Dépôt",
+            },
+          },
+          {
             key: "title",
             type: "string",
             required: true,
@@ -400,7 +638,11 @@ export const manifest: Manifest = {
             label: { en: "Label", de: "Label", es: "Etiqueta", fr: "Étiquette" },
           },
         ],
-        outputs: ["issue_number", "issue_url"],
+        outputs: [
+          { key: "repository", type: "string", label: { en: "Repository" } },
+          { key: "issue_number", type: "int", label: { en: "Issue number" } },
+          { key: "issue_url", type: "url", label: { en: "Issue URL" } },
+        ],
       },
     ],
     // Where each action is served. Called with a context token scoped to
@@ -457,6 +699,26 @@ export default function render({ data }) {
     items: items.map((item) => ({
       label: "#" + item.number + " " + item.title,
       href: item.url,
+    })),
+  };
+}
+`.trim();
+}
+
+function ALERTS_WIDGET(): string {
+  return `
+export default function render({ data }) {
+  const rows = data["dependabot-alerts"] ?? {};
+  const severities = rows.severities ?? [];
+  if (!severities.length) {
+    return { kind: "empty", label: "No open Dependabot alerts" };
+  }
+  return {
+    kind: "list",
+    items: severities.map((entry) => ({
+      label: entry.severity.charAt(0).toUpperCase() + entry.severity.slice(1)
+        + " \u00b7 " + entry.count,
+      href: rows.url,
     })),
   };
 }

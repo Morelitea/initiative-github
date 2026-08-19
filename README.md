@@ -48,10 +48,63 @@ beside the install rather than three widgets saying "unavailable" — and when t
 organization does install it, the `installation` delivery flips it to `ok`
 within seconds. Either half can be done first.
 
-Register the GitHub half with `npm run github-app`, which prints every field and
-writes `github-app.json` for [GitHub's manifest
-flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest);
-or fill the form in by hand following [Registering a GitHub
+**Every deployment registers its own GitHub App**, and there is no shared one to
+hand out. The obvious obstacle is that GitHub matches the callback, setup and
+webhook URLs exactly and admits no wildcards — but that one is shallow, and a
+redirect broker keyed on `state` would get around it. The real obstacle is
+underneath: completing a member's connection needs the **client secret**, and
+minting an installation token needs the **private key**. Both are app-level, so
+any deployment acting *as* the app has to hold them — and one app shared across
+independent operators means every operator holds the app's identity and can
+impersonate it to every organization that ever installed it.
+
+The alternative is a broker that keeps the secrets and hands tokens back to each
+deployment, which puts its owner in the credential path for every self-hosted
+guild's GitHub access. That is not self-hosting, and it is the arrangement the
+rest of this file argues against. GitHub's model is one app, one operator.
+
+What that costs a self-hoster is a form, once — `npm run github-app` prints
+every field. What it buys is that nobody is waiting on anybody, and no third
+party can reach their repositories.
+
+The only URL on the registration that is *not* an address the deployment answers
+on is the homepage, which is a link shown to a reader. It defaults to this
+project's page and moves nothing if you change it.
+
+### Registering it in one click
+
+The form is 22 steps, and every field on it is one the code already knows. So
+there is a flow that fills it in — the same shape Atlantis and Sourcegraph
+settled on, for the same reason:
+
+```bash
+GITHUB_APP_SETUP_TOKEN=$(openssl rand -hex 32)   # then start the app
+open "$APP_PUBLIC_URL/setup/github/register?token=$GITHUB_APP_SETUP_TOKEN"
+```
+
+It posts a filled-in manifest to GitHub, you confirm the name and permissions,
+and GitHub hands back an app already carrying the right permissions, events and
+URLs. Add `?org=YOUR-ORG` to create it under an organization, which is usually
+what you want — an app owned by a personal account leaves the organization
+unable to manage it.
+
+**Nothing is stored.** The last page shows the four values once, for you to put
+wherever this deployment reads its environment. Writing them to the database
+instead would be more convenient and would cost the two things
+[`config.ts`](src/config.ts) promises: credentials read once at boot, and a
+running deployment whose identity cannot be changed by reaching a URL.
+
+**Then remove `GITHUB_APP_SETUP_TOKEN`.** Without it the two routes answer `404`
+rather than `403` — indistinguishable from a deployment that never had the
+feature, because a route that answers differently once a feature is configured
+tells an unauthenticated caller which deployments to come back to. The second
+route cannot be guarded by the token at all, since GitHub redirects to it
+carrying only a code and a `state`; the state is signed with the token instead,
+so rotating the token ends every flow it authorized
+([`src/github/setup.ts`](src/github/setup.ts)).
+
+Or fill the form in by hand: `npm run github-app` prints every field, following
+[Registering a GitHub
 App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
 Either way the registration comes from
 [`src/github/registration.ts`](src/github/registration.ts) rather than from
@@ -84,6 +137,19 @@ at without assembling it. It carries no code — a layout naming widget types th
 app's pinned definition already declares — and the only thing tying the two
 together is the catalog uid.
 
+**Every permission arrives with the code that reads it.** The registration asks
+for `issues: write`, `pull_requests: read`, `vulnerability_alerts: read` and the
+mandatory `metadata: read` — all repository-scoped, nothing about an
+organization's members or settings. Widening the list later is not a change you
+can just ship: GitHub asks every organization that already installed the app to
+approve it, and each keeps the old grant until they do, so a permission added in
+six months arrives broken for everyone who installed before it. That asymmetry
+is a real argument for asking early and it is not the one this list follows — a
+permission with nothing reading it is one an organization grants for no feature,
+and a reviewer cannot tell "not used yet" from "used for something not
+described". [`test/github-app.test.ts`](test/github-app.test.ts) asserts each one
+has a source behind it.
+
 **Scope each source to the narrowest thing that answers it.** How many issues
 are open is one answer for the whole guild, so it runs on the organization's
 installation and nobody hands over a personal GitHub account to see a number.
@@ -103,6 +169,33 @@ question from the caller's own token returns the right number, while quietly
 requiring every member to connect. It also costs real work — a source that names
 no per-member connection is cached **once per guild**, so twenty people opening a
 dashboard is one upstream call rather than twenty.
+
+**One install, several repositories; one initiative, one of them.** An
+installation covers whatever repositories the organization granted, so an admin
+types an account and — usually — nothing else. Which repository a *tile* is
+about comes from its dashboard, through a fixed `repo` on the binding:
+
+```ts
+// team-alpha's dashboard                 // team-beta's dashboard
+binding: { source_id: "open-issues",      binding: { source_id: "open-issues",
+           params: { repo: "widgets" } }             params: { repo: "gadgets" } }
+```
+
+That works because [dashboards are
+initiative-scoped](../initiative/backend/app/models/tenant/dashboard.py) — there
+is no guild-wide one — so a dashboard *is* an initiative, and binding a
+repository there pins one team to one repository. The same trick narrows the
+same tile by label, milestone or assignee, and the platform caches per parameter
+set, so two teams' tiles are one source answered twice rather than one answer
+shared.
+
+Be exact about what that does and does not enforce. This app checks every call
+against what the organization granted, because GitHub tells it that. It cannot
+keep one team out of another team's repository, because a context token names a
+guild and an install and **nothing finer** — there is no initiative in it. What
+holds that boundary is who may edit the dashboard. Making it enforced rather
+than conventional needs `initiative_id` on the context token, which is a change
+on the platform side, not here.
 
 **A widget must not ask for more than its sources do.** This app shipped a
 release where all three widgets required a personal account and only one source
@@ -186,6 +279,7 @@ src/
   sync.ts               keeping both halves of the install true
   github/
     registration.ts     how this app describes itself to GitHub
+    setup.ts            registering that, in one click, once
     app.ts              the app's own identity: JWT, installation, token
     oauth.ts            the member's own vendor flow, keyed by handle
     queries.ts          data sources, each at the scope that answers it
@@ -199,9 +293,11 @@ scripts/
 test/manifest.test.ts   the test to copy into your own app
 test/listing.test.ts    the listings stay tied to the manifest they publish
 test/github-app.test.ts the GitHub registration stays tied to the code
+test/app-setup.test.ts  the gate in front of the one-click registration
 test/webhooks.test.ts   the signature, the translation, and their agreement
 test/delivery.test.ts   repository back to guild — needs a database
 test/installation.test.ts  the guild's access is the organization's grant
+test/repositories.test.ts  which repository, and the boundary it can enforce
 ```
 
 ## Publishing it

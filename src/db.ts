@@ -80,9 +80,17 @@ const SCHEMA = [
   // rather than typed, and held here so a restart does not have to ask GitHub
   // again before it can answer anything.
   `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS installation_id BIGINT`,
-  // A delivery names a repository, which is the direction this is read in.
-  `CREATE INDEX IF NOT EXISTS workspaces_repo
-     ON workspaces (lower(owner), lower(repo))`,
+  // Which repositories a guild narrowed itself to, empty meaning every one the
+  // installation covers. An array rather than a second table: it is read whole,
+  // written whole, and bounded by what one organization granted.
+  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS repos TEXT[]`,
+  // A delivery names the installation that produced it, which is the direction
+  // this is read in — see `installsWatching`.
+  `CREATE INDEX IF NOT EXISTS workspaces_installation
+     ON workspaces (installation_id)`,
+  // And the other direction, for an install that has not found an installation
+  // yet — the guild waiting for somebody to install the app on their account.
+  `CREATE INDEX IF NOT EXISTS workspaces_owner ON workspaces (lower(owner))`,
 ];
 
 /** Apply the schema. Safe to run on every boot and on every replica. */
