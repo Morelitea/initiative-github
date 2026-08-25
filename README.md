@@ -1,7 +1,7 @@
 # initiative-github
 
 The reference app for [Initiative](https://github.com/Morelitea/initiative) —
-GitHub issues and reviews, as dashboard widgets and automation nodes.
+GitHub issues, reviews and dependency alerts, as dashboard widgets.
 
 It is a real app, and it is the one to clone when starting your own. There is
 deliberately no template repo: a template is a copy nobody runs, and the copy
@@ -24,7 +24,6 @@ It exercises the widest slice of the protocol on purpose:
 | **Data sources** | Answered per caller, from that member's own credential, returning only what the widget draws. |
 | **Widgets** | A sandboxed browser module handed its sources' data, returning a scene. |
 | **Events** | Namespaced under this app's own service id. |
-| **Automation nodes** | Two triggers and an action, contributed to the canvas as descriptors — no code ships to it. See [AUTOMATION.md](AUTOMATION.md). |
 | **One credential of its own, and it is the right one** | The private key its registration is signed with. It names the app rather than a person, reaches nothing until an organization installs it, and stops reaching when they remove it. Every *write* still runs as the member who authorized it. |
 
 ## Two registrations
@@ -114,8 +113,8 @@ and [`test/github-app.test.ts`](test/github-app.test.ts) is what says so.
 ## The shape worth copying
 
 **No embedded page, on purpose.** Everything this app offers lands inside
-Initiative's own surfaces — dashboard widgets and automation nodes — rather than
-in an iframe holding a second UI. An embed is for an app whose product *is* a
+Initiative's own surfaces — dashboard widgets, and the companion dashboard that
+arranges them — rather than in an iframe holding a second UI. An embed is for an app whose product *is* a
 page; an integration is better delivered as parts.
 
 **Serving a manifest is not being installable.** They are separate files with
@@ -242,10 +241,22 @@ one scope, and lives about a minute. The scope is checked per route — a token
 minted to fetch a source is not usable to run an action
 ([`src/server.ts`](src/server.ts)).
 
-**An action runs as a member, never as the app.** The one thing this app writes
-— opening an issue — uses the credential the context token names, so an
-automation opens issues as the person who set it up and stops working when they
-withdraw. [`src/github/actions.ts`](src/github/actions.ts).
+**This app only reads.** It contributed automation nodes once — two triggers and
+an action that opened issues — and both halves are gone. The action went because
+the nodes did; the nodes went because the events behind them could not arrive.
+
+That is worth writing down rather than quietly deleting, because the code was
+fine and the manifest validated. An app emits through `emitEvent`, the platform
+accepts it, checks it against the app's pinned definition and hands it to the
+dispatcher — and the vocabulary a webhook subscription may name is *derived from
+Initiative's own content tables* (`{resource}.{action}`), with anything else
+refused at registration. So nothing can subscribe to `app.<id>.<event>`, the
+dispatcher matches no subscription, and the emit returns success having
+delivered to nobody. No error anywhere.
+
+The permission came down with it: `issues` went from `write` to `read`.
+Narrowing is the one direction that is free — GitHub asks nobody to re-approve a
+permission an app stopped wanting.
 
 **Reconcile, do not trust a signal.** Which guilds have this app comes from
 asking Initiative ([`src/sync.ts`](src/sync.ts)), on a poll as well as on the
@@ -283,7 +294,6 @@ src/
     app.ts              the app's own identity: JWT, installation, token
     oauth.ts            the member's own vendor flow, keyed by handle
     queries.ts          data sources, each at the scope that answers it
-    actions.ts          the one write, as the member who authorized it
     webhooks.ts         a delivery becoming an event — or a re-sync
     workspace.ts        which repository, read three ways
 scripts/
@@ -294,8 +304,8 @@ test/manifest.test.ts   the test to copy into your own app
 test/listing.test.ts    the listings stay tied to the manifest they publish
 test/github-app.test.ts the GitHub registration stays tied to the code
 test/app-setup.test.ts  the gate in front of the one-click registration
-test/webhooks.test.ts   the signature, the translation, and their agreement
-test/delivery.test.ts   repository back to guild — needs a database
+test/webhooks.test.ts   the signature, which is the whole reason to trust it
+test/delivery.test.ts   an installation back to guilds — needs a database
 test/installation.test.ts  the guild's access is the organization's grant
 test/repositories.test.ts  which repository, and the boundary it can enforce
 ```
@@ -361,21 +371,28 @@ the pool closes.
 | **A public hostname** | `APP_PUBLIC_URL`. Every URL on the GitHub App registration is built from it, so this needs DNS and a proxy entry before you register anything. |
 | **A GitHub App** | One registration, giving four values: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY` and `GITHUB_WEBHOOK_SECRET`. You create it; nothing can generate it. `npm run github-app` prints every field to fill in and writes the manifest if you would rather not type them. |
 
-### Wiring the triggers
+### The webhook, and why it still exists
 
-Nothing to wire. The webhook is part of the registration — one URL and one
-secret, covering every organization that installs the app — which is one of the
-concrete reasons to be a GitHub App rather than an OAuth app. The version of
-this app before it was one needed a webhook added by hand to every repository a
-guild configured, and received nothing at all from the one somebody forgot.
+Nothing to wire, and nothing subscribed to. The registration's event list is
+empty: with the triggers gone, repository activity tells this app nothing its
+next source call would not, and a webhook that only invalidated a sixty-second
+cache would be a lot of machinery for a minute.
 
-GitHub sends a `ping` when the registration is saved; a green tick beside it
-means the secret matches. From then on a delivery reaches every guild whose
-install names that repository — matched from the configuration this app pulls,
-so a guild that has not filled in its repository receives nothing.
+What still arrives is the installation lifecycle, because GitHub sends it
+whether an app wants it or not — *"All GitHub Apps receive this event by
+default. You cannot manually subscribe to this event."* An organization
+installing this app, removing it, or changing which repositories it may see is
+the one thing this app cannot work out for itself in time to matter, so a
+delivery re-runs the sync for the installs it affects.
+
+The webhook is part of the registration — one URL and one secret, covering every
+organization that installs the app — which is one of the concrete reasons to be
+a GitHub App rather than an OAuth app. The version of this app before it was one
+needed a webhook added by hand to every repository a guild configured, and
+received nothing at all from the one somebody forgot.
 
 Deliveries this app has no install for are answered `200` and logged rather than
-failed. GitHub retries a failure, and an event with nowhere to go will not
+failed. GitHub retries a failure, and a delivery with nowhere to go will not
 succeed on the second attempt.
 
 ### Installing it on an organization

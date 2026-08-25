@@ -16,22 +16,6 @@ import { appDocument, validateDocument, validateManifest } from "initiative-app-
 
 import { PUBLIC_ID, manifest } from "../src/manifest.config.js";
 
-/** The opaque block, typed just enough for these assertions. */
-const automation = () =>
-  (manifest.automation ?? {}) as {
-    contract?: number;
-    domain?: { id?: string };
-    nodes?: Array<{
-      key: string;
-      category: string;
-      event?: string;
-      operation?: string;
-      fields?: Array<{ type: string }>;
-      outputs?: string[];
-    }>;
-    operations?: Array<{ id: string; path: string }>;
-  };
-
 describe("the manifest", () => {
   it("has nothing the kit can object to", () => {
     expect(validateManifest(manifest)).toEqual([]);
@@ -58,7 +42,6 @@ describe("the manifest", () => {
       ...(manifest.connections ?? []).map((c) => c.connect_path),
       ...(manifest.data_sources ?? []).map((s) => s.path),
       ...(manifest.embeds ?? []).map((e) => e.path),
-      ...(automation().operations ?? []).map((o: { path: string }) => o.path),
     ].filter(Boolean) as string[];
 
     expect(paths.length).toBeGreaterThan(0);
@@ -68,61 +51,16 @@ describe("the manifest", () => {
     }
   });
 
-  it("namespaces every event under its own service id", () => {
-    for (const event of manifest.events ?? []) {
-      expect(event.startsWith(`app.${PUBLIC_ID}.`)).toBe(true);
-    }
-  });
-});
-
-describe("the automation surface", () => {
-  it("declares a domain and a contract version", () => {
-    expect(automation().contract).toBe(1);
-    expect(automation().domain?.label).toBeTruthy();
-  });
-
-  it("does not name its own drawer", () => {
-    // The drawer is `app.<public_id>`, derived from the registration. An id
-    // chosen here could collide with a built-in one, and both ways that fails
-    // are silent — nodes filed into Initiative's own tag drawer, or a whole
-    // drawer inheriting a scope rule that hides it inside an initiative.
-    expect(automation().domain).not.toHaveProperty("id");
-  });
-
-  it("only triggers on events this manifest actually emits", () => {
-    // A trigger naming an event the app never emits could never fire, and
-    // nothing downstream would say so.
-    const emitted = new Set(manifest.events ?? []);
-    for (const node of automation().nodes ?? []) {
-      if (node.category !== "trigger") continue;
-      expect(node.event).toBeTruthy();
-      expect(emitted.has(node.event!)).toBe(true);
-    }
-  });
-
-  it("only acts through operations this manifest serves", () => {
-    const served = new Set((automation().operations ?? []).map((o) => o.id));
-    for (const node of automation().nodes ?? []) {
-      if (node.category !== "action") continue;
-      expect(node.operation).toBeTruthy();
-      expect(served.has(node.operation!)).toBe(true);
-    }
-  });
-
-  it("keeps secrets out of node config", () => {
-    // A node's config lives in an automation's graph and is shown in an editor.
-    // A credential belongs in a connection, which is held in custody.
-    for (const node of automation().nodes ?? []) {
-      for (const field of node.fields ?? []) {
-        expect(field.type).not.toBe("secret");
-      }
-    }
-  });
-
-  it("has both directions — something to start on, something to do", () => {
-    const categories = new Set((automation().nodes ?? []).map((n) => n.category));
-    expect(categories.has("trigger")).toBe(true);
-    expect(categories.has("action")).toBe(true);
+  it("declares no feature it cannot deliver", () => {
+    // `events` and `automations` were both declared, both validated, and both
+    // went nowhere: no webhook subscription may name `app.<id>.<event>`, so an
+    // emit succeeded having delivered to nobody. Declaring a feature that goes
+    // nowhere is the same mistake as declaring one with no block, one level
+    // further out — and this is the assertion that keeps it gone until the
+    // platform can carry it.
+    expect(manifest.features).toEqual(["data", "widgets"]);
+    expect(manifest.events).toBeUndefined();
+    expect(manifest.automation).toBeUndefined();
   });
 });
 
@@ -173,16 +111,14 @@ describe("who a source is answered for", () => {
     }
   });
 
-  it("writes only as a member, never as the app", () => {
-    // An action opens an issue under somebody's name, so it runs on that
-    // member's own credential — the issue is theirs, and it stops working when
-    // they disconnect. The app has a credential of its own now and this is
-    // exactly where it must not be used.
-    const automation = manifest.automation as
-      | { operations?: Array<{ id: string; requires?: { all_of?: string[] } }> }
-      | undefined;
-    for (const operation of automation?.operations ?? []) {
-      expect(operation.requires?.all_of).toContain("account");
+  it("reads and never writes", () => {
+    // Nothing in this app mutates anything at GitHub any more, and the
+    // permission list is where that is enforced rather than stated. It was
+    // `issues: write` while an automation action opened issues; narrowing it
+    // back is the one direction that costs nothing, since GitHub asks nobody to
+    // re-approve a permission an app stopped wanting.
+    for (const source of manifest.data_sources ?? []) {
+      expect(source.path.startsWith("/data/")).toBe(true);
     }
   });
 });
@@ -221,12 +157,15 @@ describe("the choices this app makes", () => {
     }
   });
 
-  it("says what it will use the member's credential for", () => {
+  it("says what it will use the member's credential for, and asks to read", () => {
     const account = manifest.connections?.find((c) => c.id === "account");
-    // Shown beside the form, so a member sees the write before they authorize
-    // rather than after. `issues:write` is there because the automation action
-    // opens issues — an app that only read would ask for less, and should.
-    expect(account?.access_hint?.scopes).toContain("issues:write");
+    // Shown beside the form, so a member sees what they are authorizing before
+    // they do it. Every one of these is a read: the app that wrote at GitHub
+    // was the one contributing an automation action, and it does not any more.
+    for (const scope of account?.access_hint?.scopes ?? []) {
+      expect(scope.endsWith(":read"), `${scope} is not a read`).toBe(true);
+    }
+    expect(account?.access_hint?.scopes).toContain("issues:read");
     // Permissions, not scopes. `repo` is an OAuth app's vocabulary and grants
     // everything that person can reach in every repository they can reach.
     expect(account?.access_hint?.scopes).not.toContain("repo");
@@ -276,41 +215,6 @@ describe("the choices this app makes", () => {
       expect(params, `${source.id} cannot be pointed at a repository`).toContain(
         "repo"
       );
-    }
-  });
-
-  it("tells an automation which repository fired it", () => {
-    // An install may cover several, so a run that guessed would act on the
-    // wrong one. Carried on every event rather than added when the first
-    // automation needs it: outputs are part of the pinned definition a guild
-    // installed, so widening them later is a version every guild has to take.
-    for (const node of automation().nodes ?? []) {
-      const carried = (node.outputs ?? []).map((output) => output.key);
-      expect(carried, `${node.key} does not name a repository`).toContain("repository");
-    }
-  });
-
-  it("types every output, so a binding into a later node can be checked", () => {
-    // A bare name can only be checked when the automation runs. The type is
-    // what lets the editor refuse a URL dropped into a number field at the
-    // moment somebody is still looking at it.
-    for (const node of automation().nodes ?? []) {
-      for (const output of node.outputs ?? []) {
-        expect(output.type, `${node.key}.${output.key} has no type`).toBeTruthy();
-      }
-    }
-  });
-
-  it("points every trigger filter at an output of its own node", () => {
-    // A filter naming nothing is the failure this catalogue exists to refuse:
-    // it registers, sits enabled, and never matches.
-    for (const node of automation().nodes ?? []) {
-      if (node.category !== "trigger") continue;
-      const carried = new Set((node.outputs ?? []).map((output) => output.key));
-      for (const field of node.fields ?? []) {
-        const matches = field.matches ?? field.key;
-        expect(carried.has(matches), `${node.key}.${field.key} matches nothing`).toBe(true);
-      }
     }
   });
 

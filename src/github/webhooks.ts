@@ -1,71 +1,65 @@
 /**
- * The inbound half: a GitHub delivery becoming an Initiative event.
+ * The inbound half: GitHub telling this app about its own installation.
  *
- * This is the trigger side of the automation surface. The manifest declares
- * three events and two trigger nodes that fire on them; this is what actually
- * emits them, and without it those nodes could never fire.
+ * This file used to do two jobs. It translated repository activity — an issue
+ * opened, a review requested — into Initiative events for automation triggers
+ * to fire on, and it handled the app's own lifecycle. The first job is gone,
+ * and the reason is worth keeping written down because the code looked fine:
  *
- * The trip, and why each step is where it is:
+ * An app emits through `emitEvent`, the platform accepts it, checks it against
+ * the app's pinned definition, and hands it to the dispatcher. The dispatcher
+ * delivers to subscriptions naming that event type — and the vocabulary a
+ * subscription may name is *derived from Initiative's own content tables*
+ * (`{resource}.{action}`), with anything else refused at registration. So no
+ * subscription can name `app.<id>.<event>`, the dispatcher matches nothing, and
+ * the emit returns success having delivered to no one. Not an error anywhere;
+ * just an event that stops.
  *
- * 1. **GitHub signs its delivery**, and this verifies it against the secret on
- *    the *app's own registration*. One secret, typed once, covering every
- *    organization that installs it — where an OAuth app would have needed a
- *    webhook added to every repository by hand, and would silently receive
- *    nothing from the one somebody forgot. That check is what establishes the
- *    caller, the way a context token does on the platform's own routes.
- * 2. **The delivery names a repository, and nothing else this app can use.**
- *    There is no guild in it. The `workspaces` table — filled by the install
- *    sync — is what turns `owner/repo` back into the installs that asked about
- *    it, and there may be more than one.
- * 3. **Initiative checks it again.** An event type is accepted only if the
- *    *pinned* definition of this app declares it and it sits under this app's
- *    own namespace, so a guild running an older version does not receive an
- *    event that version never promised.
+ * So what remains is the job that works, and it is the one that matters for
+ * this app being correct rather than for it being interesting: an organization
+ * installing it, removing it, or changing which repositories it may see. None
+ * of that is something to emit into a guild — no subscriber asked to hear that
+ * somebody clicked a button — but all of it changes whether this app can answer
+ * anything, so it re-runs the sync for the installs it affects.
  *
- * Only the fields the trigger nodes declared as `outputs` are carried across.
- * A GitHub issue payload is large and mostly about people; a run's state is not
- * the place for it, and a later node can only read what was named anyway.
- *
- * **Not every delivery is an event.** A GitHub App is also told about its own
- * installation — an org adding it, removing it, or changing which repositories
- * it may see. Those are not things to emit into a guild; they are things that
- * change whether this app can answer at all, so they re-run the sync for the
- * installs they affect. It is the difference between news about the repository
- * and news about the relationship.
+ * The signature check is unchanged and is the reason to trust any of it. One
+ * secret, on the app's own registration, covering every organization that
+ * installs it — where an OAuth app would have needed a webhook added by hand to
+ * every repository, and would silently receive nothing from the one somebody
+ * forgot.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-import { ChannelError } from "initiative-app-kit";
-
 import { config } from "../config.js";
-import { initiative } from "../initiative.js";
-import { PUBLIC_ID } from "../manifest.config.js";
 import { syncInstall } from "../sync.js";
 import { forgetInstallation, forgetRepositories } from "./app.js";
-import {
-  installsAwaiting,
-  installsForInstallation,
-  installsWatching,
-} from "./workspace.js";
+import { installsAwaiting, installsForInstallation } from "./workspace.js";
 
 /** GitHub's own headers on a delivery. */
 export const EVENT_HEADER = "x-github-event";
 export const SIGNATURE_HEADER = "x-hub-signature-256";
 export const DELIVERY_HEADER = "x-github-delivery";
 
-/** The event types this app emits, all declared in its manifest. */
-export const EVENTS = {
-  issueOpened: `app.${PUBLIC_ID}.issue-opened`,
-  issueClosed: `app.${PUBLIC_ID}.issue-closed`,
-  reviewRequested: `app.${PUBLIC_ID}.review-requested`,
-} as const;
+/**
+ * The deliveries this app acts on.
+ *
+ * It subscribes to nothing. These three arrive regardless — GitHub sends them
+ * to every app and says so: "All GitHub Apps receive this event by default. You
+ * cannot manually subscribe to this event." So the registration's event list is
+ * empty and this still works, which is the least an app can ask for and still
+ * know its own state.
+ */
+const LIFECYCLE_EVENTS = new Set([
+  "installation",
+  "installation_repositories",
+]);
 
 /**
  * Whether GitHub signed these exact bytes.
  *
- * Over the raw body, before any parser has touched it: a re-serialized object
- * is different bytes and would never match.
+ * Over the raw body, before any parser has touched it: a signature is over what
+ * arrived, and a re-serialized object is different bytes.
  */
 export function verifySignature(body: Uint8Array, header: string | undefined): boolean {
   if (!header || !header.startsWith("sha256=")) return false;
@@ -80,141 +74,46 @@ export function verifySignature(body: Uint8Array, header: string | undefined): b
   return timingSafeEqual(offered, expected);
 }
 
-interface Repository {
-  owner: string;
-  repo: string;
-}
-
-/** `full_name` is `owner/repo`; nothing else in the payload gives both halves. */
-function readRepository(payload: Record<string, unknown>): Repository | null {
-  const repository = payload.repository as { full_name?: unknown } | undefined;
-  const fullName = repository?.full_name;
-  if (typeof fullName !== "string") return null;
-  const [owner, repo] = fullName.split("/");
-  if (!owner || !repo) return null;
-  return { owner, repo };
-}
-
-/** One event to emit, or nothing if this delivery is not one this app cares about. */
-interface Translated {
-  type: string;
-  payload: Record<string, unknown>;
-}
-
-function readLabels(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((entry) => (entry as { name?: unknown } | null)?.name)
-    .filter((name): name is string => typeof name === "string")
-    // The trigger's `label` field matches against these, so a payload with a
-    // hundred labels would be matched against a hundred; a repository does not
-    // have that many, and a bound here is cheaper than one downstream.
-    .slice(0, 50);
-}
-
-/**
- * A GitHub delivery as one of this app's declared events.
- *
- * GitHub sends one `issues` event for every verb — opened, edited, labeled,
- * assigned — so the action is what decides, and everything unrecognized is
- * accepted and ignored rather than refused: a repository sends deliveries this
- * app never asked for, and failing them would fill an admin's webhook log with
- * red for events working exactly as intended.
- */
-export function translate(
-  event: string,
-  payload: Record<string, unknown>
-): Translated | null {
-  // Which repository it happened in, on every event.
-  //
-  // An install may cover several, so a run started by an issue has to know
-  // where the issue is — to file a task against the right project, to move the
-  // right board, to tag the right release. Carried on every event rather than
-  // added when the first automation needs it: an event's outputs are part of
-  // the pinned definition a guild installed, so widening them later is a
-  // version every guild has to take.
-  const repository = readRepository(payload)?.repo;
-
-  if (event === "issues") {
-    const action = payload.action;
-    if (action !== "opened" && action !== "closed") return null;
-    const issue = payload.issue as Record<string, unknown> | undefined;
-    if (!issue) return null;
-    return {
-      type: action === "opened" ? EVENTS.issueOpened : EVENTS.issueClosed,
-      // Exactly the trigger node's declared outputs.
-      payload: {
-        repository,
-        issue_number: issue.number,
-        issue_title: issue.title,
-        issue_url: issue.html_url,
-        issue_labels: readLabels(issue.labels),
-      },
-    };
-  }
-
-  if (event === "pull_request" && payload.action === "review_requested") {
-    const pull = payload.pull_request as Record<string, unknown> | undefined;
-    if (!pull) return null;
-    return {
-      type: EVENTS.reviewRequested,
-      payload: {
-        repository,
-        pull_number: pull.number,
-        pull_title: pull.title,
-        pull_url: pull.html_url,
-      },
-    };
-  }
-
-  return null;
-}
-
 /** What a delivery did, for the answer GitHub sees in its own log. */
 export interface DeliveryResult {
-  emitted: number;
-  /** Installs re-synced because the relationship changed, not the repository. */
-  resynced?: number;
-  reason?:
-    | "unhandled"
-    | "no-repository"
-    | "no-installation"
-    | "no-install"
-    | "installation";
+  /** Installs re-synced because the relationship changed. */
+  resynced: number;
+  reason?: "unhandled" | "no-installation";
 }
 
-/** The deliveries that are about this app rather than about a repository. */
-const LIFECYCLE_EVENTS = new Set(["installation", "installation_repositories"]);
-
 /**
- * An organization added, removed, or re-scoped this app's installation.
+ * Handle one verified delivery.
  *
- * Nothing is emitted: no guild asked to be told that an org owner clicked a
- * button, and there is no event in the manifest that would carry it. What it
- * changes is whether the guild-scoped sources can answer, so the affected
- * installs are re-synced — which re-runs the discovery and reports the verdict
- * back to Initiative, so the install flips between `ok` and
- * `github_app_not_installed` within seconds instead of at the next poll.
+ * Everything unrecognized is accepted and ignored rather than refused. A
+ * repository sends deliveries this app never asked for, and failing them would
+ * fill an organization's webhook log with red for events working exactly as
+ * intended.
  *
  * Both directions have to be found, and by different means. An install being
  * *removed* names an installation this app already recorded, so the lookup is
- * by installation id. An install being *created* names repositories this app
- * has never seen an installation for, so the lookup is by repository — which is
- * exactly the guild that has been sitting at `github_app_not_installed` waiting
- * for this to happen.
+ * by installation id. An install being *created* names one this app has never
+ * seen, so no row can name it — and the guild that has been sitting at
+ * `github_app_not_installed` waiting for exactly this is found by the account
+ * instead.
  */
-async function handleInstallation(
+export async function handleDelivery(
+  event: string,
   payload: Record<string, unknown>
 ): Promise<DeliveryResult> {
+  if (!LIFECYCLE_EVENTS.has(event)) return { resynced: 0, reason: "unhandled" };
+
   const installation = payload.installation as
     | { id?: unknown; account?: { login?: unknown } }
     | undefined;
-  const installationId =
-    typeof installation?.id === "number" ? installation.id : null;
+  const installationId = typeof installation?.id === "number" ? installation.id : null;
   const owner =
     typeof installation?.account?.login === "string"
       ? installation.account.login
       : null;
+
+  if (installationId === null && owner === null) {
+    return { resynced: 0, reason: "no-installation" };
+  }
 
   const guilds = new Map<number, number>();
 
@@ -229,10 +128,6 @@ async function handleInstallation(
     }
   }
 
-  // And the installs that have never seen an installation, matched by the
-  // account instead. An `installation.created` delivery is the first time this
-  // app has heard of that installation, so no row names it yet — and the guild
-  // waiting for exactly this event is precisely one of those rows.
   if (owner) {
     for (const install of await installsAwaiting(owner)) {
       guilds.set(install.appInstallId, install.guildId);
@@ -249,55 +144,5 @@ async function handleInstallation(
       console.error(`could not re-sync guild ${guildId} after an install change`, error);
     }
   }
-  return { emitted: 0, resynced, reason: "installation" };
-}
-
-/**
- * Handle one verified delivery.
- *
- * Emits to every install watching the repository. A refused emit is logged and
- * stepped over rather than failing the delivery: GitHub retries a failure, and
- * retrying an event one guild has already accepted would deliver it twice
- * there to get it once somewhere else.
- */
-export async function handleDelivery(
-  event: string,
-  payload: Record<string, unknown>
-): Promise<DeliveryResult> {
-  if (LIFECYCLE_EVENTS.has(event)) return handleInstallation(payload);
-
-  const translated = translate(event, payload);
-  if (!translated) return { emitted: 0, reason: "unhandled" };
-
-  const repository = readRepository(payload);
-  if (!repository) return { emitted: 0, reason: "no-repository" };
-
-  // Keyed on the installation GitHub says produced this, then narrowed by the
-  // guild's own list. An owner is a string an admin typed and a repository can
-  // be renamed or transferred under one; the installation is a fact.
-  const installation = payload.installation as { id?: unknown } | undefined;
-  if (typeof installation?.id !== "number") {
-    return { emitted: 0, reason: "no-installation" };
-  }
-
-  const installs = await installsWatching(installation.id, repository.repo);
-  if (installs.length === 0) return { emitted: 0, reason: "no-install" };
-
-  let emitted = 0;
-  for (const install of installs) {
-    try {
-      await initiative.emitEvent(install.guildId, translated.type, translated.payload);
-      emitted += 1;
-    } catch (error) {
-      if (error instanceof ChannelError) {
-        console.error(
-          `could not emit ${translated.type} into guild ${install.guildId}: ` +
-            `${error.status} ${error.detail}`
-        );
-      } else {
-        console.error(`could not emit ${translated.type}`, error);
-      }
-    }
-  }
-  return { emitted };
+  return { resynced };
 }

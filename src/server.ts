@@ -8,17 +8,17 @@
  *   public by design; it forbids anything whose secrecy could matter.
  * - **`/v1/handshake`** — the operator wiring this app up proves they hold the
  *   same secret, and so does this app. Neither sends it.
- * - **`/data/*` and `/actions/*`** — Initiative calling in, carrying a context
- *   token naming one guild, one install and one scope. Verified per call.
+ * - **`/data/*`** — Initiative calling in, carrying a context token naming one
+ *   guild, one install and one scope. Verified per call.
  * - **`/connect/*`, `/install/*`, `/setup/*`** — a person's browser, running
  *   the vendor's flow. Plain pages and no embedded surface: a member connecting
  *   their own account, an org owner installing the GitHub App, and — only while
  *   an operator has switched it on — the two that register the GitHub App in
  *   the first place.
  * - **`/webhooks/github`** — the *vendor* calling in, verified against GitHub's
- *   own webhook secret rather than against Initiative's. This is the trigger
- *   half of the automation surface: a delivery here becomes an event in every
- *   guild watching that repository.
+ *   own webhook secret rather than against Initiative's. An organization
+ *   installing this app, removing it, or changing which repositories it may see
+ *   arrives here, and re-runs the sync for the installs it affects.
  *
  * Calls in the other direction — pulling installs, emitting events — go through
  * `initiative.ts`, and everything about which installs exist comes from
@@ -53,7 +53,6 @@ import {
   SETUP_PATH,
   WEBHOOK_PATH,
 } from "./routes.js";
-import { createIssue } from "./github/actions.js";
 import {
   dependabotAlerts,
   issueThroughput,
@@ -259,19 +258,6 @@ export const server = createServer(async (req, res) => {
       return send(res, 200, await issueThroughput(claims, url.searchParams));
     }
 
-    // --- actions, called by the automation service ------------------------
-    if (req.method === "POST" && path === "/actions/create-issue") {
-      // An `action` token, naming this operation. A token minted to fetch a
-      // source cannot run this — the scope is pinned per call.
-      const claims = await context(req, res, { scope: "action" });
-      if (!claims) return;
-      if (claims.action_id !== "create-issue") {
-        return send(res, 403, { error: "token is not for this operation" });
-      }
-      const body = JSON.parse((await readBody(req)).toString("utf-8"));
-      return send(res, 200, await createIssue(claims, body));
-    }
-
     // --- lifecycle ---------------------------------------------------------
     if (req.method === "POST" && path === "/v1/lifecycle") {
       const claims = await context(req, res, { scope: "lifecycle" });
@@ -393,6 +379,10 @@ export const server = createServer(async (req, res) => {
     }
 
     // --- the vendor calling in ---------------------------------------------
+    // This app subscribes to no repository activity. What arrives here is the
+    // installation lifecycle, which GitHub sends to every app whether it asked
+    // or not — and which is the one thing this app cannot work out for itself
+    // in time to matter.
     if (req.method === "POST" && path === WEBHOOK_PATH) {
       // Read as bytes and verified before anything parses them: a signature is
       // over what arrived, and a re-serialized object is different bytes.
@@ -423,10 +413,7 @@ export const server = createServer(async (req, res) => {
           `delivery ${header(req, DELIVERY_HEADER) ?? "?"} (${event}): ${result.reason}`
         );
       }
-      return send(res, 200, {
-        emitted: result.emitted,
-        ...(result.resynced === undefined ? {} : { resynced: result.resynced }),
-      });
+      return send(res, 200, { resynced: result.resynced });
     }
 
     return send(res, 404, { error: "no such route" });

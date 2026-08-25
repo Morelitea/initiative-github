@@ -6,15 +6,15 @@
  * deployment does. `npm run manifest` writes it.
  *
  * Read this file first if you are starting an app. It is the whole surface: a
- * connection each vendor account authorizes, sources the platform fetches,
- * widgets drawn from those sources, the events this app emits, and the
- * automation nodes it contributes. Nothing here is an address — every route is
+ * connection each vendor account authorizes, sources the platform fetches, and
+ * widgets drawn from those sources. Nothing here is an address — every route is
  * a path, and the operator's registration says where the app lives.
  *
  * **No embedded page.** This app deliberately mounts no surface of its own:
- * everything it offers lands inside Initiative's own — dashboard widgets and
- * automation nodes — rather than in an iframe holding a second UI. An embed is
- * for an app whose product *is* a page; an integration is better as parts.
+ * everything it offers lands inside Initiative's own — dashboard widgets, and
+ * the companion dashboard that arranges them — rather than in an iframe holding
+ * a second UI. An embed is for an app whose product *is* a page; an integration
+ * is better as parts.
  */
 
 import type { Manifest } from "initiative-app-kit";
@@ -22,7 +22,7 @@ import type { Manifest } from "initiative-app-kit";
 import { PERMISSIONS } from "./github/registration.js";
 import { CONNECT_PATH } from "./routes.js";
 
-/** Namespaces everything this app publishes: widgets, events, automation nodes. */
+/** Namespaces everything this app publishes. */
 export const PUBLIC_ID = "morelitea.github";
 
 /**
@@ -59,7 +59,15 @@ export const manifest: Manifest = {
 
   // Declared and cross-checked against the blocks below, in both directions.
   // A feature with no block would advertise something this app cannot do.
-  features: ["data", "widgets", "events", "automations"],
+  //
+  // `events` and `automations` were here and are not any more. Not because the
+  // blocks were wrong — they validated, and the code behind them worked — but
+  // because an app event has nowhere to arrive: the vocabulary a webhook
+  // subscription may name is derived from Initiative's own content tables, so
+  // nothing can subscribe to `app.<id>.<event>`, and an emit succeeds having
+  // delivered to no one. Declaring a feature that goes nowhere is the same
+  // mistake as declaring one with no block, one level further out.
+  features: ["data", "widgets"],
 
   default_name: "GitHub",
 
@@ -458,205 +466,6 @@ export const manifest: Manifest = {
       requires: { all_of: ["workspace"] },
     },
   ],
-
-  // Namespaced under this app's own service id, and checked again at ingress
-  // against the registration that emits them.
-  events: [
-    `app.${PUBLIC_ID}.issue-opened`,
-    `app.${PUBLIC_ID}.issue-closed`,
-    `app.${PUBLIC_ID}.review-requested`,
-  ],
-
-  // What this app contributes to the automation canvas. Opaque to Initiative,
-  // which stores it verbatim; the automation service parses it against its own
-  // contract. See AUTOMATION.md for the shape and what it maps onto.
-  automation: {
-    contract: 1,
-    // No id: the drawer is always `app.<public_id>`, derived from the
-    // registration Initiative matched this app by. A publisher-chosen id could
-    // collide with a built-in drawer — `tags` would file these nodes into
-    // Initiative's own tag drawer — and both ways that fails are silent.
-    domain: {
-      label: { en: "GitHub", de: "GitHub", es: "GitHub", fr: "GitHub" },
-      icon: "Braces",
-    },
-    nodes: [
-      {
-        key: "issue-opened",
-        category: "trigger",
-        icon: "Zap",
-        label: {
-          en: "A GitHub issue is opened",
-          de: "Ein GitHub-Issue wird geöffnet",
-          es: "Se abre una incidencia de GitHub",
-          fr: "Un ticket GitHub est ouvert",
-        },
-        description: {
-          en: "Starts when someone opens an issue in the connected repository.",
-          de: "Startet, wenn jemand ein Issue im verbundenen Repository öffnet.",
-          es: "Empieza cuando alguien abre una incidencia en el repositorio conectado.",
-          fr: "Démarre quand quelqu'un ouvre un ticket dans le dépôt connecté.",
-        },
-        // Which emitted event fires it. Must be one this manifest declares —
-        // a trigger naming an event the app never emits could never fire.
-        event: `app.${PUBLIC_ID}.issue-opened`,
-        // The same closed field vocabulary a connection uses, so one renderer
-        // draws a node's form and a connection's alike.
-        fields: [
-          {
-            // Which repository, for an install that covers several. Blank means
-            // every one it covers — a trigger narrowing itself is the same
-            // choice a dashboard makes with its `repo` binding, made by whoever
-            // is building the automation instead.
-            key: "repository",
-            type: "string",
-            label: {
-              en: "Only this repository",
-              de: "Nur dieses Repository",
-              es: "Solo este repositorio",
-              fr: "Uniquement ce dépôt",
-            },
-          },
-          {
-            key: "label",
-            type: "string",
-            // The one filter here whose field and output are not the same
-            // word: an issue carries several labels, so this asks whether the
-            // list CONTAINS what was typed. Left unsaid it would default to an
-            // output called `label`, which does not exist — and a filter that
-            // can never match is refused rather than quietly never firing.
-            matches: "issue_labels",
-            label: {
-              en: "Only issues with this label",
-              de: "Nur Issues mit diesem Label",
-              es: "Solo incidencias con esta etiqueta",
-              fr: "Uniquement les tickets avec ce label",
-            },
-          },
-        ],
-        // What the event carries into the run, for later nodes to read.
-        // `repository` leads, because an install may cover several and a run
-        // that guessed would act on the wrong one — file the task against the
-        // wrong project, move the wrong board, tag the wrong release.
-        outputs: [
-          { key: "repository", type: "string", label: { en: "Repository" } },
-          { key: "issue_number", type: "int", label: { en: "Issue number" } },
-          { key: "issue_title", type: "string", label: { en: "Issue title" } },
-          { key: "issue_url", type: "url", label: { en: "Issue URL" } },
-          // Several, so it can be filtered by containment and cannot be bound
-          // into a field that takes one value.
-          { key: "issue_labels", type: "string", list: true, label: { en: "Labels" } },
-        ],
-      },
-      {
-        key: "review-requested",
-        category: "trigger",
-        icon: "Zap",
-        label: {
-          en: "A review is requested",
-          de: "Eine Review wird angefragt",
-          es: "Se solicita una revisión",
-          fr: "Une revue est demandée",
-        },
-        description: {
-          en: "Starts when a pull request asks someone for review.",
-          de: "Startet, wenn ein Pull Request jemanden um Review bittet.",
-          es: "Empieza cuando un pull request pide revisión a alguien.",
-          fr: "Démarre quand une pull request demande une revue.",
-        },
-        event: `app.${PUBLIC_ID}.review-requested`,
-        fields: [
-          {
-            // Which repository, for an install that covers several. Blank means
-            // every one it covers — a trigger narrowing itself is the same
-            // choice a dashboard makes with its `repo` binding, made by whoever
-            // is building the automation instead.
-            key: "repository",
-            type: "string",
-            label: {
-              en: "Only this repository",
-              de: "Nur dieses Repository",
-              es: "Solo este repositorio",
-              fr: "Uniquement ce dépôt",
-            },
-          },
-        ],
-        outputs: [
-          { key: "repository", type: "string", label: { en: "Repository" } },
-          { key: "pull_number", type: "int", label: { en: "Pull request number" } },
-          { key: "pull_title", type: "string", label: { en: "Pull request title" } },
-          { key: "pull_url", type: "url", label: { en: "Pull request URL" } },
-        ],
-      },
-      {
-        key: "create-issue",
-        category: "action",
-        icon: "FolderPlus",
-        label: {
-          en: "Open a GitHub issue",
-          de: "Ein GitHub-Issue öffnen",
-          es: "Abrir una incidencia de GitHub",
-          fr: "Ouvrir un ticket GitHub",
-        },
-        description: {
-          en: "Opens an issue in the connected repository, as the member who owns the automation.",
-          de: "Öffnet ein Issue im verbundenen Repository, als das Mitglied, dem die Automatisierung gehört.",
-          es: "Abre una incidencia en el repositorio conectado, como el miembro dueño de la automatización.",
-          fr: "Ouvre un ticket dans le dépôt connecté, au nom du membre propriétaire de l'automatisation.",
-        },
-        // The operation this node calls, served at `operations[].path`.
-        operation: "create-issue",
-        fields: [
-          {
-            // Where to open it. Optional, because an install covering one
-            // repository needs nobody to say so — and refused rather than
-            // guessed when it covers several, since an issue opened in the
-            // wrong repository is not something a later run can take back.
-            key: "repository",
-            type: "string",
-            label: {
-              en: "Repository",
-              de: "Repository",
-              es: "Repositorio",
-              fr: "Dépôt",
-            },
-          },
-          {
-            key: "title",
-            type: "string",
-            required: true,
-            label: { en: "Title", de: "Titel", es: "Título", fr: "Titre" },
-          },
-          {
-            key: "body",
-            type: "string",
-            label: { en: "Body", de: "Text", es: "Cuerpo", fr: "Corps" },
-          },
-          {
-            key: "label",
-            type: "string",
-            label: { en: "Label", de: "Label", es: "Etiqueta", fr: "Étiquette" },
-          },
-        ],
-        outputs: [
-          { key: "repository", type: "string", label: { en: "Repository" } },
-          { key: "issue_number", type: "int", label: { en: "Issue number" } },
-          { key: "issue_url", type: "url", label: { en: "Issue URL" } },
-        ],
-      },
-    ],
-    // Where each action is served. Called with a context token scoped to
-    // `action`, naming this operation and nothing else.
-    operations: [
-      {
-        id: "create-issue",
-        path: "/actions/create-issue",
-        // A write at the vendor, so it runs as the member who authorized it —
-        // never from an app-wide credential.
-        requires: { all_of: ["workspace", "account"] },
-      },
-    ],
-  },
 };
 
 /**

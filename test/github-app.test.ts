@@ -27,10 +27,8 @@ import { appJwt } from "../src/github/app.js";
 import {
   HOMEPAGE,
   PERMISSIONS,
-  WEBHOOK_EVENTS,
   githubAppManifest,
 } from "../src/github/registration.js";
-import { EVENTS, translate } from "../src/github/webhooks.js";
 import { manifest } from "../src/manifest.config.js";
 import {
   CALLBACK_PATH,
@@ -43,17 +41,6 @@ import {
 
 const PUBLIC_URL = config.publicUrl;
 const registration = githubAppManifest(PUBLIC_URL);
-
-/** One delivery of each kind this app subscribes to, as GitHub sends it. */
-const DELIVERIES: Record<string, Array<Record<string, unknown>>> = {
-  issues: [
-    { action: "opened", issue: { number: 1, title: "t", html_url: "u", labels: [] } },
-    { action: "closed", issue: { number: 1, title: "t", html_url: "u", labels: [] } },
-  ],
-  pull_request: [
-    { action: "review_requested", pull_request: { number: 2, title: "t", html_url: "u" } },
-  ],
-};
 
 describe("saying who this app is", () => {
   it("signs a JWT the private key actually backs", () => {
@@ -182,7 +169,7 @@ describe("asking for no more than it uses", () => {
     // machines, and GitHub does not complain about the wrong one — it just
     // grants nothing.
     expect(PERMISSIONS).toEqual({
-      issues: "write",
+      issues: "read",
       pull_requests: "read",
       vulnerability_alerts: "read",
       metadata: "read",
@@ -227,38 +214,24 @@ describe("asking for no more than it uses", () => {
   });
 });
 
-describe("subscribing to exactly what it handles", () => {
-  it("handles every event it subscribed to", () => {
-    // An event nobody translates is a delivery answered `unhandled` forever,
-    // and GitHub reports it as a green tick.
-    for (const event of WEBHOOK_EVENTS) {
-      const payloads = DELIVERIES[event];
-      expect(payloads, `no sample delivery for ${event}`).toBeDefined();
-      for (const payload of payloads) {
-        expect(translate(event, payload), `${event} is not translated`).not.toBeNull();
-      }
-    }
+describe("subscribing to nothing, and still hearing what matters", () => {
+  it("asks for no repository activity", () => {
+    // It took `issues` and `pull_request` to fire automation triggers. With
+    // those gone, repository activity tells this app nothing its next source
+    // call would not — a webhook that only invalidated a sixty-second cache
+    // would be a lot of machinery for a minute.
+    expect(registration.default_events).toEqual([]);
   });
 
-  it("subscribed to every event it handles", () => {
-    // The direction that fails silently: a trigger node that can never fire,
-    // because the delivery that would fire it was never asked for.
-    for (const event of Object.keys(DELIVERIES)) {
-      expect(WEBHOOK_EVENTS).toContain(event);
+  it("still hears the installation lifecycle, because it cannot not", () => {
+    // GitHub's own words: "All GitHub Apps receive this event by default. You
+    // cannot manually subscribe to this event." So an empty list above and a
+    // webhook endpoint that still hears an organization install, uninstall, or
+    // re-scope the app — the one thing this app cannot work out for itself in
+    // time to matter.
+    for (const event of ["installation", "installation_repositories"]) {
+      expect(registration.default_events).not.toContain(event);
     }
-  });
-
-  it("produces exactly the events the manifest declares", () => {
-    // Initiative refuses an event the pinned definition does not name, so a
-    // translator that produced a fourth would emit into a wall.
-    const produced = new Set<string>();
-    for (const [event, payloads] of Object.entries(DELIVERIES)) {
-      for (const payload of payloads) {
-        const translated = translate(event, payload);
-        if (translated) produced.add(translated.type);
-      }
-    }
-    expect([...produced].sort()).toEqual([...(manifest.events ?? [])].sort());
-    expect([...produced].sort()).toEqual([...Object.values(EVENTS)].sort());
+    expect(registration.hook_attributes.active).toBe(true);
   });
 });

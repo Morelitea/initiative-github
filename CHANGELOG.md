@@ -64,6 +64,34 @@ guild admin — and everything below follows from having one.
   Without one a registration verifies and names nothing, and a mandatory install
   is skipped as "has not verified yet".
 
+### Removed
+
+- **The automation surface.** Two trigger nodes, a `create-issue` action, three
+  declared events, the `automations` and `events` features, and AUTOMATION.md.
+
+  Not because any of it was wrong. It validated, the code behind it worked, and
+  the trigger side had tests. It is gone because an app event has nowhere to
+  arrive: an emit is accepted, checked against the app's pinned definition and
+  handed to the dispatcher — and the vocabulary a webhook subscription may name
+  is derived from Initiative's own content tables (`{resource}.{action}`), with
+  anything else refused at registration. Nothing can subscribe to
+  `app.<id>.<event>`, so the dispatcher matches nothing and the emit returns
+  success having delivered to nobody. No error anywhere; just an event that
+  stops. Declaring a feature that goes nowhere is the same mistake as declaring
+  one with no block, one level further out.
+
+  Whether app-contributed nodes come back as a community surface or as something
+  hard-coded is a decision above this app. What it needs first is somewhere for
+  an event to land.
+- `issues` narrowed from `write` to `read`, since nothing writes any more.
+  Narrowing is the one direction that is free: GitHub asks nobody to re-approve
+  a permission an app stopped wanting.
+- The registration subscribes to **no** webhook events. Repository activity told
+  this app nothing its next source call would not. The installation lifecycle
+  still arrives — GitHub sends those to every app and says you cannot subscribe
+  to them — which is the only thing this app cannot work out for itself in time
+  to matter.
+
 ### Changed
 
 - **An install covers repositories, not a repository.** The `workspace`

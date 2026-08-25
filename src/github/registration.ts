@@ -42,9 +42,11 @@ import {
  * Read this list against what the code does, because a reviewer at an
  * organization will:
  *
- *   * `issues: write` — the counts and the fortnight of activity are reads; the
- *     `create-issue` automation action is the write. Read alone would be enough
- *     for the dashboard, and is not enough for the automation node.
+ *   * `issues: read` — how many are open, and a fortnight of opens against
+ *     closes. It was `write` while this app contributed an automation action
+ *     that opened issues; that went, so this came down with it. Narrowing is
+ *     the one direction that is free: GitHub asks nobody to re-approve a
+ *     permission an app stopped wanting.
  *   * `pull_requests: read` — "which pull requests are waiting on my review".
  *   * `vulnerability_alerts: read` — open Dependabot alerts, by severity. Note
  *     the key: the permission is called "Dependabot alerts" everywhere a person
@@ -69,21 +71,28 @@ import {
  * reads it.
  */
 export const PERMISSIONS: Readonly<Record<string, string>> = {
-  issues: "write",
+  issues: "read",
   pull_requests: "read",
   vulnerability_alerts: "read",
   metadata: "read",
 };
 
 /**
- * Which deliveries this app is sent.
+ * Which deliveries this app subscribes to: none.
  *
- * `issues` and `pull_request` are the two the trigger nodes fire on. The
- * installation lifecycle — an org installing, uninstalling, or changing which
- * repositories the app can see — arrives whether or not it is subscribed to,
- * so it is not listed here and is still handled.
+ * It used to take `issues` and `pull_request`, to fire automation triggers. With
+ * those gone there is nothing left that repository activity would tell this app
+ * that its next source call would not — the dashboard reads on a cache TTL, and
+ * a webhook that only invalidated a sixty-second cache would be a great deal of
+ * machinery for a minute.
+ *
+ * What it still needs arrives anyway. GitHub's own words on the installation
+ * events: "All GitHub Apps receive this event by default. You cannot manually
+ * subscribe to this event." So an empty list here and a webhook endpoint that
+ * still hears an organization install, uninstall, or re-scope the app — which
+ * is the only thing this app cannot work out for itself in time to matter.
  */
-export const WEBHOOK_EVENTS: readonly string[] = ["issues", "pull_request"];
+export const WEBHOOK_EVENTS: readonly string[] = [];
 
 /**
  * Where somebody deciding whether to install this app goes to read about it.
@@ -168,8 +177,8 @@ export function githubAppManifest(
     setup_url: `${base}${SETUP_PATH}`,
     description:
       options.description ??
-      "Brings a repository's issues and reviews into Initiative as dashboard " +
-        "widgets and automation nodes.",
+      "Brings a repository's issues, reviews and dependency alerts into " +
+        "Initiative as dashboard widgets.",
     // Installable by any organization, which is what a marketplace listing
     // implies: the guilds that install it are not the ones that deployed it.
     public: options.public ?? true,
