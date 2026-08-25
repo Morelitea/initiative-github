@@ -8,6 +8,35 @@ guild admin — and everything below follows from having one.
 
 ### Added
 
+- **A producer surface** (`src/events.ts`, `src/github/events.ts`), and with it
+  the `events` feature back in the manifest. This app publishes three types —
+  an issue opened, an issue closed, a review requested — directly to whoever
+  subscribed, on the shapes `initiative-app-kit` fixes rather than shapes this
+  app invented. Nothing about the dashboard depends on any of it: a guild with
+  no automation service gets the same widgets it always did.
+
+  The declaration was here before and went nowhere. It emitted through
+  Initiative, which accepted the event and handed it to a dispatcher that could
+  match no subscription to it — the vocabulary a subscription may name is
+  derived from Initiative's own content tables, so nothing can name
+  `app.<id>.<event>`. Every emit succeeded having reached no one, and nothing
+  at either end said so. What changed is not the declaration; it is where the
+  events go.
+- Three routes for a subscriber: `GET /v1/events` for what this app produces,
+  and `POST`/`GET`/`DELETE` under `/v1/events/subscriptions`. Authorized by a
+  delegation token — an app the operator granted `delegation` to, proving
+  itself against a key the deployment publishes — which names one guild, so a
+  subscription cannot be made for a guild nobody authorized. The token is spent
+  once, in the database rather than in a process, so the rule survives a second
+  replica.
+- Two tables behind that: `event_subscriptions`, whose secret is sealed at rest
+  like a member's credential, and `delegation_tokens`, whose primary key *is*
+  the one-shot check.
+- `issues` and `pull_request` back on the GitHub App registration, derived from
+  the translator so an event handled in code cannot go missing from the form.
+  Adding them costs no organization a re-approval: both need permissions this
+  app already holds for its widgets, and subscribing to a webhook event is not
+  a permission change.
 - A GitHub App registration, generated from the code that uses it
   (`src/github/registration.ts`, `npm run github-app`). The permissions and the
   webhook events on it are the ones this app actually asks for and actually

@@ -371,29 +371,61 @@ the pool closes.
 | **A public hostname** | `APP_PUBLIC_URL`. Every URL on the GitHub App registration is built from it, so this needs DNS and a proxy entry before you register anything. |
 | **A GitHub App** | One registration, giving four values: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY` and `GITHUB_WEBHOOK_SECRET`. You create it; nothing can generate it. `npm run github-app` prints every field to fill in and writes the manifest if you would rather not type them. |
 
-### The webhook, and why it still exists
+### The webhook, and the two jobs it does
 
-Nothing to wire, and nothing subscribed to. The registration's event list is
-empty: with the triggers gone, repository activity tells this app nothing its
-next source call would not, and a webhook that only invalidated a sixty-second
-cache would be a lot of machinery for a minute.
+Nothing to wire. One URL and one secret on the app's own registration, covering
+every organization that installs it, and two kinds of delivery arrive there.
 
-What still arrives is the installation lifecycle, because GitHub sends it
-whether an app wants it or not — *"All GitHub Apps receive this event by
-default. You cannot manually subscribe to this event."* An organization
-installing this app, removing it, or changing which repositories it may see is
-the one thing this app cannot work out for itself in time to matter, so a
-delivery re-runs the sync for the installs it affects.
+**The installation lifecycle** arrives whether the app asks for it or not —
+*"All GitHub Apps receive this event by default. You cannot manually subscribe
+to this event."* An organization installing this app, removing it, or changing
+which repositories it may see is the one thing this app cannot work out for
+itself in time to matter, so a delivery re-runs the sync for the installs it
+affects and tells nobody else.
+
+**Repository activity** — an issue opened or closed, a review requested — is
+republished to whoever asked to hear it. That is the producer surface below,
+and it is not the same thing as the widgets: a guild with no automation service
+gets its dashboard either way, because the data path never touches any of this.
+
+### Telling an automation service what happened
+
+An app holds its vendor's webhook connection, so it is the thing that knows
+when something happened there. This app publishes three event types, declared
+in its manifest and produced **directly** to whoever subscribed. Initiative is
+not in that path.
+
+| Route | Who calls it | What it does |
+| --- | --- | --- |
+| `GET /v1/events` | anyone | The event types this app produces. Public, like the manifest that declares them. |
+| `POST /v1/events/subscriptions` | a delegate | Records an address to deliver to, and hands back the signing secret once. |
+| `GET /v1/events/subscriptions` | a delegate | What that delegate has asked for in that guild. |
+| `DELETE /v1/events/subscriptions/{id}` | a delegate | Drops one of its own. |
+
+A **delegate** is an app the operator granted `delegation` to. It proves itself
+with a token it signed, verified against a key the deployment publishes for it,
+and the token names one guild — so a subscription is for that guild and nothing
+in the request can widen it. The shapes come from `initiative-app-kit` rather
+than from this app, which is the point: a subscriber that can read one app's
+events can read every app's.
+
+Two properties worth knowing, both of which the tests pin:
+
+- **A redelivery is recognizable.** The envelope's id is derived from GitHub's
+  own delivery id, so a delivery GitHub re-sends carries the id the subscriber
+  already recorded rather than looking like a second event.
+- **Nothing here can break the dashboard.** A subscriber that is down is logged
+  and dropped; GitHub still gets its `200`.
+
+Deliveries this app has no install for are answered `200` and logged rather than
+failed, for the same reason: GitHub retries a failure, and a delivery with
+nowhere to go will not succeed on the second attempt.
 
 The webhook is part of the registration — one URL and one secret, covering every
 organization that installs the app — which is one of the concrete reasons to be
 a GitHub App rather than an OAuth app. The version of this app before it was one
 needed a webhook added by hand to every repository a guild configured, and
 received nothing at all from the one somebody forgot.
-
-Deliveries this app has no install for are answered `200` and logged rather than
-failed. GitHub retries a failure, and a delivery with nowhere to go will not
-succeed on the second attempt.
 
 ### Installing it on an organization
 

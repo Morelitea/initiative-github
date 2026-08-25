@@ -35,6 +35,7 @@ import {
   SETUP_PATH,
   WEBHOOK_PATH,
 } from "../routes.js";
+import { SUBSCRIBED_EVENTS } from "./events.js";
 
 /**
  * What this app asks an organization for, and nothing beyond it.
@@ -46,8 +47,10 @@ import {
  *     closes. It was `write` while this app contributed an automation action
  *     that opened issues; that went, so this came down with it. Narrowing is
  *     the one direction that is free: GitHub asks nobody to re-approve a
- *     permission an app stopped wanting.
- *   * `pull_requests: read` — "which pull requests are waiting on my review".
+ *     permission an app stopped wanting. It also covers the `issues`
+ *     deliveries this app republishes, which need reading and nothing more.
+ *   * `pull_requests: read` — "which pull requests are waiting on my review",
+ *     and the `pull_request` deliveries this app republishes.
  *   * `vulnerability_alerts: read` — open Dependabot alerts, by severity. Note
  *     the key: the permission is called "Dependabot alerts" everywhere a person
  *     reads it and `vulnerability_alerts` everywhere a machine does, and a key
@@ -78,21 +81,26 @@ export const PERMISSIONS: Readonly<Record<string, string>> = {
 };
 
 /**
- * Which deliveries this app subscribes to: none.
+ * Which deliveries this app subscribes to.
  *
- * It used to take `issues` and `pull_request`, to fire automation triggers. With
- * those gone there is nothing left that repository activity would tell this app
- * that its next source call would not — the dashboard reads on a cache TTL, and
- * a webhook that only invalidated a sixty-second cache would be a great deal of
- * machinery for a minute.
+ * Derived from the translator rather than written out here, which is the whole
+ * point of the file it comes from: an event handled in code but missing from
+ * this list never arrives, and an event on this list that nothing handles is
+ * delivery volume for nobody. Neither failure says anything at either end.
  *
- * What it still needs arrives anyway. GitHub's own words on the installation
- * events: "All GitHub Apps receive this event by default. You cannot manually
- * subscribe to this event." So an empty list here and a webhook endpoint that
- * still hears an organization install, uninstall, or re-scope the app — which
- * is the only thing this app cannot work out for itself in time to matter.
+ * Two things worth knowing about changing it:
+ *
+ *   * **It costs no organization a re-approval.** Both deliveries need
+ *     permissions this app already holds for its widgets, and subscribing to a
+ *     webhook event is not a permission change. Widening {@link PERMISSIONS}
+ *     would be the opposite — every existing installation keeps the old grant
+ *     until somebody approves the new one.
+ *   * **The installation lifecycle is not here, and must not be.** GitHub's own
+ *     words: "All GitHub Apps receive this event by default. You cannot
+ *     manually subscribe to this event." Naming it would be asking for
+ *     something already arriving.
  */
-export const WEBHOOK_EVENTS: readonly string[] = [];
+export const WEBHOOK_EVENTS: readonly string[] = SUBSCRIBED_EVENTS;
 
 /**
  * Where somebody deciding whether to install this app goes to read about it.

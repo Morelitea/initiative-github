@@ -24,6 +24,7 @@ import { describe, expect, it } from "vitest";
 
 import { config } from "../src/config.js";
 import { appJwt } from "../src/github/app.js";
+import { SUBSCRIBED_EVENTS } from "../src/github/events.js";
 import {
   HOMEPAGE,
   PERMISSIONS,
@@ -214,21 +215,38 @@ describe("asking for no more than it uses", () => {
   });
 });
 
-describe("subscribing to nothing, and still hearing what matters", () => {
-  it("asks for no repository activity", () => {
-    // It took `issues` and `pull_request` to fire automation triggers. With
-    // those gone, repository activity tells this app nothing its next source
-    // call would not — a webhook that only invalidated a sixty-second cache
-    // would be a lot of machinery for a minute.
-    expect(registration.default_events).toEqual([]);
+describe("subscribing to what it republishes, and nothing else", () => {
+  it("asks for exactly the deliveries the translator handles", () => {
+    // The failure this catches is the quietest one on the registration: an
+    // event handled in code and absent from the form never arrives, and
+    // nothing at either end says so. Both readings come from one table.
+    expect(registration.default_events).toEqual([...SUBSCRIBED_EVENTS]);
+    expect(registration.default_events.length).toBeGreaterThan(0);
+  });
+
+  it("costs no organization a re-approval to have added them", () => {
+    // The reason these could come back at all. Subscribing to a webhook event
+    // is not a permission change, and both deliveries need permissions this
+    // app already holds for its widgets — so nothing is asked of an
+    // organization that installed the app before this existed. Widening a
+    // permission would be the opposite: every existing installation keeps the
+    // old grant until somebody approves the new one.
+    const needed: Record<string, string> = {
+      issues: "issues",
+      pull_request: "pull_requests",
+    };
+    for (const event of registration.default_events) {
+      expect(needed[event], `nothing maps ${event} to a permission`).toBeDefined();
+      expect(PERMISSIONS[needed[event]]).toBe("read");
+    }
   });
 
   it("still hears the installation lifecycle, because it cannot not", () => {
     // GitHub's own words: "All GitHub Apps receive this event by default. You
-    // cannot manually subscribe to this event." So an empty list above and a
-    // webhook endpoint that still hears an organization install, uninstall, or
-    // re-scope the app — the one thing this app cannot work out for itself in
-    // time to matter.
+    // cannot manually subscribe to this event." So naming them would be asking
+    // for something already arriving — and a webhook endpoint that hears an
+    // organization install, uninstall, or re-scope the app either way, which
+    // is the one thing this app cannot work out for itself in time to matter.
     for (const event of ["installation", "installation_repositories"]) {
       expect(registration.default_events).not.toContain(event);
     }

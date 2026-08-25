@@ -18,6 +18,12 @@
  *   on the lifecycle signal, plus the GitHub installation this app found for it.
  *   Cheap to refetch but not free, and losing it makes every source answer
  *   "not configured" until something re-pulls.
+ * - **`event_subscriptions`** — who has asked to be told when something happens
+ *   at GitHub. Nothing can rebuild these: the subscriber holds a secret this
+ *   app minted and will never mint again, so losing the row means silently
+ *   delivering nothing to somebody who believes they are subscribed.
+ * - **`delegation_tokens`** — the ids of one-shot tokens already spent. In
+ *   memory it would be per-replica, which is not a one-shot rule at all.
  *
  * The schema is applied idempotently at boot rather than through a migration
  * tool. Two tables of this shape do not earn the dependency, and an app is
@@ -91,6 +97,39 @@ const SCHEMA = [
   // And the other direction, for an install that has not found an installation
   // yet — the guild waiting for somebody to install the app on their account.
   `CREATE INDEX IF NOT EXISTS workspaces_owner ON workspaces (lower(owner))`,
+  // A standing request to be told about this repository. `id` is a BIGSERIAL
+  // and not a uuid on purpose: it travels in the envelope as `subscription_id`,
+  // and a receiver written against Initiative's own envelope refuses one that
+  // is not an integer.
+  `CREATE TABLE IF NOT EXISTS event_subscriptions (
+     id          BIGSERIAL PRIMARY KEY,
+     guild_id    BIGINT NOT NULL,
+     subscriber  TEXT NOT NULL,
+     target_url  TEXT NOT NULL,
+     secret      TEXT NOT NULL,
+     event_types TEXT[] NOT NULL,
+     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+   )`,
+  // The producer's only read: which subscriptions in this guild named this
+  // type. Filtered in the database rather than in the app, because it is an
+  // index lookup here and a scan there.
+  `CREATE INDEX IF NOT EXISTS event_subscriptions_guild
+     ON event_subscriptions (guild_id)`,
+  // What makes re-subscribing a replacement instead of a duplicate — and a
+  // duplicate here is not harmless, it is two deliveries of every event.
+  `CREATE UNIQUE INDEX IF NOT EXISTS event_subscriptions_target
+     ON event_subscriptions (guild_id, subscriber, target_url)`,
+  // Spent one-shot tokens. The primary key is the check: two requests racing
+  // collide here rather than both being let through.
+  `CREATE TABLE IF NOT EXISTS delegation_tokens (
+     jti        TEXT PRIMARY KEY,
+     expires_at TIMESTAMPTZ NOT NULL
+   )`,
+  // Swept on use rather than by a job, so the sweep cannot fall behind while
+  // tokens are arriving.
+  `CREATE INDEX IF NOT EXISTS delegation_tokens_expires
+     ON delegation_tokens (expires_at)`,
 ];
 
 /** Apply the schema. Safe to run on every boot and on every replica. */

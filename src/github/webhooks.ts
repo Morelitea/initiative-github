@@ -1,40 +1,60 @@
 /**
- * The inbound half: GitHub telling this app about its own installation.
+ * The inbound half: GitHub telling this app what happened.
  *
- * This file used to do two jobs. It translated repository activity — an issue
- * opened, a review requested — into Initiative events for automation triggers
- * to fire on, and it handled the app's own lifecycle. The first job is gone,
- * and the reason is worth keeping written down because the code looked fine:
+ * Two jobs, and they are worth keeping apart because they are answerable by
+ * different things:
  *
- * An app emits through `emitEvent`, the platform accepts it, checks it against
- * the app's pinned definition, and hands it to the dispatcher. The dispatcher
- * delivers to subscriptions naming that event type — and the vocabulary a
- * subscription may name is *derived from Initiative's own content tables*
- * (`{resource}.{action}`), with anything else refused at registration. So no
- * subscription can name `app.<id>.<event>`, the dispatcher matches nothing, and
- * the emit returns success having delivered to no one. Not an error anywhere;
- * just an event that stops.
+ *   * **The app's own lifecycle.** An organization installing this app,
+ *     removing it, or changing which repositories it may see. Nobody
+ *     subscribes to that — it is not news, it is a fact about whether this app
+ *     can answer anything at all — so it re-runs the sync for the installs it
+ *     affects and tells no one.
+ *   * **Repository activity.** An issue opened, a review requested. This *is*
+ *     news, and it goes to whoever asked to hear it.
  *
- * So what remains is the job that works, and it is the one that matters for
- * this app being correct rather than for it being interesting: an organization
- * installing it, removing it, or changing which repositories it may see. None
- * of that is something to emit into a guild — no subscriber asked to hear that
- * somebody clicked a button — but all of it changes whether this app can answer
- * anything, so it re-runs the sync for the installs it affects.
+ * The second job was here before, was removed, and is back on a different
+ * route. It used to emit through Initiative, which accepted the event, checked
+ * it against this app's pinned definition, and handed it to a dispatcher that
+ * could match no subscription to it — because the vocabulary a subscription may
+ * name is derived from Initiative's own content tables, so nothing can name
+ * `app.<id>.<event>`. Every emit succeeded having reached nobody, and nothing
+ * at either end said so.
+ *
+ * Now it goes straight to the subscriber. This app already holds GitHub's
+ * webhook connection and has already verified GitHub's signature; posting the
+ * result through a third party to reach a consumer that could be handed it adds
+ * a hop and a place to be dropped. What that costs is that this app has to be a
+ * producer — which is `../events.ts`, and is the kit's shapes rather than this
+ * app's.
  *
  * The signature check is unchanged and is the reason to trust any of it. One
  * secret, on the app's own registration, covering every organization that
  * installs it — where an OAuth app would have needed a webhook added by hand to
  * every repository, and would silently receive nothing from the one somebody
  * forgot.
+ *
+ * ## A delivery is handled twice without harm
+ *
+ * GitHub signs the body and not a timestamp, so a delivery it re-sends — or one
+ * replayed at this endpoint — carries a signature that still checks out. Every
+ * handler below is written to survive that, and it is a property to preserve
+ * rather than a coincidence to rely on quietly: a re-sync run twice is a
+ * re-sync, and a republished event carries the delivery id in its envelope id,
+ * so the subscriber recognises it as the one it already has.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { config } from "../config.js";
+import { publish } from "../events.js";
 import { syncInstall } from "../sync.js";
 import { forgetInstallation, forgetRepositories } from "./app.js";
-import { installsAwaiting, installsForInstallation } from "./workspace.js";
+import { translate } from "./events.js";
+import {
+  installsAwaiting,
+  installsForInstallation,
+  installsWatching,
+} from "./workspace.js";
 
 /** GitHub's own headers on a delivery. */
 export const EVENT_HEADER = "x-github-event";
@@ -42,13 +62,13 @@ export const SIGNATURE_HEADER = "x-hub-signature-256";
 export const DELIVERY_HEADER = "x-github-delivery";
 
 /**
- * The deliveries this app acts on.
+ * The deliveries that are about this app rather than about a repository.
  *
- * It subscribes to nothing. These three arrive regardless — GitHub sends them
- * to every app and says so: "All GitHub Apps receive this event by default. You
- * cannot manually subscribe to this event." So the registration's event list is
- * empty and this still works, which is the least an app can ask for and still
- * know its own state.
+ * These arrive whether or not the registration asks for them — GitHub sends
+ * them to every app and says so: "All GitHub Apps receive this event by
+ * default. You cannot manually subscribe to this event." So they are handled
+ * here and named nowhere in the registration, which is the least an app can ask
+ * for and still know its own state.
  */
 const LIFECYCLE_EVENTS = new Set([
   "installation",
@@ -78,7 +98,9 @@ export function verifySignature(body: Uint8Array, header: string | undefined): b
 export interface DeliveryResult {
   /** Installs re-synced because the relationship changed. */
   resynced: number;
-  reason?: "unhandled" | "no-installation";
+  /** Subscribers this delivery was published to. */
+  published: number;
+  reason?: "unhandled" | "no-installation" | "nothing-to-say" | "unwatched";
 }
 
 /**
@@ -98,9 +120,12 @@ export interface DeliveryResult {
  */
 export async function handleDelivery(
   event: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  deliveryId: string
 ): Promise<DeliveryResult> {
-  if (!LIFECYCLE_EVENTS.has(event)) return { resynced: 0, reason: "unhandled" };
+  if (!LIFECYCLE_EVENTS.has(event)) {
+    return publishActivity(event, payload, deliveryId);
+  }
 
   const installation = payload.installation as
     | { id?: unknown; account?: { login?: unknown } }
@@ -112,7 +137,7 @@ export async function handleDelivery(
       : null;
 
   if (installationId === null && owner === null) {
-    return { resynced: 0, reason: "no-installation" };
+    return { resynced: 0, published: 0, reason: "no-installation" };
   }
 
   const guilds = new Map<number, number>();
@@ -144,5 +169,67 @@ export async function handleDelivery(
       console.error(`could not re-sync guild ${guildId} after an install change`, error);
     }
   }
-  return { resynced };
+  return { resynced, published: 0 };
+}
+
+/**
+ * Republish one repository delivery to whoever asked for it.
+ *
+ * Two narrowings, in this order, and neither is optional:
+ *
+ *   * **Is this something this app publishes?** `translate` answers, and it
+ *     says no far more often than yes — this app hears every action on the
+ *     deliveries it subscribed to and publishes four of them.
+ *   * **Whose is it?** A delivery names an installation and a repository, and
+ *     the installs watching that pair are the guilds entitled to hear about it.
+ *     Matching on the installation rather than on the owner's name is the point:
+ *     GitHub asserts the installation, whereas an owner is a string somebody
+ *     typed and a repository can be renamed or transferred under one.
+ *
+ * The delivery id becomes the envelope's id, which is what makes a redelivery
+ * recognizable as one. GitHub re-sends a delivery it believes failed with the
+ * same id, so the subscriber sees the id it already has rather than a second
+ * copy of the same event.
+ */
+async function publishActivity(
+  event: string,
+  payload: Record<string, unknown>,
+  deliveryId: string
+): Promise<DeliveryResult> {
+  const translated = translate(event, payload);
+  if (!translated) return { resynced: 0, published: 0, reason: "nothing-to-say" };
+
+  const installation = payload.installation as { id?: unknown } | undefined;
+  const installationId = typeof installation?.id === "number" ? installation.id : null;
+  if (installationId === null) {
+    return { resynced: 0, published: 0, reason: "no-installation" };
+  }
+
+  const watching = await installsWatching(installationId, translated.repo);
+  if (watching.length === 0) {
+    // An organization granted this app a repository no guild has pointed at.
+    // Ordinary, and not something to fail the delivery over.
+    return { resynced: 0, published: 0, reason: "unwatched" };
+  }
+
+  let published = 0;
+  for (const install of watching) {
+    const outcomes = await publish({
+      guildId: install.guildId,
+      appInstallId: install.appInstallId,
+      eventType: translated.eventType,
+      payload: translated.payload,
+      deliveryKey: deliveryId,
+    });
+    published += outcomes.filter((outcome) => outcome.ok).length;
+    for (const failed of outcomes.filter((outcome) => !outcome.ok)) {
+      // Logged and dropped. A subscriber that is down is not GitHub's problem,
+      // and asking GitHub to retry would re-run every other subscriber too.
+      console.warn(
+        `subscription ${failed.subscriptionId} did not take ${translated.eventType}: ` +
+          `${failed.error ?? failed.status}`
+      );
+    }
+  }
+  return { resynced: 0, published };
 }

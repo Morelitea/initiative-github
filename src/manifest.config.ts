@@ -19,11 +19,18 @@
 
 import type { Manifest } from "initiative-app-kit";
 
+import { EVENT_TYPES } from "./github/events.js";
 import { PERMISSIONS } from "./github/registration.js";
+import { PUBLIC_ID } from "./public-id.js";
 import { CONNECT_PATH } from "./routes.js";
 
-/** Namespaces everything this app publishes. */
-export const PUBLIC_ID = "morelitea.github";
+/**
+ * Namespaces everything this app publishes.
+ *
+ * Re-exported rather than declared, because the event vocabulary is namespaced
+ * under it and lives in a module this one imports — see `public-id.ts`.
+ */
+export { PUBLIC_ID };
 
 /**
  * What an admin is shown that this app will be able to do, in GitHub's own
@@ -60,14 +67,22 @@ export const manifest: Manifest = {
   // Declared and cross-checked against the blocks below, in both directions.
   // A feature with no block would advertise something this app cannot do.
   //
-  // `events` and `automations` were here and are not any more. Not because the
-  // blocks were wrong — they validated, and the code behind them worked — but
-  // because an app event has nowhere to arrive: the vocabulary a webhook
-  // subscription may name is derived from Initiative's own content tables, so
-  // nothing can subscribe to `app.<id>.<event>`, and an emit succeeds having
-  // delivered to no one. Declaring a feature that goes nowhere is the same
-  // mistake as declaring one with no block, one level further out.
-  features: ["data", "widgets"],
+  // `events` is back, and what changed is not the declaration — it is where the
+  // events go. They were emitted through Initiative's dispatcher, which
+  // delivers to subscriptions naming the event type, and the vocabulary a
+  // subscription may name is derived from Initiative's own content tables: no
+  // subscription can name `app.<id>.<event>`, so every emit succeeded having
+  // reached no one. This app now produces directly, to subscribers that asked
+  // it, so the declaration describes something that happens.
+  //
+  // What the declaration is *for* is unchanged and is the reason it belongs
+  // here rather than only on the wire: it is the contract. This app holds
+  // GitHub's webhook connection, so it is the authority on what GitHub events
+  // mean here, and a consumer reads this list to know what it may ask for.
+  //
+  // `automations` is still absent, and for a different reason: a node an app
+  // contributes is a thing that executes, and what executes stays first-party.
+  features: ["data", "widgets", "events"],
 
   default_name: "GitHub",
 
@@ -336,6 +351,16 @@ export const manifest: Manifest = {
       requires: { all_of: ["workspace"] },
     },
   ],
+
+  // What this app publishes when something happens at GitHub, and the whole of
+  // what a subscriber may ask for. Built from the translator so the list cannot
+  // name a type nothing produces — see `github/events.ts` for the table all
+  // three readings come from.
+  //
+  // Note what is not describable here: which initiative an event belongs to. An
+  // app has none to name, so an event is guild-wide and a consumer narrows
+  // itself by a payload field instead. That is what `repository` is for.
+  events: [...EVENT_TYPES],
 
   // Three shapes a widget takes — one number, a list, and a series — and four
   // widgets, because the fourth is not here to demonstrate a shape. It reuses

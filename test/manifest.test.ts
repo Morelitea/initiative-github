@@ -14,6 +14,8 @@
 import { describe, expect, it } from "vitest";
 import { appDocument, validateDocument, validateManifest } from "initiative-app-kit";
 
+import { EVENT_TYPES, translate } from "../src/github/events.js";
+import { WEBHOOK_EVENTS } from "../src/github/registration.js";
 import { PUBLIC_ID, manifest } from "../src/manifest.config.js";
 
 describe("the manifest", () => {
@@ -52,15 +54,47 @@ describe("the manifest", () => {
   });
 
   it("declares no feature it cannot deliver", () => {
-    // `events` and `automations` were both declared, both validated, and both
-    // went nowhere: no webhook subscription may name `app.<id>.<event>`, so an
-    // emit succeeded having delivered to nobody. Declaring a feature that goes
-    // nowhere is the same mistake as declaring one with no block, one level
-    // further out — and this is the assertion that keeps it gone until the
-    // platform can carry it.
-    expect(manifest.features).toEqual(["data", "widgets"]);
-    expect(manifest.events).toBeUndefined();
+    // `events` was declared, validated, and went nowhere, because an emit
+    // through Initiative reached a dispatcher that could match no subscription
+    // to it. It is back because the events now go somewhere: this app produces
+    // directly to subscribers that asked it, so the declaration describes
+    // something that happens rather than something that is accepted.
+    //
+    // `automations` stays gone, and for a different reason — a node an app
+    // contributes is a thing that executes, and what executes stays
+    // first-party.
+    expect(manifest.features).toEqual(["data", "widgets", "events"]);
     expect(manifest.automation).toBeUndefined();
+  });
+
+  it("declares an event vocabulary the code actually produces", () => {
+    // The declaration is the contract: this app holds GitHub's webhook
+    // connection, so it is the authority on what these mean, and a consumer
+    // reads this list to know what it may ask for. A type here that nothing
+    // translates would be a subscription that never fires, with the subscriber
+    // having no way to find out.
+    expect(manifest.events).toEqual([...EVENT_TYPES]);
+    expect(manifest.events?.length).toBeGreaterThan(0);
+  });
+
+  it("namespaces every event under its own service id", () => {
+    // The prefix the platform checks against the emitting registration. A type
+    // outside it is refused, and the refusal names a prefix rather than the
+    // mistake.
+    for (const type of manifest.events ?? []) {
+      expect(type.startsWith(`app.${PUBLIC_ID}.`)).toBe(true);
+      expect(type.length).toBeGreaterThan(`app.${PUBLIC_ID}.`.length);
+    }
+  });
+
+  it("subscribes to every delivery it needs to produce those", () => {
+    // The registration is a form somebody fills in once. An event handled in
+    // code but missing from it simply never arrives — so both come from the
+    // same table, and this is what says so.
+    expect(WEBHOOK_EVENTS.length).toBeGreaterThan(0);
+    for (const delivery of WEBHOOK_EVENTS) {
+      expect(translate(delivery, { action: "\u0000none" })).toBeNull();
+    }
   });
 });
 

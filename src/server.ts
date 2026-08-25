@@ -18,7 +18,13 @@
  * - **`/webhooks/github`** — the *vendor* calling in, verified against GitHub's
  *   own webhook secret rather than against Initiative's. An organization
  *   installing this app, removing it, or changing which repositories it may see
- *   arrives here, and re-runs the sync for the installs it affects.
+ *   arrives here, and re-runs the sync for the installs it affects; repository
+ *   activity arrives here too and is republished to whoever asked for it.
+ * - **`/v1/events*`** — a *delegate* calling in, proving itself with a token it
+ *   signed and a key the deployment publishes. This is the only surface here
+ *   that Initiative is not a party to: an automation service asks to be told
+ *   when something happens at GitHub, and this app tells it. Nothing about the
+ *   dashboard depends on any of it.
  *
  * Calls in the other direction — pulling installs, emitting events — go through
  * `initiative.ts`, and everything about which installs exist comes from
@@ -32,11 +38,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import {
+  DelegationTokenError,
   JwksCache,
   answerChallenge,
   bearerToken,
+  delegateHeader,
   verifyContextToken,
+  verifyDelegationToken,
   type ContextClaims,
+  type DelegationClaims,
 } from "initiative-app-kit";
 
 import { config } from "./config.js";
@@ -47,12 +57,21 @@ import { page } from "./page.js";
 import {
   CALLBACK_PATH,
   CONNECT_PATH,
+  EVENTS_PATH,
   INSTALL_PATH,
   REGISTERED_PATH,
   REGISTER_PATH,
   SETUP_PATH,
+  SUBSCRIPTIONS_PATH,
   WEBHOOK_PATH,
 } from "./routes.js";
+import {
+  listSubscriptions,
+  spendToken,
+  subscribe,
+  unsubscribe,
+} from "./events.js";
+import { EVENT_TYPES } from "./github/events.js";
 import {
   dependabotAlerts,
   issueThroughput,
@@ -78,6 +97,14 @@ import {
 } from "./github/webhooks.js";
 import { forgetInstall, startSync, syncInstall } from "./sync.js";
 
+/**
+ * One cache, two documents.
+ *
+ * Initiative's own signing key answers "did Initiative send this"; a delegate's
+ * key answers "did that delegate send this". Both are fetched from the same
+ * deployment and cached per document, so one instance serves both and neither
+ * set can verify the other's tokens.
+ */
 const jwks = new JwksCache();
 
 /** A header as one value; `node:http` gives an array for a repeated one. */
@@ -183,6 +210,58 @@ async function context(
     send(res, 401, { error: (error as Error).message });
     return null;
   }
+}
+
+/**
+ * Verify the delegation token on an inbound call from an automation service.
+ *
+ * The mirror of `context` above, for the other kind of caller, and it answers
+ * 401 itself for the same reason.
+ *
+ * Three things happen here and the order matters. The caller names which
+ * delegate it is, which decides *which* published key set is fetched — a
+ * selector, and nothing is believed on the strength of it. The signature then
+ * decides whether that name was true. And only then is the token spent: a
+ * delegation token is one-shot, and burning it before it verified would let
+ * anybody invalidate a real one by presenting a forgery with a guessed id.
+ */
+async function delegate(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<DelegationClaims | null> {
+  const token = bearerToken(req.headers);
+  const named = delegateHeader(req.headers);
+  if (!token || !named) {
+    send(res, 401, { error: "no delegation token" });
+    return null;
+  }
+
+  let claims: DelegationClaims;
+  try {
+    claims = await verifyDelegationToken(token, {
+      publicId: manifest.service.public_id,
+      delegate: named,
+      baseUrl: config.initiativeBaseUrl,
+      jwks,
+    });
+  } catch (error) {
+    // One sentence for every reason. Which of them applies is either the
+    // deployment's own wiring or a detail of the token, and neither is
+    // something to describe to a caller that has not proved anything yet.
+    if (error instanceof DelegationTokenError) {
+      send(res, 401, { error: "that token did not verify" });
+    } else {
+      console.error("delegation check failed", error);
+      send(res, 503, { error: "could not check that token" });
+    }
+    return null;
+  }
+
+  if (!(await spendToken(claims.jti, claims.expiresAt))) {
+    send(res, 401, { error: "that token has already been used" });
+    return null;
+  }
+  return claims;
 }
 
 export const server = createServer(async (req, res) => {
@@ -378,6 +457,57 @@ export const server = createServer(async (req, res) => {
       return sendPage(res, credentialsPage(credentials), { secret: true });
     }
 
+    // --- what this app produces, and who has asked for it ------------------
+    // Unauthenticated, and it is the same list the manifest declares. A
+    // subscriber connecting directly needs to know what it may ask for, and
+    // making it prove itself to read a public vocabulary would be a credential
+    // spent on nothing.
+    if (req.method === "GET" && path === EVENTS_PATH) {
+      return send(res, 200, {
+        public_id: manifest.service.public_id,
+        event_types: EVENT_TYPES,
+      });
+    }
+
+    // Everything below is a delegate acting for one guild. The token names the
+    // guild; nothing in the request may widen that.
+    if (path === SUBSCRIPTIONS_PATH && (req.method === "POST" || req.method === "GET")) {
+      const claims = await delegate(req, res);
+      if (!claims) return;
+
+      if (req.method === "GET") {
+        return send(res, 200, {
+          items: await listSubscriptions(claims.signer.publicId, claims.guildId),
+        });
+      }
+
+      let body: unknown;
+      try {
+        body = JSON.parse((await readBody(req)).toString("utf-8"));
+      } catch {
+        return send(res, 400, { error: "body is not json" });
+      }
+      const result = await subscribe(claims.signer.publicId, claims.guildId, body);
+      if (!result.ok) return send(res, result.status, { error: result.error });
+      // The secret appears here and nowhere else, ever. A subscriber that loses
+      // it re-subscribes to the same address and is given a fresh one.
+      return send(res, 201, { ...result.view, secret: result.secret });
+    }
+
+    if (req.method === "DELETE" && path.startsWith(`${SUBSCRIPTIONS_PATH}/`)) {
+      const id = Number(path.slice(SUBSCRIPTIONS_PATH.length + 1));
+      if (!Number.isInteger(id)) return send(res, 404, { error: "no such subscription" });
+
+      const claims = await delegate(req, res);
+      if (!claims) return;
+      // Matched on the delegate and the guild as well as the id, so one
+      // subscriber cannot reach another's by guessing a number — and the
+      // delegate is the registration whose key verified, not a name it typed.
+      const removed = await unsubscribe(claims.signer.publicId, claims.guildId, id);
+      if (!removed) return send(res, 404, { error: "no such subscription" });
+      return send(res, 204, null);
+    }
+
     // --- the vendor calling in ---------------------------------------------
     // This app subscribes to no repository activity. What arrives here is the
     // installation lifecycle, which GitHub sends to every app whether it asked
@@ -404,7 +534,11 @@ export const server = createServer(async (req, res) => {
         return send(res, 400, { error: "body is not json" });
       }
 
-      const result = await handleDelivery(event, payload);
+      const result = await handleDelivery(
+        event,
+        payload,
+        header(req, DELIVERY_HEADER) ?? "",
+      );
       // 200 whatever the outcome. GitHub retries a failure, and a delivery this
       // app has no install for is not going to succeed on the second attempt —
       // the delivery id goes into the log so an admin can still find it.
@@ -413,7 +547,7 @@ export const server = createServer(async (req, res) => {
           `delivery ${header(req, DELIVERY_HEADER) ?? "?"} (${event}): ${result.reason}`
         );
       }
-      return send(res, 200, { resynced: result.resynced });
+      return send(res, 200, { resynced: result.resynced, published: result.published });
     }
 
     return send(res, 404, { error: "no such route" });
