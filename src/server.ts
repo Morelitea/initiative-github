@@ -203,22 +203,12 @@ function sendBytes(res: ServerResponse, status: number, payload: string): void {
  */
 const MANIFEST_DOCUMENT = JSON.stringify(document);
 
-
-function sendPage(
-  res: ServerResponse,
-  html: string,
-  options: { secret?: boolean } = {}
-): void {
+function sendPage(res: ServerResponse, html: string): void {
   res.writeHead(200, {
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(html),
     // Not framed by anyone: this app mounts no embedded surface.
     "Content-Security-Policy": "frame-ancestors 'none'",
-    // One page here renders credentials. It must not sit in a shared cache, and
-    // the setup token must not travel onward in a Referer header to GitHub.
-    ...(options.secret
-      ? { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" }
-      : {}),
   });
   res.end(html);
 }
