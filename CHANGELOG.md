@@ -115,6 +115,38 @@ guild admin — and everything below follows from having one.
 - A catalog `uid`, carried by the served document as well as by the listings.
   Without one a registration verifies and names nothing, and a mandatory install
   is skipped as "has not verified yet".
+- **What each endpoint is, in words, and what it hands back.** All fourteen now
+  carry a `label`, a `description`, a `group` and their `returns`, in the same
+  four languages the rest of the manifest is written in — the vocabulary the app
+  kit added for exactly this, and the pin moves with it.
+
+  It is the difference between an endpoint and a step somebody can use. A
+  consumer with no label scrapes a title off the id, which cannot be translated
+  and cannot say anything the id does not. A consumer with no `returns` has
+  nothing to offer the step below, so "the issue this just opened" is not
+  something an automation can express. Declared rather than discovered, because
+  an automation is arranged long before this app has ever run for it: a step
+  bound to a value this app does not send has to be refusable when somebody
+  wires it up, not the first time it fires.
+
+  Two of that vocabulary's fields are deliberately left off everything.
+  `needs_subject` says what a run must already be *about*, and nothing here
+  needs one — every endpoint names what it acts on, which is exactly what makes
+  them usable from a nightly schedule that is about nothing at all, and
+  claiming a need would warn people off arrangements that work. `picker` asks
+  the consumer to draw a control over its *own* data, and a repository name, an
+  issue number and a Projects v2 node id are none of them things Initiative can
+  list.
+
+  What a read cannot say is worth knowing too: the return vocabulary is four
+  scalar types and a list flag, so the review queue's rows and the throughput
+  series have no expression in it. Those declare the scalars beside them and
+  say so, rather than describing a shape this app does not send.
+
+  Held to the code in both directions rather than merely written down: a test
+  fires one of each delivery and asserts an emission sends exactly the payload
+  it declared, and another runs every write against a generous GitHub and
+  asserts it hands back neither more nor less than its `returns`.
 
 ### Removed
 
