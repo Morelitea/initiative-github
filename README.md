@@ -41,24 +41,14 @@ beside the install rather than three widgets saying "unavailable" — and when t
 organization does install it, the `installation` delivery flips it to `ok`
 within seconds. Either half can be done first.
 
-**Every deployment registers its own GitHub App**, and there is no shared one to
-hand out. The obvious obstacle is that GitHub matches the callback, setup and
-webhook URLs exactly and admits no wildcards — but that one is shallow, and a
-redirect broker keyed on `state` would get around it. The real obstacle is
-underneath: completing a member's connection needs the **client secret**, and
-minting an installation token needs the **private key**. Both are app-level, so
-any deployment acting *as* the app has to hold them — and one app shared across
-independent operators means every operator holds the app's identity and can
-impersonate it to every organization that ever installed it.
+**Every deployment registers its own GitHub App.** Acting as the app means
+holding its client secret and its private key — both app-level, both enough to
+be the app to every organization that installed it. So each operator holds their
+own, and a deployment's GitHub access reaches no further than the organizations
+that chose it.
 
-The alternative is a broker that keeps the secrets and hands tokens back to each
-deployment, which puts its owner in the credential path for every self-hosted
-guild's GitHub access. That is not self-hosting, and it is the arrangement the
-rest of this file argues against. GitHub's model is one app, one operator.
-
-What that costs a self-hoster is a form, once — `npm run github-app` prints
-every field. What it buys is that nobody is waiting on anybody, and no third
-party can reach their repositories.
+That costs a form, once. [Setting it up](#setting-it-up-beside-a-self-hosted-initiative)
+walks through it, and `npm run github-app` prints every field.
 
 The only URL on the registration that is *not* an address the deployment answers
 on is the homepage, which is a link shown to a reader. It defaults to this
@@ -356,12 +346,10 @@ createdb initiative_github_test
 DATABASE_URL=postgres://localhost/initiative_github_test npm test
 ```
 
-The schema is applied with `CREATE TABLE IF NOT EXISTS` and there is no
-column-by-column upgrade path — nothing is deployed anywhere that would need
-one. The consequence lands during development rather than in production: a
-database created before a column was added does not get it, and the failure is
-a runtime `column … does not exist` rather than anything at boot. Drop and
-recreate it when that happens.
+There is no migration tool and no column-by-column upgrade path. What stands in
+for one is a version: the database records which build of `src/db.ts` created it,
+and booting against one built by a different build refuses, naming both. Drop it
+and let it be recreated.
 
 Then an operator registers it: the deployment fetches
 `/.well-known/initiative-app.json`, posts a challenge to `/v1/handshake`, and
@@ -793,7 +781,7 @@ exactly what you can see at GitHub.
 | *Nearly there* after authorizing | GitHub authorized you and Initiative did not record it. Try again; nothing was lost. |
 | Tile says *not installed* | Step 7 is not done for the account in step 6, or you left **Repositories** blank and the app is not installed anywhere. |
 | Tile says *repository-required* | The install covers several repositories and the tile does not say which. Name one in the app's settings, or set `repo` on the dashboard tile. |
-| `column … does not exist` | Your database predates a column. There is no migration tool here — drop the database and let it recreate. |
+| `this database was built by a different version of src/db.ts` | Exactly that, caught at boot rather than by whichever query later touched the difference. There is no migration path: drop the app's database and let it be recreated. |
 | Redirect mismatch at GitHub | `APP_PUBLIC_URL` and the Callback URL on the form disagree. They must match exactly, scheme and port included. |
 | GitHub's *Recent Deliveries* shows red | `401` is the webhook secret differing between the form and the container. A timeout is the proxy: the Webhook URL does not reach port 8080. |
 
