@@ -398,3 +398,90 @@ describe("what it refuses", () => {
     expect(failed(result) && result.status).toBe(502);
   });
 });
+
+describe("what a write says it hands back", () => {
+  /**
+   * The smallest call each write accepts.
+   *
+   * Every one of them, so the assertion below is about the whole surface
+   * rather than the three that happened to be convenient — and the last test
+   * here is what keeps the table from falling behind the declarations.
+   */
+  const CALLS: Record<string, Record<string, unknown>> = {
+    [WRITE_IDS.openIssue]: { title: "It broke" },
+    [WRITE_IDS.comment]: { number: 1, body: "here is how" },
+    [WRITE_IDS.closeIssue]: { number: 1, reason: "completed" },
+    [WRITE_IDS.reopenIssue]: { number: 1 },
+    [WRITE_IDS.label]: { number: 1, add: ["bug"] },
+    [WRITE_IDS.requestReview]: { number: 1, reviewers: ["someone"] },
+    [WRITE_IDS.moveProjectItem]: {
+      project_id: "PVT_1",
+      item_id: "PVTI_1",
+      field_id: "PVTF_1",
+      option_id: "opt_1",
+    },
+  };
+
+  /** A GitHub that answers every write with more than any one of them keeps. */
+  function generous() {
+    github((url) =>
+      url.endsWith("/graphql")
+        ? {
+            status: 200,
+            body: { data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "PVTI_2" } } } },
+          }
+        : {
+            status: 200,
+            body: {
+              number: 42,
+              html_url: "https://gh/42",
+              id: 9,
+              state: "closed",
+              // Not an identifier, and the thing `identifiers` exists to drop.
+              body: "somebody's prose",
+            },
+          }
+    );
+  }
+
+  it("hands back nothing it did not declare", async () => {
+    // The declaration is what an automation binds a later step to before this
+    // app has ever run. A key that arrives undeclared cannot be wired to at
+    // all, and one declared but never sent leaves that step reading nothing —
+    // both silent, which is why this is asserted over every write rather than
+    // spot-checked.
+    const workspace = await installed();
+    generous();
+
+    for (const operation of WRITE_ENDPOINTS) {
+      const result = await run(operation.id, MEMBER, workspace, CALLS[operation.id]);
+      expect(failed(result), `${operation.id} refused its own smallest call`).toBe(false);
+
+      const declared = new Set((operation.returns ?? []).map((value) => value.key));
+      for (const key of Object.keys(failed(result) ? {} : result.result)) {
+        expect(declared.has(key), `${operation.id} returns undeclared '${key}'`).toBe(true);
+      }
+    }
+  });
+
+  it("declares nothing it cannot hand back", async () => {
+    // The other direction. GitHub answers above with every field any write
+    // here reads, so a declared key missing from the result is a promise this
+    // app cannot keep.
+    const workspace = await installed();
+    generous();
+
+    for (const operation of WRITE_ENDPOINTS) {
+      const result = await run(operation.id, MEMBER, workspace, CALLS[operation.id]);
+      const sent = new Set(Object.keys(failed(result) ? {} : result.result));
+      for (const value of operation.returns ?? []) {
+        expect(sent.has(value.key), `${operation.id} promises '${value.key}' and sends nothing`)
+          .toBe(true);
+      }
+    }
+  });
+
+  it("calls every write this app declares", () => {
+    expect(Object.keys(CALLS).sort()).toEqual(WRITE_ENDPOINTS.map((o) => o.id).sort());
+  });
+});

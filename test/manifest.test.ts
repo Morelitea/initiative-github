@@ -14,7 +14,7 @@
 import { describe, expect, it } from "vitest";
 import { appDocument, validateDocument, validateManifest } from "initiative-app-kit";
 
-import { EMITTED, translate } from "../src/github/emissions.js";
+import { EMIT_ENDPOINTS, EMITTED, translate } from "../src/github/emissions.js";
 import { WEBHOOK_EVENTS } from "../src/github/registration.js";
 import { PUBLIC_ID, WRITE_ENDPOINTS, manifest } from "../src/manifest.config.js";
 
@@ -318,5 +318,182 @@ describe("the choices this app makes", () => {
         expect(Object.keys(widget.sample_data ?? {})).toContain(id);
       }
     }
+  });
+});
+
+describe("what an endpoint says about itself", () => {
+  const endpoints = () => manifest.endpoints ?? [];
+
+  // The languages everything else this app declares is written in. An endpoint
+  // that names itself in one of them is an endpoint half of Initiative reads in
+  // English regardless of what they picked.
+  const LANGUAGES = ["en", "de", "es", "fr"];
+
+  it("names and describes every one of them, in all four languages", () => {
+    // An endpoint is also a step on somebody's automation canvas, and a canvas
+    // with no label has to scrape a title off the id — which cannot be
+    // translated and cannot say anything the id does not.
+    for (const endpoint of endpoints()) {
+      expect(Object.keys(endpoint.label ?? {}).sort(), `${endpoint.id} label`).toEqual(LANGUAGES.slice().sort());
+      expect(Object.keys(endpoint.description ?? {}).sort(), `${endpoint.id} description`).toEqual(LANGUAGES.slice().sort());
+    }
+  });
+
+  it("names an emission most of all", () => {
+    // The one endpoint chosen without ever being called: a consumer building a
+    // menu of triggers has the declaration and nothing else.
+    for (const emission of endpoints().filter((e) => e.direction === "emit")) {
+      expect(emission.label?.en, emission.id).toBeTruthy();
+      expect(emission.returns?.length, `${emission.id} announces nothing`).toBeGreaterThan(0);
+    }
+  });
+
+  it("files all fourteen into a handful of drawers", () => {
+    // A heading, not another level of nesting. Fourteen in one flat list is
+    // the thing this exists to avoid, and fourteen drawers would be the same
+    // list wearing a hat.
+    const groups = new Set(endpoints().map((endpoint) => endpoint.group));
+    expect(groups.has(undefined), "an endpoint with no group falls out of the drawers").toBe(false);
+    expect([...groups].sort()).toEqual(["issues", "projects", "reviews", "security"]);
+  });
+
+  it("returns nothing twice under one name", () => {
+    // A consumer binds by name, so one of the two would silently never be
+    // reachable.
+    for (const endpoint of endpoints()) {
+      const keys = (endpoint.returns ?? []).map((value) => value.key);
+      expect(new Set(keys).size, `${endpoint.id} returns a name twice`).toBe(keys.length);
+    }
+  });
+
+  it("labels every value it hands back", () => {
+    // Same reason a param is labelled: `html_url` is enough for a machine and
+    // leaves whoever is wiring up the next step guessing.
+    for (const endpoint of endpoints()) {
+      for (const value of endpoint.returns ?? []) {
+        expect(value.label?.en, `${endpoint.id}/${value.key}`).toBeTruthy();
+      }
+    }
+  });
+
+  it("says why there is no answer, on every read", () => {
+    // Unavailability travels in the body rather than as a status — a widget
+    // draws "connect your account" and draws nothing at all from a 4xx — which
+    // makes it part of every read's shape rather than an error path. An
+    // automation binding `total` and quietly getting nothing is the failure.
+    for (const read of endpoints().filter((e) => e.direction === "read")) {
+      const keys = (read.returns ?? []).map((value) => value.key);
+      expect(keys, `${read.id} cannot say why it has no answer`).toContain("unavailable");
+    }
+  });
+
+  it("claims no subject, because nothing here needs the run to be about one", () => {
+    // Every endpoint here NAMES what it acts on — a repository, an issue
+    // number, a board — which is exactly what makes them reusable from a
+    // nightly schedule that is about nothing at all. Claiming a need this app
+    // does not have warns somebody off an arrangement that would have worked.
+    for (const endpoint of endpoints()) {
+      expect(endpoint.needs_subject, endpoint.id).toBeUndefined();
+    }
+  });
+
+  it("claims no picker, because everything it asks for is a GitHub thing", () => {
+    // A picker asks the consumer to draw a control over its OWN data. A
+    // repository name, an issue number, a login and a Projects v2 node id are
+    // none of them things Initiative can list.
+    for (const endpoint of endpoints()) {
+      for (const param of endpoint.params ?? []) {
+        expect(param.picker, `${endpoint.id}/${param.key}`).toBeUndefined();
+      }
+    }
+  });
+});
+
+describe("what an emission promises to carry", () => {
+  /**
+   * One delivery of each kind this app publishes, as GitHub sends it.
+   *
+   * Written out rather than derived, because the point is to check the
+   * declaration against a payload built the way a real one is. The last
+   * assertion is what keeps the table honest: an emission added without a
+   * delivery here fails rather than going unchecked.
+   */
+  const DELIVERIES = [
+    {
+      event: "issues",
+      payload: {
+        action: "opened",
+        repository: { name: "widgets", owner: { login: "acme" } },
+        issue: {
+          number: 7,
+          title: "It broke",
+          html_url: "https://gh/7",
+          user: { login: "someone" },
+          labels: [{ name: "bug" }],
+        },
+      },
+    },
+    {
+      event: "issues",
+      payload: {
+        action: "closed",
+        repository: { name: "widgets", owner: { login: "acme" } },
+        issue: {
+          number: 7,
+          title: "It broke",
+          html_url: "https://gh/7",
+          user: { login: "someone" },
+          labels: [],
+        },
+      },
+    },
+    {
+      event: "pull_request",
+      payload: {
+        action: "review_requested",
+        repository: { name: "widgets", owner: { login: "acme" } },
+        pull_request: {
+          number: 8,
+          title: "Fix it",
+          html_url: "https://gh/8",
+          user: { login: "someone" },
+        },
+        requested_reviewer: { login: "reviewer" },
+      },
+    },
+  ];
+
+  it("sends exactly the fields it declared, on every one of them", () => {
+    // The declaration is what an automation wires a later step to, before this
+    // app has ever fired. A field promised here and not sent leaves that step
+    // reading nothing, and one sent without being promised cannot be wired to
+    // at all — both are silent, which is why this is a test.
+    for (const delivery of DELIVERIES) {
+      const translated = translate(delivery.event, delivery.payload);
+      expect(translated, `${delivery.event}/${delivery.payload.action}`).not.toBeNull();
+
+      const declared = EMIT_ENDPOINTS.find((e) => e.id === translated!.endpoint);
+      expect(declared, `${translated!.endpoint} is announced but not declared`).toBeDefined();
+
+      expect(Object.keys(translated!.payload).sort()).toEqual(
+        (declared!.returns ?? []).map((value) => value.key).sort()
+      );
+    }
+  });
+
+  it("says which of them is a list, because a list fills no single slot", () => {
+    // `labels` is the only one, and saying so is what lets a consumer with
+    // room for exactly one value refuse it when somebody wires it up rather
+    // than discover at run time that it was handed several.
+    for (const emission of EMIT_ENDPOINTS) {
+      for (const value of emission.returns ?? []) {
+        expect(value.list === true, `${emission.id}/${value.key}`).toBe(value.key === "labels");
+      }
+    }
+  });
+
+  it("covers every emission this app publishes", () => {
+    const covered = DELIVERIES.map((delivery) => translate(delivery.event, delivery.payload)?.endpoint);
+    expect([...new Set(covered)].sort()).toEqual([...EMITTED].sort());
   });
 });
