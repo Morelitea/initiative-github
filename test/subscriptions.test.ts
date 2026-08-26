@@ -25,9 +25,9 @@ import {
   spendToken,
   subscribe,
   unsubscribe,
-} from "../src/subscriptions.js";
-import { EMITTED } from "../src/github/emissions.js";
-import { rememberWorkspace } from "../src/github/workspace.js";
+} from "../src/platform.js";
+import { EMITTED } from "../src/endpoints/emissions.js";
+import { rememberWorkspace } from "../src/workspace.js";
 
 const AUTO = "morelitea.auto";
 const OTHER = "someone.else";

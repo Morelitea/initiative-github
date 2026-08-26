@@ -22,8 +22,8 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { resolveRepository } from "../src/github/app.js";
-import type { StoredWorkspace } from "../src/github/workspace.js";
+import { resolveRepository } from "../src/workspace.js";
+import type { StoredWorkspace } from "../src/workspace.js";
 
 function workspace(repos: string[]): StoredWorkspace {
   return { owner: "acme", repos, installationId: 4242 };

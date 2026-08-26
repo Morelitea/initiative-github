@@ -1,10 +1,8 @@
 /**
- * Writing at GitHub, and the two things that keeps honest.
+ * The callable surface, and the handful of things that keep it honest.
  *
- * The surface is the only one in this app that mutates anything, so it is worth
- * being specific about what the tests are for. Not "does the HTTP call work" —
- * that is a URL and GitHub's problem. These pin the two properties that would
- * be silently wrong rather than loudly broken:
+ * Not "does the HTTP call work" — that is a URL and GitHub's problem. These pin
+ * what would be silently wrong rather than loudly broken:
  *
  *   * **The set is closed.** A caller picks from endpoints written here and
  *     cannot describe a request the app performs. That is the difference
@@ -12,6 +10,10 @@
  *   * **The actor is whoever the endpoint says, and is always reported.** A
  *     write that ran as the app when the caller expected a person is a
  *     different act, and an app that does not say so is lying by omission.
+ *   * **An endpoint hands back exactly what it declared.** A key that arrives
+ *     undeclared cannot be wired to at all, and one declared but never sent
+ *     leaves a later step reading nothing. Both are silent.
+ *   * **The boundary is the guild's list**, on every call, in both directions.
  *
  * Needs a database, because resolving the guild's repository is the database.
  * `DATABASE_URL` in CI; see README.md to run it locally.
@@ -22,14 +24,27 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { parseInvoke } from "initiative-app-kit";
 
 import { close, migrate, pool } from "../src/db.js";
+import { chooseActor, failed, type Actor } from "../src/github/api.js";
 import {
-  chooseActor,
-  failed,
-  run,
-  type Actor,
-} from "../src/github/writes.js";
-import { rememberWorkspace, workspaceFor } from "../src/github/workspace.js";
-import { WRITE_ENDPOINTS, WRITE_IDS } from "../src/manifest.config.js";
+  READS,
+  READ_HANDLERS,
+  WRITES,
+  WRITE_HANDLERS,
+  type Caller,
+} from "../src/endpoints/index.js";
+import { rememberWorkspace, workspaceFor } from "../src/workspace.js";
+import { seal } from "../src/db.js";
+import { READ_IDS, WRITE_IDS } from "../src/vocabulary.js";
+
+/** What the writes say about themselves, off the list that implements them. */
+const WRITE_DECLARATIONS = WRITES.map((write) => write.declaration);
+
+/** What the reads say about themselves, off the same list that implements them. */
+const READ_DECLARATIONS = READS.map((read) => read.declaration);
+
+/** A member who has connected, and one who has not. */
+const CONNECTED: Caller = { guildId: 500, appInstallId: 11, connectionRef: "ref-a" };
+const STRANGER: Caller = { guildId: 500, appInstallId: 11, connectionRef: null };
 
 const MEMBER: Actor = { kind: "member", token: "member-token" };
 // No endpoint declares this kind, and it is here so `run` is exercised with an
@@ -88,9 +103,28 @@ async function installed() {
 
 beforeEach(async () => {
   await migrate();
-  await pool.query("TRUNCATE workspaces, subscriptions, delegation_tokens");
+  await pool.query("TRUNCATE workspaces, subscriptions, delegation_tokens, connections");
   sent.length = 0;
 });
+
+/** A guild with one repository written down, and a member who has connected. */
+async function connected(repos = ["widgets"]) {
+  await rememberWorkspace(11, 500, { owner: "acme", repos }, 9011);
+  await pool.query(
+    "INSERT INTO connections (connection_ref, guild_id, access_token) VALUES ($1, $2, $3)",
+    ["ref-a", 500, seal("member-token")]
+  );
+}
+
+/** What a read sent, as the query and variables rather than as a URL. */
+function asked(index = 0) {
+  return sent[index].body as { query: string; variables: Record<string, unknown> };
+}
+
+/** A GitHub that answers every GraphQL query with the same document. */
+function graph(answer: unknown) {
+  github(() => ({ status: 200, body: answer }));
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -105,30 +139,30 @@ describe("the closed set", () => {
     // Two apps offering `open-issue` would be two different things under one
     // name, and a caller resolving the wrong one would do the wrong thing
     // successfully — which is worse than an error.
-    for (const operation of WRITE_ENDPOINTS) {
+    for (const operation of WRITE_DECLARATIONS) {
       expect(operation.id.startsWith("app.morelitea.github.")).toBe(true);
     }
-    expect(new Set(WRITE_ENDPOINTS.map((o) => o.id)).size).toBe(WRITE_ENDPOINTS.length);
+    expect(new Set(WRITE_DECLARATIONS.map((o) => o.id)).size).toBe(WRITE_DECLARATIONS.length);
   });
 
   it("refuses anything not on it, before any credential is chosen", () => {
-    expect(parseInvoke({ operation: "app.morelitea.github.rm-rf", guild_id: 1 }, WRITE_ENDPOINTS).ok)
+    expect(parseInvoke({ operation: "app.morelitea.github.rm-rf", guild_id: 1 }, WRITE_DECLARATIONS).ok)
       .toBe(false);
     // Including a real GitHub capability this app deliberately does not offer.
-    expect(parseInvoke({ operation: "app.morelitea.github.delete-repo", guild_id: 1 }, WRITE_ENDPOINTS).ok)
+    expect(parseInvoke({ operation: "app.morelitea.github.delete-repo", guild_id: 1 }, WRITE_DECLARATIONS).ok)
       .toBe(false);
   });
 
   it("names every operation in WRITE_IDS, and no orphans either way", () => {
     // The dispatch switches on these, so an id in one and not the other is
     // either an endpoint nothing runs or a branch nothing can reach.
-    expect(WRITE_ENDPOINTS.map((o) => o.id).sort()).toEqual(Object.values(WRITE_IDS).sort());
+    expect(WRITE_DECLARATIONS.map((o) => o.id).sort()).toEqual(Object.values(WRITE_IDS).sort());
   });
 });
 
 describe("who the write runs as", () => {
-  const openIssue = WRITE_ENDPOINTS.find((o) => o.id === WRITE_IDS.openIssue)!;
-  const project = WRITE_ENDPOINTS.find((o) => o.id === WRITE_IDS.moveProjectItem)!;
+  const openIssue = WRITE_DECLARATIONS.find((o) => o.id === WRITE_IDS.openIssue)!;
+  const project = WRITE_DECLARATIONS.find((o) => o.id === WRITE_IDS.moveProjectItem)!;
 
   it("declares no operation that runs as anything but the member", async () => {
     // The rule, asserted on the declarations rather than on one code path. A
@@ -136,7 +170,7 @@ describe("who the write runs as", () => {
     // organization granted, which is not the same set as what the person whose
     // automation fired it may touch — an escalation with a scheduler in front
     // of it.
-    for (const operation of WRITE_ENDPOINTS) {
+    for (const operation of WRITE_DECLARATIONS) {
       expect(operation.actors, operation.id).toEqual(["member"]);
     }
   });
@@ -183,7 +217,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github(() => ({ status: 201, body: { number: 42, html_url: "https://gh/42", id: 9 } }));
 
-    const result = await run(WRITE_IDS.openIssue, MEMBER, workspace, {
+    const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, workspace, {
       title: "It broke",
       body: "here is how",
       labels: ["bug"],
@@ -211,7 +245,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github(() => ({ status: 201, body: { id: 5, html_url: "https://gh/c/5" } }));
 
-    const result = await run(WRITE_IDS.comment, APP, workspace, {
+    const result = await WRITE_HANDLERS[WRITE_IDS.comment](APP, workspace, {
       number: 812,
       body: "on it",
     });
@@ -227,7 +261,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github(() => ({ status: 200, body: { number: 42, state: "closed" } }));
 
-    await run(WRITE_IDS.closeIssue, MEMBER, workspace, {
+    await WRITE_HANDLERS[WRITE_IDS.closeIssue](MEMBER, workspace, {
       number: 42,
       reason: "not_planned",
     });
@@ -238,14 +272,14 @@ describe("what it does at GitHub", () => {
 
     // And refuses a reason GitHub does not know rather than passing it on.
     sent.length = 0;
-    await run(WRITE_IDS.closeIssue, MEMBER, workspace, { number: 42, reason: "vibes" });
+    await WRITE_HANDLERS[WRITE_IDS.closeIssue](MEMBER, workspace, { number: 42, reason: "vibes" });
     expect(sent[0].body).toEqual({ state: "closed" });
   });
 
   it("reopens through the same field, which is why it is one endpoint", async () => {
     const workspace = await installed();
     github(() => ({ status: 200, body: { number: 42, state: "open" } }));
-    await run(WRITE_IDS.reopenIssue, MEMBER, workspace, { number: 42 });
+    await WRITE_HANDLERS[WRITE_IDS.reopenIssue](MEMBER, workspace, { number: 42 });
     expect(sent[0].body).toEqual({ state: "open" });
   });
 
@@ -256,7 +290,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github(() => ({ status: 200, body: [] }));
 
-    await run(WRITE_IDS.label, MEMBER, workspace, {
+    await WRITE_HANDLERS[WRITE_IDS.label](MEMBER, workspace, {
       number: 42,
       remove: ["triage"],
       add: ["bug"],
@@ -273,7 +307,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github((url) => (url.includes("/labels/") ? { status: 404, body: {} } : { status: 200, body: [] }));
 
-    const result = await run(WRITE_IDS.label, MEMBER, workspace, {
+    const result = await WRITE_HANDLERS[WRITE_IDS.label](MEMBER, workspace, {
       number: 42,
       remove: ["gone"],
       add: ["bug"],
@@ -285,7 +319,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github(() => ({ status: 201, body: { number: 812 } }));
 
-    await run(WRITE_IDS.requestReview, MEMBER, workspace, {
+    await WRITE_HANDLERS[WRITE_IDS.requestReview](MEMBER, workspace, {
       number: 812,
       reviewers: "alice",
     });
@@ -307,7 +341,7 @@ describe("what it does at GitHub", () => {
       body: { data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "PVTI_x" } } } },
     }));
 
-    const result = await run(WRITE_IDS.moveProjectItem, APP, workspace, {
+    const result = await WRITE_HANDLERS[WRITE_IDS.moveProjectItem](APP, workspace, {
       project_id: "PVT_1",
       item_id: "PVTI_x",
       field_id: "PVTSSF_1",
@@ -333,7 +367,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github(() => ({ status: 200, body: { errors: [{ message: "not accessible" }] } }));
 
-    const result = await run(WRITE_IDS.moveProjectItem, APP, workspace, {
+    const result = await WRITE_HANDLERS[WRITE_IDS.moveProjectItem](APP, workspace, {
       project_id: "PVT_1",
       item_id: "PVTI_x",
       field_id: "PVTSSF_1",
@@ -347,7 +381,7 @@ describe("what it does at GitHub", () => {
 describe("what it refuses", () => {
   it("a call naming no repository when the install covers several", async () => {
     await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets", "gadgets"] }, 9011);
-    const result = await run(WRITE_IDS.openIssue, MEMBER, await workspaceFor(11), {
+    const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, await workspaceFor(11), {
       title: "which one?",
     });
     expect(failed(result)).toBe(true);
@@ -366,7 +400,7 @@ describe("what it refuses", () => {
       [WRITE_IDS.requestReview, { number: 1 }],
       [WRITE_IDS.moveProjectItem, { project_id: "PVT_1" }],
     ] as const) {
-      const result = await run(operation, MEMBER, workspace, params);
+      const result = await WRITE_HANDLERS[operation](MEMBER, workspace, params);
       expect(failed(result), `${operation} accepted ${JSON.stringify(params)}`).toBe(true);
     }
     // And refused before reaching GitHub, every time.
@@ -383,7 +417,7 @@ describe("what it refuses", () => {
       body: { message: "Resource not accessible by integration", secret: "leak" },
     }));
 
-    const result = await run(WRITE_IDS.openIssue, MEMBER, workspace, { title: "x" });
+    const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, workspace, { title: "x" });
     expect(failed(result)).toBe(true);
     expect(failed(result) && result.error).toBe("Resource not accessible by integration");
     expect(JSON.stringify(result)).not.toContain("leak");
@@ -394,7 +428,7 @@ describe("what it refuses", () => {
     github(() => {
       throw new Error("econnrefused");
     });
-    const result = await run(WRITE_IDS.openIssue, MEMBER, workspace, { title: "x" });
+    const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, workspace, { title: "x" });
     expect(failed(result) && result.status).toBe(502);
   });
 });
@@ -453,8 +487,8 @@ describe("what a write says it hands back", () => {
     const workspace = await installed();
     generous();
 
-    for (const operation of WRITE_ENDPOINTS) {
-      const result = await run(operation.id, MEMBER, workspace, CALLS[operation.id]);
+    for (const operation of WRITE_DECLARATIONS) {
+      const result = await WRITE_HANDLERS[operation.id](MEMBER, workspace, CALLS[operation.id]);
       expect(failed(result), `${operation.id} refused its own smallest call`).toBe(false);
 
       const declared = new Set((operation.returns ?? []).map((value) => value.key));
@@ -471,8 +505,8 @@ describe("what a write says it hands back", () => {
     const workspace = await installed();
     generous();
 
-    for (const operation of WRITE_ENDPOINTS) {
-      const result = await run(operation.id, MEMBER, workspace, CALLS[operation.id]);
+    for (const operation of WRITE_DECLARATIONS) {
+      const result = await WRITE_HANDLERS[operation.id](MEMBER, workspace, CALLS[operation.id]);
       const sent = new Set(Object.keys(failed(result) ? {} : result.result));
       for (const value of operation.returns ?? []) {
         expect(sent.has(value.key), `${operation.id} promises '${value.key}' and sends nothing`)
@@ -482,6 +516,395 @@ describe("what a write says it hands back", () => {
   });
 
   it("calls every write this app declares", () => {
-    expect(Object.keys(CALLS).sort()).toEqual(WRITE_ENDPOINTS.map((o) => o.id).sort());
+    expect(Object.keys(CALLS).sort()).toEqual(WRITE_DECLARATIONS.map((o) => o.id).sort());
+  });
+});
+
+describe("who a read is answered for", () => {
+  it("says so when the member has connected nothing", async () => {
+    await connected();
+    graph({ data: {} });
+    // An answer about them, with a remedy they own — and travelling in the body
+    // rather than as a status, because a widget draws nothing from a 4xx.
+    expect(
+      await READ_HANDLERS[READ_IDS.getIssue](STRANGER, new URLSearchParams({ number: "1" }))
+    ).toEqual({ unavailable: "not-connected" });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("says so before the repository, so nobody learns its name from a refusal", async () => {
+    // No workspace at all, and still `not-connected`: the credential is
+    // resolved first on purpose.
+    graph({ data: {} });
+    expect(
+      await READ_HANDLERS[READ_IDS.listLabels](STRANGER, new URLSearchParams())
+    ).toEqual({ unavailable: "not-connected" });
+  });
+
+  it("says so when the guild has written nothing down", async () => {
+    await pool.query(
+      "INSERT INTO connections (connection_ref, guild_id, access_token) VALUES ($1, $2, $3)",
+      ["ref-a", 500, seal("member-token")]
+    );
+    graph({ data: {} });
+    expect(
+      await READ_HANDLERS[READ_IDS.listLabels](CONNECTED, new URLSearchParams())
+    ).toEqual({ unavailable: "not-configured" });
+  });
+
+  it("runs on the member's own credential, never the installation's", async () => {
+    await connected();
+    graph({ data: { repository: { labels: { totalCount: 0, nodes: [] } } } });
+    await READ_HANDLERS[READ_IDS.listLabels](CONNECTED, new URLSearchParams());
+    expect(sent[0].auth).toBe("Bearer member-token");
+  });
+});
+
+describe("the boundary, on the way in", () => {
+  it("refuses a repository the guild did not list", async () => {
+    await connected();
+    graph({ data: {} });
+    expect(
+      await READ_HANDLERS[READ_IDS.listLabels](CONNECTED, new URLSearchParams({ repo: "secrets" }))
+    ).toEqual({ unavailable: "repository-not-listed" });
+    // Refused here, so the name is never even asked about at GitHub.
+    expect(sent).toHaveLength(0);
+  });
+
+  it("refuses to guess when the install covers several", async () => {
+    await connected(["widgets", "gadgets"]);
+    graph({ data: {} });
+    expect(
+      await READ_HANDLERS[READ_IDS.listLabels](CONNECTED, new URLSearchParams())
+    ).toEqual({ unavailable: "repository-required" });
+  });
+
+  it("refuses a board belonging to somebody else's account", async () => {
+    // A node id names a board outright, so without this check the read would
+    // reach any board the member happens to be on — which is not the same set
+    // as what this install is about.
+    await connected();
+    graph({ data: { node: { owner: { login: "someone-else" }, fields: { nodes: [] } } } });
+    expect(
+      await READ_HANDLERS[READ_IDS.listProjectOptions](
+        CONNECTED,
+        new URLSearchParams({ project_id: "PVT_1", field: "Status" })
+      )
+    ).toEqual({ unavailable: "project-not-listed" });
+  });
+
+  it("refuses a login that could add a qualifier of its own", async () => {
+    // The one caller value that reaches a query as words. A value that could
+    // close the qualifier and open another is refused rather than quoted.
+    await connected();
+    graph({ data: { search: { issueCount: 0, nodes: [] } } });
+    expect(
+      await READ_HANDLERS[READ_IDS.findPullRequests](
+        CONNECTED,
+        new URLSearchParams({ review_requested: "me repo:other/thing" })
+      )
+    ).toEqual({ unavailable: "bad-login" });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("takes `@me`, which is how one tile is a different list per member", async () => {
+    await connected();
+    graph({ data: { search: { issueCount: 1, nodes: [{ number: 8 }] } } });
+    await READ_HANDLERS[READ_IDS.findPullRequests](
+      CONNECTED,
+      new URLSearchParams({ review_requested: "@me" })
+    );
+    expect(asked().variables.query).toBe(
+      "repo:acme/widgets is:pr review-requested:@me is:open"
+    );
+  });
+
+  it("refuses filters the search path cannot honour, rather than ignoring them", async () => {
+    // A parameter accepted and silently not applied is worse than one refused:
+    // the answer looks narrowed and is not.
+    await connected();
+    graph({ data: { search: { issueCount: 0, nodes: [] } } });
+    expect(
+      await READ_HANDLERS[READ_IDS.findPullRequests](
+        CONNECTED,
+        new URLSearchParams({ review_requested: "@me", labels: "bug" })
+      )
+    ).toEqual({ unavailable: "unsupported-combination" });
+  });
+
+  it("sends repository names as variables, never as part of the query", async () => {
+    await connected(["widgets", "gadgets"]);
+    graph({ data: { r0: { name: "widgets" }, r1: { name: "gadgets" } } });
+    await READ_HANDLERS[READ_IDS.listRepositories](CONNECTED, new URLSearchParams());
+    expect(asked().variables).toEqual({ owner: "acme", n0: "widgets", n1: "gadgets" });
+    expect(asked().query).not.toContain("widgets");
+  });
+});
+
+describe("what a read makes of the answer", () => {
+  it("keeps a partial answer, because a null the caller cannot see is the answer", async () => {
+    // Each repository is an aliased field. One the member cannot see comes back
+    // null — often with an error beside it — and that is not a failed call.
+    await connected(["widgets", "secret-thing"]);
+    graph({
+      data: { r0: { name: "widgets" }, r1: null },
+      errors: [{ message: "Could not resolve to a Repository" }],
+    });
+    expect(
+      await READ_HANDLERS[READ_IDS.listRepositories](CONNECTED, new URLSearchParams())
+    ).toEqual({ names: ["widgets"], owner: "acme", count: 1 });
+  });
+
+  it("reports a refusal as a refusal, not as an answer", async () => {
+    // GraphQL answers 200 with an `errors` array and no data, so a caller
+    // checking only the status records every failure as a result.
+    await connected();
+    graph({ errors: [{ message: "API rate limit exceeded" }] });
+    expect(
+      await READ_HANDLERS[READ_IDS.listLabels](CONNECTED, new URLSearchParams())
+    ).toEqual({ unavailable: "vendor-error" });
+  });
+
+  it("says `not-found` for a repository that is not there, or not theirs", async () => {
+    await connected();
+    graph({ data: { repository: null } });
+    expect(
+      await READ_HANDLERS[READ_IDS.findIssues](CONNECTED, new URLSearchParams())
+    ).toEqual({ unavailable: "not-found" });
+  });
+
+  it("normalises GitHub's enums to the words the writes take", async () => {
+    // `state_reason` is read off a read and handed to `close-issue`, so the two
+    // have to be spelled the same way. GraphQL shouts them and REST does not.
+    await connected();
+    graph({
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            __typename: "Issue",
+            number: 7,
+            state: "CLOSED",
+            stateReason: "NOT_PLANNED",
+          },
+        },
+      },
+    });
+    expect(
+      await READ_HANDLERS[READ_IDS.getIssue](CONNECTED, new URLSearchParams({ number: "7" }))
+    ).toMatchObject({ state: "closed", state_reason: "not_planned" });
+  });
+
+  it("says medium where GitHub's two halves disagree with each other", async () => {
+    // GraphQL says MODERATE and the rest of GitHub says medium. The tile draws
+    // the second spelling and a step compares against it.
+    await connected();
+    graph({
+      data: {
+        repository: {
+          vulnerabilityAlerts: {
+            totalCount: 1,
+            nodes: [
+              {
+                number: 3,
+                securityVulnerability: { severity: "MODERATE", package: { name: "qs" } },
+              },
+            ],
+          },
+        },
+      },
+    });
+    expect(
+      await READ_HANDLERS[READ_IDS.listAlerts](CONNECTED, new URLSearchParams())
+    ).toMatchObject({ severities: ["medium"], packages: ["qs"] });
+  });
+
+  it("counts what came back and what matched, which are different numbers", async () => {
+    await connected();
+    graph({
+      data: { repository: { issues: { totalCount: 240, nodes: [{ number: 1 }, { number: 2 }] } } },
+    });
+    expect(
+      await READ_HANDLERS[READ_IDS.findIssues](CONNECTED, new URLSearchParams({ limit: "2" }))
+    ).toMatchObject({ count: 2, total: 240, numbers: [1, 2] });
+  });
+
+  it("resolves a board field by the name a person reads off their own board", async () => {
+    await connected();
+    graph({
+      data: {
+        node: {
+          owner: { login: "ACME" },
+          fields: {
+            nodes: [
+              { id: "PVTSSF_1", name: "Status", options: [{ id: "opt_1", name: "In review" }] },
+            ],
+          },
+        },
+      },
+    });
+    expect(
+      await READ_HANDLERS[READ_IDS.listProjectOptions](
+        CONNECTED,
+        new URLSearchParams({ project_id: "PVT_1", field: "status" })
+      )
+    ).toEqual({
+      field_id: "PVTSSF_1",
+      field_name: "Status",
+      option_ids: ["opt_1"],
+      option_names: ["In review"],
+    });
+  });
+
+  it("treats not being on a board as a state rather than a failure", async () => {
+    await connected();
+    graph({
+      data: {
+        repository: {
+          issueOrPullRequest: {
+            projectItems: { nodes: [{ id: "PVTI_x", project: { id: "PVT_other" } }] },
+          },
+        },
+      },
+    });
+    expect(
+      await READ_HANDLERS[READ_IDS.findProjectItem](
+        CONNECTED,
+        new URLSearchParams({ project_id: "PVT_1", number: "7" })
+      )
+    ).toEqual({ unavailable: "not-on-that-board" });
+  });
+});
+
+describe("what a read says it hands back", () => {
+  /** The smallest call each read accepts, so the assertions cover all ten. */
+  const CALLS: Record<string, Record<string, string>> = {
+    [READ_IDS.listRepositories]: {},
+    [READ_IDS.listLabels]: {},
+    [READ_IDS.getIssue]: { number: "7" },
+    [READ_IDS.findIssues]: {},
+    [READ_IDS.getPullRequest]: { number: "8" },
+    [READ_IDS.findPullRequests]: {},
+    [READ_IDS.listAlerts]: {},
+    [READ_IDS.listProjects]: {},
+    [READ_IDS.listProjectOptions]: { project_id: "PVT_1", field: "Status" },
+    [READ_IDS.findProjectItem]: { project_id: "PVT_1", number: "7" },
+  };
+
+  /** A GitHub that answers every read with every field any of them asks for. */
+  function generous() {
+    const node = {
+      __typename: "Issue",
+      number: 7,
+      title: "It broke",
+      url: "https://gh/7",
+      state: "OPEN",
+      stateReason: null,
+      createdAt: "2026-08-01T00:00:00Z",
+      updatedAt: "2026-08-02T00:00:00Z",
+      closedAt: null,
+      author: { login: "someone" },
+      milestone: { title: "v1" },
+      comments: { totalCount: 2 },
+      labels: { nodes: [{ name: "bug" }] },
+      assignees: { nodes: [{ login: "alice" }] },
+      isDraft: false,
+      merged: true,
+      mergedAt: "2026-08-03T00:00:00Z",
+      headRefName: "fix",
+      baseRefName: "main",
+      changedFiles: 3,
+      commits: { totalCount: 4 },
+      projectItems: { nodes: [{ id: "PVTI_x", project: { id: "PVT_1" } }] },
+    };
+    const connection = { totalCount: 1, nodes: [node] };
+    graph({
+      data: {
+        r0: { name: "widgets" },
+        repository: {
+          labels: connection,
+          issues: connection,
+          pullRequests: connection,
+          issueOrPullRequest: node,
+          pullRequest: node,
+          vulnerabilityAlerts: {
+            totalCount: 1,
+            nodes: [
+              { number: 3, securityVulnerability: { severity: "HIGH", package: { name: "qs" } } },
+            ],
+          },
+        },
+        search: { issueCount: 1, nodes: [node] },
+        repositoryOwner: {
+          projectsV2: {
+            totalCount: 1,
+            nodes: [{ id: "PVT_1", title: "Roadmap", number: 2, url: "https://gh/p/2" }],
+          },
+        },
+        node: {
+          owner: { login: "acme" },
+          fields: {
+            nodes: [{ id: "PVTSSF_1", name: "Status", options: [{ id: "opt_1", name: "Done" }] }],
+          },
+        },
+      },
+    });
+  }
+
+  it("hands back nothing it did not declare", async () => {
+    await connected();
+    generous();
+    for (const read of READ_DECLARATIONS) {
+      const result = await READ_HANDLERS[read.id](
+        CONNECTED,
+        new URLSearchParams(CALLS[read.id])
+      );
+      expect(result.unavailable, `${read.id} refused its own smallest call`).toBeUndefined();
+
+      const declared = new Set((read.returns ?? []).map((value) => value.key));
+      for (const key of Object.keys(result)) {
+        expect(declared.has(key), `${read.id} returns undeclared '${key}'`).toBe(true);
+      }
+    }
+  });
+
+  it("declares nothing it cannot hand back", async () => {
+    // The other direction. `unavailable` is the one exception: it is part of
+    // every read's shape and is exactly what is absent when there is an answer.
+    await connected();
+    generous();
+    for (const read of READ_DECLARATIONS) {
+      const result = await READ_HANDLERS[read.id](
+        CONNECTED,
+        new URLSearchParams(CALLS[read.id])
+      );
+      const got = new Set(Object.keys(result));
+      for (const value of read.returns ?? []) {
+        if (value.key === "unavailable") continue;
+        expect(got.has(value.key), `${read.id} promises '${value.key}' and sends nothing`)
+          .toBe(true);
+      }
+    }
+  });
+
+  it("says which of them is a list, because a list fills no single slot", async () => {
+    await connected();
+    generous();
+    for (const read of READ_DECLARATIONS) {
+      const result = await READ_HANDLERS[read.id](
+        CONNECTED,
+        new URLSearchParams(CALLS[read.id])
+      );
+      for (const value of read.returns ?? []) {
+        if (value.key === "unavailable") continue;
+        expect(
+          Array.isArray(result[value.key]),
+          `${read.id}/${value.key} is ${value.list ? "declared" : "not declared"} a list`
+        ).toBe(value.list === true);
+      }
+    }
+  });
+
+  it("calls every read this app declares", () => {
+    expect(Object.keys(CALLS).sort()).toEqual(READ_DECLARATIONS.map((r) => r.id).sort());
   });
 });

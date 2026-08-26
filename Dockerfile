@@ -4,7 +4,7 @@
 # compiler, and the runtime needs neither — the smaller final image is a
 # smaller thing to keep patched, not just a faster pull.
 
-FROM node:22-alpine AS build
+FROM node:24-alpine AS build
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ RUN npm run build && npm run manifest
 RUN npm prune --omit=dev
 
 
-FROM node:22-alpine AS runtime
+FROM node:24-alpine AS runtime
 
 # A published image should say what it is and where it came from.
 ARG VERSION=0.0.0-dev

@@ -2,6 +2,83 @@
 
 ## [Unreleased]
 
+### The callable surface is GitHub's API, not a set of tiles
+
+**Ten read endpoints**, where there were four. The four were tile-shaped — they
+aggregated, and an automation cannot get an issue number out of "42 open". These
+are the repository's own vocabulary, narrowed by what GitHub narrows it by:
+
+- `list-repositories` · `list-labels`
+- `get-issue` · `find-issues`
+- `get-pull-request` · `find-pull-requests` (review requests included)
+- `list-alerts`
+- `list-projects` · `list-project-options` · `find-project-item`
+
+The last three make `move-project-item` usable. It takes four node ids and there
+was previously nowhere to obtain a single one of them, so the one write this app
+offered on Projects v2 was declared and could not be wired up.
+
+`list-repositories` is the other one worth naming: it answers the guild's list
+narrowed to what the caller can actually see, which is what makes every `repo`
+parameter fillable — and it was the stated reason no parameter here carried a
+`picker`.
+
+**The tile reads are gone.** The four widgets draw from the general endpoints and
+narrow inside their own modules, each whole in one file under `src/widgets/`.
+Counting alerts by severity or bucketing a fortnight into days is a decision
+about how to draw something, so it lives with the drawing.
+
+**Reading speaks GraphQL.** It asks for exactly the fields the manifest declares
+rather than fetching an issue and dropping nine tenths of it; it takes one round
+trip for an issue with its labels, assignees and milestone; it reaches the node
+ids REST will not say; and its filters arrive as typed variables against a
+repository already resolved from the guild's list, where a search query string
+would let a crafted `assignee` add a second `repo:` qualifier. The one value that
+does reach a query as words is checked against GitHub's own rule for a login
+first. Writing still speaks REST, which says plainly what it does.
+
+This also fixes the open-issue count, which was read off a pagination header that
+is not sent unless the response paginates.
+
+### An endpoint is one object
+
+It used to live in three places: declared in the manifest, dispatched from a map,
+and implemented under `github/`. Renaming one meant finding all three, and a
+handler with no declaration was unreachable rather than loudly broken.
+
+Now it is one object — what it says about itself, and what it does — grouped by
+resource under `src/endpoints/`, the same shape a widget has. The manifest reads
+its declarations off that list and the dispatcher reads its handlers off the same
+one.
+
+### The companion dashboard ships in the manifest
+
+`manifest.dashboards`, rather than a hand-written second catalog file. Publishing
+the app publishes it either way, but declared there it is checked against the
+widgets and endpoints beside it — a standalone file naming a widget the app
+renamed installs cleanly and draws nothing.
+
+### Fewer files, and less to read
+
+`src/github/` went from eight files to four: one client for both directions, the
+app's identity merged with the registration that mints it, the guild's repository
+setting moved out of `github/` (it is a setting, not a GitHub concern), and the
+emissions moved in with the other endpoints. The loose fragments in `src/` —
+settings, secrets, routes, page — folded into the files they belong to.
+
+Comments were cut back to the handful that explain something the code cannot.
+
+### Also
+
+- `initiative-app-kit` updated; the manifest contract now lives in the kit.
+- Configuration, the connection pool, the vault and the Initiative channel are
+  built on first use, so `npm run manifest` renders a JSON file without demanding
+  a database URL. The server still fails at boot: it reads config before it
+  listens.
+- Node 24, TypeScript 7, Vitest 4.
+- `package.json`'s version is stamped from the release tag rather than carried on
+  `main`, for the same reason the catalog files are.
+
 It is a GitHub App now, rather than an OAuth app calling itself one. That is a
 second registration with its own audience — an organization owner rather than a
 guild admin — and everything below follows from having one.

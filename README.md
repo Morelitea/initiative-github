@@ -15,20 +15,33 @@ ghcr.io/morelitea/initiative-github:latest
 
 | | |
 |---|---|
-| **Four widgets** | Open issues · pull requests waiting on your review · Dependabot alerts by severity · a fortnight of opens against closes. |
-| **A ready-made dashboard** | A second listing, *GitHub overview*, arranging all four so there is something to look at without assembling it. |
+| **Ten reads** | Repositories · labels · one issue · find issues · one pull request · find pull requests · Dependabot alerts · project boards · a board's field values · an issue's card. |
 | **Seven writes** | Open an issue, comment, close, reopen, label, request a review, move a Projects v2 card — each performed as the member whose automation asked for it. |
 | **Three announcements** | An issue opened, an issue closed, a review requested. |
+| **Four widgets** | Open issues · pull requests waiting on your review · Dependabot alerts by severity · a fortnight of opens against closes. |
+| **A ready-made dashboard** | *GitHub overview*, arranging all four so there is something to look at without assembling it. |
 
-All fourteen are **endpoints**: one list this app declares, one address they are
+All twenty are **endpoints**: one list this app declares, one address they are
 called at, and the id says which one you want. A widget filling a tile and an
 automation asking the app to act reach the same surface, and what separates them
 is who they prove themselves as.
+
+A read is a question at GitHub rather than the shape of a tile — the
+repository's own vocabulary, narrowed by what GitHub narrows it by. So a step in
+somebody's automation gets the number to act on, the state to branch on and the
+node id the next call needs, and a widget draws from the same endpoint and does
+its own narrowing in its own module. There is no private half only a widget can
+use.
 
 Each one says what it is, what it hands back and which drawer it belongs in, in
 four languages. So an automation service can offer them by name rather than by
 id, and can wire the issue one step just opened into the step after it — without
 anybody having to fire one to find out what comes back.
+
+The three under Projects v2 are the exception worth knowing: a board is not part
+of a repository, most repositories have none, and nothing else here depends on
+them. They exist because moving a card takes four node ids and there was
+nowhere to get one.
 
 The widgets need nothing but this app. The writes and the announcements exist
 for an automation service to use, and a guild without one gets the same

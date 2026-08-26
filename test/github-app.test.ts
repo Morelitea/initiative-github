@@ -24,23 +24,28 @@ import { describe, expect, it } from "vitest";
 
 import { config } from "../src/config.js";
 import { appJwt } from "../src/github/app.js";
-import { SUBSCRIBED_EVENTS } from "../src/github/emissions.js";
+import { SUBSCRIBED_EVENTS } from "../src/endpoints/emissions.js";
 import {
   HOMEPAGE,
   PERMISSIONS,
   githubAppManifest,
-} from "../src/github/registration.js";
-import { READ_IDS, WRITE_ENDPOINTS, WRITE_IDS, manifest } from "../src/manifest.config.js";
+} from "../src/github/app.js";
+import { WRITES } from "../src/endpoints/index.js";
+import { READ_IDS, WRITE_IDS } from "../src/vocabulary.js";
+import { manifest } from "../src/manifest.config.js";
 import {
   CALLBACK_PATH,
   CONNECT_PATH,
   INSTALL_PATH,
   SETUP_PATH,
   WEBHOOK_PATH,
-} from "../src/routes.js";
+} from "../src/vocabulary.js";
 
 const PUBLIC_URL = config.publicUrl;
 const registration = githubAppManifest(PUBLIC_URL);
+
+/** What the writes say about themselves, off the list that implements them. */
+const WRITE_DECLARATIONS = WRITES.map((write) => write.declaration);
 
 describe("saying who this app is", () => {
   it("signs a JWT the private key actually backs", () => {
@@ -182,10 +187,17 @@ describe("asking for no more than it uses", () => {
     // yet" from "used for something not described".
     const declared = new Set((manifest.endpoints ?? []).map((endpoint) => endpoint.id));
     const uses: Record<string, string[]> = {
-      issues: [READ_IDS.openIssues, READ_IDS.issueThroughput, WRITE_IDS.openIssue],
-      pull_requests: [READ_IDS.reviewQueue, WRITE_IDS.requestReview],
-      vulnerability_alerts: [READ_IDS.dependabotAlerts],
-      organization_projects: [WRITE_IDS.moveProjectItem],
+      issues: [READ_IDS.getIssue, READ_IDS.findIssues, READ_IDS.listLabels, WRITE_IDS.openIssue],
+      pull_requests: [READ_IDS.getPullRequest, READ_IDS.findPullRequests, WRITE_IDS.requestReview],
+      vulnerability_alerts: [READ_IDS.listAlerts],
+      // Reads now as well as the write. A board's id, its fields and the card an
+      // issue has are what made `move-project-item` reachable at all.
+      organization_projects: [
+        READ_IDS.listProjects,
+        READ_IDS.listProjectOptions,
+        READ_IDS.findProjectItem,
+        WRITE_IDS.moveProjectItem,
+      ],
     };
     for (const permission of Object.keys(PERMISSIONS)) {
       // Granted implicitly by the rest and required of every GitHub App.
@@ -198,12 +210,12 @@ describe("asking for no more than it uses", () => {
   it("asks to write only where an operation writes", () => {
     // A `write` an organization grants and nothing exercises is the worst kind
     // of over-permission: invisible in the app's behaviour and permanent in the
-    // grant. So every one has to be named by something in WRITE_ENDPOINTS.
+    // grant. So every one has to be named by something in WRITE_DECLARATIONS.
     const writing = Object.entries(PERMISSIONS)
       .filter(([, level]) => level === "write")
       .map(([permission]) => permission);
     expect(writing.length).toBeGreaterThan(0);
-    expect(WRITE_ENDPOINTS.length).toBeGreaterThan(0);
+    expect(WRITE_DECLARATIONS.length).toBeGreaterThan(0);
     expect(writing.sort()).toEqual([
       "issues",
       "organization_projects",

@@ -1,12 +1,12 @@
 {
   "name": "initiative-github",
-  "version": "0.3.0",
+  "version": "0.0.0-dev",
   "private": true,
   "description": "The reference Initiative app: GitHub issues and reviews, as dashboard widgets and automation nodes.",
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -20,14 +20,14 @@
     "env-contract": "tsx scripts/build-env-contract.ts"
   },
   "dependencies": {
-    "@types/pg": "^8.21.0",
+    "@types/pg": "^8.23.1",
     "initiative-app-kit": "github:Morelitea/initiative-app-kit",
     "pg": "^8.23.0"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
-    "vitest": "^2.1.0"
+    "@types/node": "^26.3.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
   }
 }

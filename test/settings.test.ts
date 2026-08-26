@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { CONTRACT_PATH, envContract } from "../scripts/build-env-contract.js";
-import { SETTINGS } from "../src/settings.js";
+import { SETTINGS } from "../src/config.js";
 
 describe("the published contract", () => {
   it("is what the table would write today", () => {

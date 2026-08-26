@@ -1,21 +1,4 @@
-/**
- * Build the GitHub App registration this deployment needs.
- *
- * Registering at GitHub is a form, and a form is a copy of the app's
- * requirements that nothing checks. Fill it in by hand and the drift is silent
- * in both directions: a webhook the code handles but nobody subscribed to
- * simply never arrives, and a permission the code stopped using is granted by
- * every organization forever, because narrowing one is not a thing an app can
- * do to an installation that already exists.
- *
- * So the registration is generated from the same constants the code uses, and
- * `test/github-app.test.ts` checks them against what the code actually does.
- *
- * Fill the form from the summary this prints, following
- * https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app
- */
-
-import { githubAppManifest } from "../src/github/registration.js";
+import { githubAppManifest } from "../src/github/app.js";
 
 const publicUrl = process.env.APP_PUBLIC_URL;
 if (!publicUrl) {

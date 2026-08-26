@@ -41,7 +41,7 @@ vi.mock("../src/initiative.js", () => ({
 
 // The workspace half is Postgres-backed and has its own tests; this file is
 // about what the sync decides, so its writes are stubbed out.
-vi.mock("../src/github/workspace.js", () => ({
+vi.mock("../src/workspace.js", () => ({
   rememberWorkspace,
   workspaceFor,
   forgetWorkspace,
@@ -57,7 +57,7 @@ vi.mock("../src/github/app.js", async () => {
   return { ...actual, installationForOwner };
 });
 
-import { forgetInstall, syncAllInstalls, syncInstall } from "../src/sync.js";
+import { forgetInstall, syncAllInstalls, syncInstall } from "../src/platform.js";
 
 /** One install's configuration as the channel returns it. */
 function installConfig(overrides: Record<string, unknown> = {}) {

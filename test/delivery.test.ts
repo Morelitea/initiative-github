@@ -23,20 +23,27 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 // `vi.mock` is hoisted above every import, so the double has to be built in a
 // hoisted block too — the delivery path must get this rather than something
 // that would try to reach a platform.
+//
+// Partial, because the module it stands in for is the whole Initiative side:
+// the delivery path publishes through it as well, and replacing it wholesale
+// would take the publisher out with the sync.
 const { syncInstall } = vi.hoisted(() => ({
   syncInstall: vi.fn<(guildId: number) => Promise<boolean>>(async () => true),
 }));
-vi.mock("../src/sync.js", () => ({ syncInstall }));
+vi.mock("../src/platform.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/platform.js")>()),
+  syncInstall,
+}));
 
 import { close, migrate, pool } from "../src/db.js";
 import { handleDelivery } from "../src/github/webhooks.js";
-import { EMITTED } from "../src/github/emissions.js";
-import { seal } from "../src/secrets.js";
+import { EMITTED } from "../src/endpoints/emissions.js";
+import { seal } from "../src/db.js";
 import {
   installsAwaiting,
   installsForInstallation,
   rememberWorkspace,
-} from "../src/github/workspace.js";
+} from "../src/workspace.js";
 
 beforeEach(async () => {
   await migrate();

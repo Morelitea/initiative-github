@@ -14,9 +14,14 @@
 import { describe, expect, it } from "vitest";
 import { appDocument, validateDocument, validateManifest } from "initiative-app-kit";
 
-import { EMIT_ENDPOINTS, EMITTED, translate } from "../src/github/emissions.js";
-import { WEBHOOK_EVENTS } from "../src/github/registration.js";
-import { PUBLIC_ID, WRITE_ENDPOINTS, manifest } from "../src/manifest.config.js";
+import { EMIT_ENDPOINTS, EMITTED, translate } from "../src/endpoints/emissions.js";
+import { WEBHOOK_EVENTS } from "../src/github/app.js";
+import { READ_IDS } from "../src/vocabulary.js";
+import { WRITES } from "../src/endpoints/index.js";
+import { PUBLIC_ID, manifest } from "../src/manifest.config.js";
+
+/** What the writes say about themselves, off the list that implements them. */
+const WRITE_DECLARATIONS = WRITES.map((write) => write.declaration);
 
 describe("the manifest", () => {
   it("has nothing the kit can object to", () => {
@@ -55,7 +60,7 @@ describe("the manifest", () => {
   it("declares no feature it cannot deliver", () => {
     // A feature with no block behind it advertises something the app cannot do,
     // and the platform refuses it — in both directions.
-    expect(manifest.features).toEqual(["endpoints", "widgets"]);
+    expect(manifest.features).toEqual(["dashboards", "endpoints", "widgets"]);
   });
 
   it("declares one vocabulary for every direction", () => {
@@ -66,8 +71,12 @@ describe("the manifest", () => {
     const byDirection = (direction: string) =>
       (manifest.endpoints ?? []).filter((e) => e.direction === direction);
 
-    expect(byDirection("read").length).toBe(4);
-    expect(byDirection("write")).toEqual([...WRITE_ENDPOINTS]);
+    // Ten reads, and none of them a tile: each is a question at GitHub, and a
+    // widget draws one of these rather than one of its own.
+    expect(byDirection("read").map((e) => e.id).sort()).toEqual(
+      Object.values(READ_IDS).slice().sort()
+    );
+    expect(byDirection("write")).toEqual([...WRITE_DECLARATIONS]);
     expect(byDirection("emit").map((e) => e.id)).toEqual([...EMITTED]);
   });
 
@@ -277,10 +286,26 @@ describe("the choices this app makes", () => {
   it("lets a dashboard say which repository a tile is about", () => {
     // The whole of how one widget serves several teams. A read cannot be told
     // which initiative is asking, so the dashboard says which repository — and
-    // a dashboard belongs to exactly one initiative. Every read has to accept
-    // it or the ones that do not are stuck on whatever the install defaults to.
+    // a dashboard belongs to exactly one initiative. Every read that resolves
+    // one has to accept it, or the ones that do not are stuck on whatever the
+    // install defaults to.
+    //
+    // Three do not resolve a repository, and they are listed rather than
+    // detected so that a fourth cannot join them quietly. Two are about the
+    // account — which repositories there are, and which boards it has — and the
+    // third names a board by id. A `repo` on any of them would be a parameter
+    // accepted and ignored.
+    const ACCOUNT_WIDE = [
+      READ_IDS.listRepositories,
+      READ_IDS.listProjects,
+      READ_IDS.listProjectOptions,
+    ];
     for (const read of (manifest.endpoints ?? []).filter((e) => e.direction === "read")) {
       const params = (read.params ?? []).map((param) => param.key);
+      if (ACCOUNT_WIDE.includes(read.id)) {
+        expect(params, `${read.id} resolves no repository`).not.toContain("repo");
+        continue;
+      }
       expect(params, `${read.id} cannot be pointed at a repository`).toContain("repo");
     }
   });
@@ -348,13 +373,19 @@ describe("what an endpoint says about itself", () => {
     }
   });
 
-  it("files all fourteen into a handful of drawers", () => {
-    // A heading, not another level of nesting. Fourteen in one flat list is
-    // the thing this exists to avoid, and fourteen drawers would be the same
-    // list wearing a hat.
+  it("files all twenty into a handful of drawers", () => {
+    // A heading, not another level of nesting. Twenty in one flat list is the
+    // thing this exists to avoid, and twenty drawers would be the same list
+    // wearing a hat.
     const groups = new Set(endpoints().map((endpoint) => endpoint.group));
     expect(groups.has(undefined), "an endpoint with no group falls out of the drawers").toBe(false);
-    expect([...groups].sort()).toEqual(["issues", "projects", "reviews", "security"]);
+    expect([...groups].sort()).toEqual([
+      "issues",
+      "projects",
+      "repositories",
+      "reviews",
+      "security",
+    ]);
   });
 
   it("returns nothing twice under one name", () => {
