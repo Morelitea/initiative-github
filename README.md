@@ -537,37 +537,24 @@ already have.
 At the end: this app registered with your Initiative, a GitHub App registered
 to your account, and the widgets installable in your guild.
 
-### First, one decision
+### First, an address
 
-**Two addresses matter and they have different requirements.** Getting this
-wrong is the thing that wastes an afternoon.
+This app needs a hostname of its own, reachable over HTTPS. Two different
+parties follow it and both have to arrive: a member's **browser**, which GitHub
+redirects after they authorize, and **GitHub's own servers**, which post the
+webhook.
 
-`APP_PUBLIC_URL` is where a **browser** reaches this app. GitHub redirects a
-member's browser there after they authorize, and that browser is on your
-machine — so `http://localhost:8080` is a perfectly good answer.
+You already have the machinery. Initiative's installation checklist has you put
+it behind HTTPS with Caddy, Traefik or nginx — give this app one more hostname
+on that same proxy, pointed at port 8080:
 
-The **webhook** is different: GitHub's own servers post to it, so it has to be
-an address reachable from outside your machine.
+```
+https://github-app.example.com  →  http://127.0.0.1:8080
+```
 
-If you are already following Initiative's own advice to put it behind HTTPS —
-Caddy, Traefik or nginx in front, as its installation checklist says — then this
-app is one more hostname on the same proxy, pointed at port 8080. Use that
-hostname everywhere `APP_PUBLIC_URL` appears below, **including on the GitHub
-App form**, which matches it exactly.
-
-If you are trying it out on one machine with nothing in front, use
-`http://localhost:8080` and leave the webhook off. Here is what that costs:
-
-| On localhost | Behind a public hostname |
-| --- | --- |
-| Dashboard widgets work | Dashboard widgets work |
-| Connecting your account works | Connecting your account works |
-| Installs are noticed within 5 minutes, by the poll | Installs are noticed in seconds |
-| Repository events are never republished | Repository events reach subscribers |
-
-Nothing about that is one-way: the address lives in one environment variable and
-one field on the GitHub App form, so moving from the first column to the second
-later is editing both and restarting.
+Use that hostname everywhere `APP_PUBLIC_URL` appears below, **including on the
+GitHub App form**, which matches it character for character. The examples use
+`https://github-app.example.com`; substitute yours.
 
 ### Step 1 — Register the GitHub App
 
@@ -581,7 +568,7 @@ Print the exact fields for your address:
 ```bash
 git clone https://github.com/Morelitea/initiative-github
 cd initiative-github && npm install
-APP_PUBLIC_URL=http://localhost:8080 npm run github-app
+APP_PUBLIC_URL=https://github-app.example.com npm run github-app
 ```
 
 Then open **<https://github.com/settings/apps/new>** and fill it in. For an
@@ -592,12 +579,12 @@ instead.
 | --- | --- |
 | GitHub App name | anything unique — GitHub App names are global |
 | Homepage URL | `https://github.com/Morelitea/initiative-github` |
-| Callback URL | `http://localhost:8080/connect/github/callback` |
+| Callback URL | `https://github-app.example.com/connect/github/callback` |
 | Expire user authorization tokens | **checked** |
 | Request user authorization (OAuth) during installation | **checked** |
-| Setup URL | `http://localhost:8080/setup/github` |
-| Webhook → Active | checked if you have a tunnel, **unchecked** otherwise |
-| Webhook URL | `http://localhost:8080/webhooks/github` |
+| Setup URL | `https://github-app.example.com/setup/github` |
+| Webhook → Active | checked |
+| Webhook URL | `https://github-app.example.com/webhooks/github` |
 | Webhook secret | `openssl rand -hex 32` — keep it |
 | Where can this be installed | Any account |
 
@@ -610,8 +597,7 @@ permissions**: Projects → *Read and write*.
 > And Projects appears twice: take the **organization** one, which covers
 > Projects v2 boards — the repository one covers classic project boards.
 
-Under **Subscribe to events**, tick **Issues** and **Pull request**. Skip this
-if you left the webhook inactive.
+Under **Subscribe to events**, tick **Issues** and **Pull request**.
 
 Create it. On the page that follows, collect four things:
 
@@ -636,14 +622,19 @@ real PEM or one with `\n` typed literally — all three work.)
 Put them in the `.env` beside your `docker-compose.yml`:
 
 ```bash
-GITHUB_APP_SECRET=...
-GITHUB_ENCRYPTION_KEY=...
-GITHUB_CLIENT_ID=Iv23li...
-GITHUB_CLIENT_SECRET=...
-GITHUB_APP_PRIVATE_KEY=LS0tLS1CRUdJTiBS...
-GITHUB_WEBHOOK_SECRET=...
-GITHUB_APP_PUBLIC_URL=http://localhost:8080
+GITHUB_APP_SECRET=REPLACE-with-the-first-openssl-output
+GITHUB_ENCRYPTION_KEY=REPLACE-with-the-second-openssl-output
+GITHUB_CLIENT_ID=REPLACE-with-the-client-id-github-showed-you
+GITHUB_CLIENT_SECRET=REPLACE-with-the-client-secret-you-generated
+GITHUB_APP_PRIVATE_KEY=REPLACE-with-the-base64-of-your-pem
+GITHUB_WEBHOOK_SECRET=REPLACE-with-the-webhook-secret-you-generated
+GITHUB_APP_PUBLIC_URL=https://github-app.example.com
+GITHUB_DB_PASSWORD=REPLACE-with-openssl-rand-hex-16
 ```
+
+Every `REPLACE-…` above is a value only you have. Nothing in this repository
+ships a working secret, and a value that looks like one in a guide is a value
+somebody eventually pastes into production.
 
 ### Step 3 — Tell Initiative the app exists
 
@@ -654,7 +645,7 @@ Two files beside your compose. First `app-services.json`:
   {
     "public_id": "morelitea.github",
     "base_url": "http://initiative-github:8080",
-    "allowed_origins": ["http://localhost:8080"],
+    "allowed_origins": ["https://github-app.example.com"],
     "secret_env": "GITHUB_APP_SECRET",
     "grants": [],
     "mandatory": false
@@ -711,13 +702,15 @@ Now add to the **`initiative`** service in your compose:
     image: postgres:17
     restart: unless-stopped
     environment:
-      POSTGRES_USER: github
-      POSTGRES_PASSWORD: github
+      POSTGRES_USER: initiative_github
+      # Reachable only from the other containers on this compose network, and
+      # still worth generating rather than copying: `openssl rand -hex 16`.
+      POSTGRES_PASSWORD: ${GITHUB_DB_PASSWORD:?set it in .env}
       POSTGRES_DB: initiative_github
     volumes:
       - github_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U github"]
+      test: ["CMD-SHELL", "pg_isready -U initiative_github"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -726,11 +719,11 @@ Now add to the **`initiative`** service in your compose:
     image: ghcr.io/morelitea/initiative-github:latest
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgres://github:github@initiative-github-db:5432/initiative_github
+      DATABASE_URL: postgres://initiative_github:${GITHUB_DB_PASSWORD}@initiative-github-db:5432/initiative_github
       # Server-to-server: how THIS container reaches Initiative.
       INITIATIVE_BASE_URL: http://initiative:8173
       # Browser-facing: where GitHub sends a member back.
-      APP_PUBLIC_URL: ${GITHUB_APP_PUBLIC_URL:-http://localhost:8080}
+      APP_PUBLIC_URL: ${GITHUB_APP_PUBLIC_URL:?set it in .env}
       INITIATIVE_APP_SECRET: ${GITHUB_APP_SECRET:?set it in .env}
       APP_ENCRYPTION_KEY: ${GITHUB_ENCRYPTION_KEY:?set it in .env}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:?}
@@ -754,10 +747,19 @@ whole handshake: both prove they hold it, neither sends it.
 
 ```bash
 docker compose up -d
-curl http://localhost:8080/readyz                       # {"ok":true}
-curl http://localhost:8080/.well-known/initiative-app.json | head -c 80
+
+# From the machine itself, straight at the container:
+curl http://127.0.0.1:8080/readyz                       # {"ok":true}
+
+# And through the proxy, which is what GitHub and a browser will use:
+curl https://github-app.example.com/.well-known/initiative-app.json | head -c 80
+
 docker compose logs initiative | grep "app services"    # 1 created
 ```
+
+Both matter. The first says the container is up; the second says the hostname
+you put on the GitHub App form actually reaches it, which is the half that fails
+silently until somebody tries to connect.
 
 Within a minute the registration verifies. `1 created` followed by nothing else
 means Initiative wrote the row and could not reach the app — check `base_url`
@@ -778,7 +780,7 @@ four widgets on it.
 
 ### Step 7 — Install the GitHub App on your account
 
-The half GitHub owns. Visit `http://localhost:8080/install/github` and it
+The half GitHub owns. Visit `https://github-app.example.com/install/github` and it
 redirects to your app's install page — choose the account and which repositories
 it may see.
 
@@ -807,6 +809,7 @@ exactly what you can see at GitHub.
 | Tile says *repository-required* | The install covers several repositories and the tile does not say which. Name one in the app's settings, or set `repo` on the dashboard tile. |
 | `column … does not exist` | Your database predates a column. There is no migration tool here — drop the database and let it recreate. |
 | Redirect mismatch at GitHub | `APP_PUBLIC_URL` and the Callback URL on the form disagree. They must match exactly, scheme and port included. |
+| GitHub's *Recent Deliveries* shows red | `401` is the webhook secret differing between the form and the container. A timeout is the proxy: the Webhook URL does not reach port 8080. |
 
 ## What is deliberately simple here
 
