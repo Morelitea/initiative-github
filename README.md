@@ -13,7 +13,7 @@ lets an automation act on that repository as the person whose automation it is.
 | **A GitHub App** | A party at GitHub in its own right: an identity it signs with, permissions an organization approves when it installs, and one webhook covering every organization that ever does — rather than one added by hand per repository. Registered separately from the Initiative listing; see [Two registrations](#two-registrations). |
 | **Everything runs as you** | Every widget and every write runs on the caller's own GitHub credential. You see exactly what you can see at GitHub, and nobody is shown the state of a repository they are not on. |
 | **Per-member connections** | GitHub authorizes a *person*, so each member connects their own account and the app holds one credential per person, sealed at rest. Installing never waits for anyone to do it. |
-| **One setting, and it is not a credential** | Which repository the guild cares about is the only thing an admin types. Nobody pastes a token. |
+| **One setting to fill in** | An account, and which of its repositories this guild cares about. That is everything an admin types. |
 | **Four widgets** | Open issues, pull requests waiting on your review, Dependabot alerts by severity, and a fortnight of opens against closes. Each is a sandboxed browser module handed its data, returning a scene. |
 | **Seven writes** | Open an issue, comment, close, reopen, label, request a review, move a Projects v2 card — each as the member whose automation asked for it, or not at all. |
 | **Three events** | An issue opened, an issue closed, a review requested, published to whoever subscribed. |
@@ -34,12 +34,13 @@ one working.
 | **Says** | which repository this guild cares about | which repositories this app may see, and what it may do in them |
 | **Revoked by** | uninstalling in Initiative | uninstalling at GitHub |
 
-Nothing joins them up except [`src/sync.ts`](src/sync.ts), and until both are
-done there is nothing to answer with. An admin who fills in the repository
-before anybody has installed the GitHub App gets `github_app_not_installed`
-beside the install rather than three widgets saying "unavailable" — and when the
-organization does install it, the `installation` delivery flips it to `ok`
-within seconds. Either half can be done first.
+Nothing joins them up except [`src/sync.ts`](src/sync.ts), and either half can
+be done first. An admin who names the repositories gets a working dashboard
+whether or not anybody has installed the GitHub App yet — reads run on each
+member's own credential, so they do not wait on it. What waits on it is the
+webhook, and an admin who names *no* repositories waits too: with neither side
+holding a list, the install reports `github_app_not_installed` until an
+organization installs the app and the delivery flips it to `ok`.
 
 **Every deployment registers its own GitHub App.** Acting as the app means
 holding its client secret and its private key — both app-level, both enough to
@@ -93,221 +94,6 @@ Either way the registration comes from
 [`src/github/registration.ts`](src/github/registration.ts) rather than from
 prose, so the permissions and events on it are the ones the code actually uses —
 and [`test/github-app.test.ts`](test/github-app.test.ts) is what says so.
-
-## The shape worth copying
-
-**No embedded page, on purpose.** Everything this app offers lands inside
-Initiative's own surfaces — dashboard widgets, and the companion dashboard that
-arranges them — rather than in an iframe holding a second UI. An embed is for an app whose product *is* a
-page; an integration is better delivered as parts.
-
-**Serving a manifest is not being installable.** They are separate files with
-separate audiences: the document at `/.well-known/initiative-app.json` is what a
-*registrar* fetches to verify a container an operator already decided to run, and
-a **listing** is what a guild admin browses and installs. Nothing derives one
-from the other. This app shipped a release with no listing — registered, live,
-healthy, and impossible for anyone to add.
-
-```
-src/listing.config.ts   →  catalog/morelitea.github.json            (the app)
-                        →  catalog/morelitea.github-overview.json   (a dashboard)
-```
-
-**A companion listing ships a dashboard with the app.** The second file is a
-`kind: "dashboard"` entry in the same marketplace: a ready-made arrangement of
-this app's own three widgets, so a guild that installs both has something to look
-at without assembling it. It carries no code — a layout naming widget types the
-app's pinned definition already declares — and the only thing tying the two
-together is the catalog uid.
-
-**Every permission arrives with the code that reads it.** The registration asks
-for `issues: write`, `pull_requests: read`, `vulnerability_alerts: read` and the
-mandatory `metadata: read` — all repository-scoped, nothing about an
-organization's members or settings. Widening the list later is not a change you
-can just ship: GitHub asks every organization that already installed the app to
-approve it, and each keeps the old grant until they do, so a permission added in
-six months arrives broken for everyone who installed before it. That asymmetry
-is a real argument for asking early and it is not the one this list follows — a
-permission with nothing reading it is one an organization grants for no feature,
-and a reviewer cannot tell "not used yet" from "used for something not
-described". [`test/github-app.test.ts`](test/github-app.test.ts) asserts each one
-has a source behind it.
-
-**Scope each source to the narrowest thing that answers it.** How many issues
-are open is one answer for the whole guild, so it runs on the organization's
-installation and nobody hands over a personal GitHub account to see a number.
-Which pull requests are waiting on *your* review is one answer per person, so it
-runs on that member's own credential. The manifest says which, per source:
-
-```ts
-// open-issues, issue-throughput — one answer for everyone
-requires: { all_of: ["workspace"] }
-
-// review-queue — "waiting on me" has no meaning without a me
-requires: { all_of: ["workspace", "account"] }
-```
-
-Getting this backwards is the easy mistake and it hides well: answering a shared
-question from the caller's own token returns the right number, while quietly
-requiring every member to connect. It also costs real work — a source that names
-no per-member connection is cached **once per guild**, so twenty people opening a
-dashboard is one upstream call rather than twenty.
-
-**One install, several repositories; one initiative, one of them.** An
-installation covers whatever repositories the organization granted, so an admin
-types an account and — usually — nothing else. Which repository a *tile* is
-about comes from its dashboard, through a fixed `repo` on the binding:
-
-```ts
-// team-alpha's dashboard                 // team-beta's dashboard
-binding: { source_id: "open-issues",      binding: { source_id: "open-issues",
-           params: { repo: "widgets" } }             params: { repo: "gadgets" } }
-```
-
-That works because [dashboards are
-initiative-scoped](../initiative/backend/app/models/tenant/dashboard.py) — there
-is no guild-wide one — so a dashboard *is* an initiative, and binding a
-repository there pins one team to one repository. The same trick narrows the
-same tile by label, milestone or assignee, and the platform caches per parameter
-set, so two teams' tiles are one source answered twice rather than one answer
-shared.
-
-Be exact about what that does and does not enforce. This app checks every call
-against what the organization granted, because GitHub tells it that. It cannot
-keep one team out of another team's repository, because a context token names a
-guild and an install and **nothing finer** — there is no initiative in it. What
-holds that boundary is who may edit the dashboard. Making it enforced rather
-than conventional needs `initiative_id` on the context token, which is a change
-on the platform side, not here.
-
-**A widget must not ask for more than its sources do.** This app shipped a
-release where all three widgets required a personal account and only one source
-did, so two tiles refused with `CONNECTION_REQUIRED` for every member who had
-not connected one — to draw numbers that never needed them. Fixing the sources
-and leaving the widgets alone changes nothing a member can see.
-
-**The guild's access is a grant, not a credential.** The version of this app
-before it was a GitHub App asked an admin to paste a token with read access to
-the repository. That token was a *person's* credential wearing the guild's name:
-it carried everything that person could reach, it outlived their interest in the
-guild, and revoking it meant finding whoever minted it. An installation is the
-organization's own grant — listed in its settings, scoped to the repositories it
-picked, revoked by a button that belongs to it. The app cannot widen it and
-cannot survive its removal, and nobody types anything secret.
-
-```ts
-// what an admin fills in                what the app works out
-{ owner: "acme", repo: "widgets" }   →   GET /repos/acme/widgets/installation
-```
-
-**A member's token is short-lived, and that is a feature.** A GitHub App's user
-token lasts eight hours and is renewed with a refresh token that lasts six
-months — where an OAuth app's token lasted until somebody revoked it, which is
-to say forever. So the credential is a rotating pair, renewed on use rather than
-on a schedule, and renewed under a row lock: refresh tokens are single-use, and
-two replicas renewing the same member at once would have one succeed and the
-other overwrite a good credential with nothing
-([`src/github/oauth.ts`](src/github/oauth.ts)).
-
-**Your app learns a handle, not a person.** When Initiative calls a data source
-on a member's behalf, the context token carries `connection_refs` — opaque
-handles this app minted nothing of. Credentials are stored keyed by that handle
-([`src/github/oauth.ts`](src/github/oauth.ts)). There is no user id, no email,
-no name anywhere in this app, and the same person is uncorrelated across apps.
-
-**Paths, never addresses.** The manifest names routes; the operator's
-registration says where this app lives. There is nowhere in a manifest to put a
-host, and [`test/manifest.test.ts`](test/manifest.test.ts) asserts this app
-keeps to it.
-
-**Verify every inbound call.** A context token names one guild, one install and
-one scope, and lives about a minute. The scope is checked per route — a token
-minted to fetch a source is not usable to run an action
-([`src/server.ts`](src/server.ts)).
-
-**Every read runs on the caller's own GitHub credential.** Not the
-organization's installation — a member sees exactly what they can see at GitHub
-and nothing more. The app stops deciding who may read a private repository and
-lets the repository's own permissions decide, because it is not in a position to
-know: a context token names a guild and an install and nothing about what this
-person may reach.
-
-The price is that connecting is not optional. A member who has not gets
-`CONNECTION_REQUIRED` from every tile, the platform caches per member rather
-than once per guild, and Dependabot alerts show only to people with security
-access. All three are the principle working rather than failing — a dashboard
-that answered before anyone connected was showing private repository state to
-whoever opened it.
-
-**Reads and writes are different doors.** A source is answered on a context
-token Initiative minted for a dashboard, and lives under `/data/`. A write is
-answered on a delegation token an automation signed, and lives under
-`/v1/operations`. Neither route can reach the other's work, which is what keeps
-"whoever can render a widget" and "whoever can act on the repository" separate
-questions.
-
-**The write set is closed.** A caller picks from operations this app wrote; it
-never describes a request the app then performs. That is the difference between
-an integration and a proxy, and it is the whole reason the surface can be
-exposed at all.
-
-**Reconcile, do not trust a signal.** Which guilds have this app comes from
-asking Initiative ([`src/sync.ts`](src/sync.ts)), on a poll as well as on the
-lifecycle signal. A signal that arrives while this app is restarting is gone —
-nothing retries it — so an install configured during a deploy would otherwise
-stay unconfigured until somebody touched it again.
-
-**A vendor event has no guild in it.** A GitHub delivery names a repository and
-that is all. Turning it back into the guilds entitled to hear about it is the
-app's own job, and that reverse lookup is the whole of the producer side working
-([`src/github/webhooks.ts`](src/github/webhooks.ts)). It is also why an app
-event names no initiative: there is nothing in a delivery that could say which
-one, so an event is guild-wide and a consumer narrows itself by a payload field.
-
-**Not every delivery is news.** A GitHub App is also told about its own
-installation — an organization adding it, removing it, or changing which
-repositories it may see. Nobody subscribes to that: no consumer asked to hear
-that somebody clicked a button. What it changes is whether this app can answer
-at all, so it re-runs the sync for the installs it affects and tells no one.
-News about the repository and news about the relationship are different things.
-
-**A subscriber is not a dependency.** Nothing on the data path touches the
-producer surface, so a guild with no automation service gets exactly the same
-dashboard. A subscriber that stops answering is logged and dropped; GitHub still
-gets its `200`, and no widget notices.
-
-## Layout
-
-```
-src/
-  manifest.config.ts    the manifest, authored in TypeScript and built to JSON
-  server.ts             every protocol route, in one readable file
-  config.ts             what the operator supplies
-  routes.ts             every path, in one place — two registrations read them
-  listing.config.ts     what this app publishes — the app, and a dashboard
-  initiative.ts         the one client for calling Initiative
-  sync.ts               keeping both halves of the install true
-  github/
-    registration.ts     how this app describes itself to GitHub
-    setup.ts            registering that, in one click, once
-    app.ts              the app's own identity: JWT, installation, token
-    oauth.ts            the member's own vendor flow, keyed by handle
-    queries.ts          data sources, each at the scope that answers it
-    webhooks.ts         a delivery becoming an event — or a re-sync
-    workspace.ts        which repository, read three ways
-scripts/
-  build-manifest.ts     validates, then writes manifest.json
-  build-listing.ts      validates, then writes catalog/*.json
-  build-github-app.ts   writes the GitHub App registration to fill in
-test/manifest.test.ts   the test to copy into your own app
-test/listing.test.ts    the listings stay tied to the manifest they publish
-test/github-app.test.ts the GitHub registration stays tied to the code
-test/app-setup.test.ts  the gate in front of the one-click registration
-test/webhooks.test.ts   the signature, which is the whole reason to trust it
-test/delivery.test.ts   an installation back to guilds — needs a database
-test/installation.test.ts  the guild's access is the organization's grant
-test/repositories.test.ts  which repository, and the boundary it can enforce
-```
 
 ## Publishing it
 
