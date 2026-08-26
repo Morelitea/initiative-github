@@ -315,33 +315,9 @@ Optional:
 |---|---|
 | `PORT` | Default 8080. |
 | `SYNC_INTERVAL_SECONDS` | Default 300. How often to re-read which guilds have this app. |
-| `INITIATIVE_APP_SETUP_TOKEN` | Turns on the one-click registration below. Unset it afterwards. |
 | `GITHUB_API_BASE` · `GITHUB_WEB_BASE` | For GitHub Enterprise, where the API and the pages people visit are different hosts. Set both together. |
 
 `env-contract.json` is the same list as data, and a test keeps it current.
-
-## Registering in one click
-
-Instead of the form in step 1. Set `INITIATIVE_APP_SETUP_TOKEN` to a long random
-string, then open:
-
-```
-https://github-app.example.com/setup/github/register?token=THAT-VALUE
-```
-
-It posts a filled-in manifest to GitHub, you press one button, and it shows the
-four credentials once. Nothing is stored — the page displays them for you to
-paste into `.env`.
-
-Then **remove the token**. Without it those routes answer `404`, which is what
-they should do for the rest of the deployment's life.
-
-More than one may be set, comma or space separated, so a second operator can be
-let in without ending a registration somebody is halfway through.
-
-> The container needs its four GitHub values at boot, and this flow is what
-> produces them — so on a first run, start it with placeholders and a throwaway
-> key (`openssl genrsa 2048 | base64 -w0`), register, then replace them.
 
 ## When something is wrong
 

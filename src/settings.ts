@@ -39,7 +39,6 @@ export const SETTINGS = {
   ],
   optional: [
     "PORT",
-    "INITIATIVE_APP_SETUP_TOKEN",
     "GITHUB_API_BASE",
     "GITHUB_WEB_BASE",
     "SYNC_INTERVAL_SECONDS",

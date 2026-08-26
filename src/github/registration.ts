@@ -31,12 +31,7 @@
 
 import { stripTrailingSlashes } from "initiative-app-kit";
 
-import {
-  CALLBACK_PATH,
-  REGISTERED_PATH,
-  SETUP_PATH,
-  WEBHOOK_PATH,
-} from "../routes.js";
+import { CALLBACK_PATH, SETUP_PATH, WEBHOOK_PATH } from "../routes.js";
 import { SUBSCRIBED_EVENTS } from "./emissions.js";
 
 /**
@@ -132,7 +127,6 @@ export interface GithubAppManifest {
   name: string;
   url: string;
   hook_attributes: { url: string; active: boolean };
-  redirect_url: string;
   callback_urls: string[];
   setup_url: string;
   description: string;
@@ -178,16 +172,12 @@ export function githubAppManifest(
     // follows rather than a machine.
     url: options.homepage ?? HOMEPAGE,
     hook_attributes: { url: `${base}${WEBHOOK_PATH}`, active: true },
-    // Three redirects, three audiences, and they are not interchangeable —
-    // which is easy to get wrong because all three are "where GitHub sends
-    // somebody afterwards":
+    // Two redirects, two audiences, and they are not interchangeable — which
+    // is easy to get wrong because both are "where GitHub sends somebody
+    // afterwards":
     //
-    //   * `redirect_url` — the *operator*, once, immediately after this
-    //     manifest creates the app. It carries the code that is exchanged for
-    //     the app's credentials, and it is never used again.
     //   * `callback_urls` — a *member*, every time they authorize.
     //   * `setup_url` — an *organization owner*, after they install.
-    redirect_url: `${base}${REGISTERED_PATH}`,
     callback_urls: [`${base}${CALLBACK_PATH}`],
     setup_url: `${base}${SETUP_PATH}`,
     description:

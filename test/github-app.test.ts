@@ -35,7 +35,6 @@ import {
   CALLBACK_PATH,
   CONNECT_PATH,
   INSTALL_PATH,
-  REGISTERED_PATH,
   SETUP_PATH,
   WEBHOOK_PATH,
 } from "../src/routes.js";
@@ -92,7 +91,6 @@ describe("the registration this app needs at GitHub", () => {
     // half-works, and nothing at either end says which half.
     const served = [
       registration.hook_attributes.url,
-      registration.redirect_url,
       registration.setup_url,
       ...registration.callback_urls,
     ];
@@ -122,21 +120,16 @@ describe("the registration this app needs at GitHub", () => {
     expect(registration.hook_attributes.url).toBe(`${PUBLIC_URL}${WEBHOOK_PATH}`);
     expect(registration.setup_url).toBe(`${PUBLIC_URL}${SETUP_PATH}`);
     expect(registration.callback_urls).toEqual([`${PUBLIC_URL}${CALLBACK_PATH}`]);
-    expect(registration.redirect_url).toBe(`${PUBLIC_URL}${REGISTERED_PATH}`);
   });
 
-  it("keeps its three redirects apart", () => {
-    // All three are "where GitHub sends somebody afterwards", which is exactly
-    // why they get conflated. They have three audiences and three moments: the
-    // operator once, at creation; a member every time they authorize; an
-    // organization owner when they install. Pointing one at another's route
-    // fails only when somebody happens to exercise that path.
-    const redirects = [
-      registration.redirect_url,
-      registration.callback_urls[0],
-      registration.setup_url,
-    ];
-    expect(new Set(redirects).size).toBe(3);
+  it("keeps its two redirects apart", () => {
+    // Both are "where GitHub sends somebody afterwards", which is exactly why
+    // they get conflated. They have two audiences and two moments: a member
+    // every time they authorize, and an organization owner when they install.
+    // Pointing one at the other's route fails only when somebody happens to
+    // exercise that path.
+    const redirects = [registration.callback_urls[0], registration.setup_url];
+    expect(new Set(redirects).size).toBe(2);
   });
 
   it("sends the member's connection to the callback it registered", () => {

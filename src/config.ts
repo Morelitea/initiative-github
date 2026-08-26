@@ -31,7 +31,6 @@
  * that does not start.
  */
 
-import { parseSetupTokens } from "initiative-app-kit";
 
 import { SETTINGS } from "./settings.js";
 
@@ -101,7 +100,6 @@ export const config = {
    * second operator be let in, or a token replaced, without ending a flow
    * somebody has already started.
    */
-  setupTokens: parseSetupTokens(optional("INITIATIVE_APP_SETUP_TOKEN")),
 
   /** The shared secret this app's registration was wired with. */
   appSecret: required("INITIATIVE_APP_SECRET"),

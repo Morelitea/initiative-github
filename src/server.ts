@@ -63,8 +63,6 @@ import {
   CONNECT_PATH,
   ENDPOINTS_PATH,
   INSTALL_PATH,
-  REGISTERED_PATH,
-  REGISTER_PATH,
   SETUP_PATH,
   SUBSCRIPTIONS_PATH,
   WEBHOOK_PATH,
@@ -85,14 +83,6 @@ import {
 } from "./endpoints.js";
 import { installUrl } from "./github/app.js";
 import { beginInstall, beginOAuth, completeOAuth } from "./github/oauth.js";
-import {
-  authorized,
-  convert,
-  credentialsPage,
-  registerPage,
-  setupEnabled,
-  verifyState,
-} from "./github/setup.js";
 import {
   DELIVERY_HEADER,
   EVENT_HEADER,
@@ -450,54 +440,6 @@ export const server = createServer(async (req, res) => {
             "start working within a few minutes."
         )
       );
-    }
-
-    // --- registering this deployment's own GitHub App ----------------------
-    // Two routes that exist only while `INITIATIVE_APP_SETUP_TOKEN` is set. They
-    // create a GitHub App and show its secrets, which is a thing to be able to
-    // do once and then not be able to do — so "off" is `404`, indistinguishable
-    // from a deployment that never had the feature.
-    if (req.method === "GET" && (path === REGISTER_PATH || path === REGISTERED_PATH)) {
-      if (!setupEnabled()) return send(res, 404, { error: "no such route" });
-
-      if (path === REGISTER_PATH) {
-        // The token comes back rather than a yes, because the state minted for
-        // the round trip is signed with it — so removing one token ends the
-        // flows it opened without touching anybody else's.
-        const token = authorized(url.searchParams.get("token"));
-        if (!token) return send(res, 404, { error: "no such route" });
-        const org = url.searchParams.get("org");
-        // An organization login is a path segment on GitHub's own URL, and this
-        // one arrived in a query string. Read character by character rather than
-        // matched: the value decides what URL an operator's browser is sent to.
-        if (org !== null && !isOrganizationLogin(org)) {
-          return send(res, 400, { error: "that is not an organization login" });
-        }
-        return sendPage(res, registerPage(org, token), { secret: true });
-      }
-
-      // GitHub returns the operator here with a code and the state this app
-      // signed. The setup token is not in the redirect, so the state is what
-      // carries the authority — see `setup.ts`.
-      if (!verifyState(url.searchParams.get("state"))) {
-        return send(res, 404, { error: "no such route" });
-      }
-      const code = url.searchParams.get("code");
-      if (!code) return send(res, 400, { error: "no code" });
-
-      const credentials = await convert(code);
-      if (!credentials) {
-        return sendPage(
-          res,
-          page(
-            "Could not finish",
-            "GitHub would not exchange that code. It is good for an hour and " +
-              "for one attempt — start again from the setup link."
-          ),
-          { secret: true }
-        );
-      }
-      return sendPage(res, credentialsPage(credentials), { secret: true });
     }
 
     // --- everything this app answers ---------------------------------------

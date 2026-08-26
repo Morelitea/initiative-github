@@ -11,21 +11,9 @@
  * So the registration is generated from the same constants the code uses, and
  * `test/github-app.test.ts` checks them against what the code actually does.
  *
- * Two ways to use what this writes:
- *
- *   * **The manifest flow.** Post `github-app.json` to
- *     `https://github.com/settings/apps/new` (or the organization's equivalent)
- *     as a `manifest` form field, and GitHub creates the registration with
- *     everything already filled in, then hands back the id, the private key and
- *     the webhook secret.
- *   * **By hand**, from the summary printed below, following
- *     https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app
- *
- * The file is not committed: every value in it is derived from one deployment's
- * public address, so a file on `main` would describe somebody else's.
+ * Fill the form from the summary this prints, following
+ * https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app
  */
-
-import { writeFileSync } from "node:fs";
 
 import { githubAppManifest } from "../src/github/registration.js";
 
@@ -42,20 +30,12 @@ const manifest = githubAppManifest(publicUrl, {
   homepage: process.env.GITHUB_APP_HOMEPAGE,
 });
 
-writeFileSync("github-app.json", `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
-
 const permissions = Object.entries(manifest.default_permissions)
   .map(([name, level]) => `${name}: ${level}`)
   .join(", ");
 
 process.stdout.write(
   [
-    "wrote github-app.json",
-    "",
-    "One click instead of this form: set INITIATIVE_APP_SETUP_TOKEN, start the app,",
-    "and open  <APP_PUBLIC_URL>/setup/github/register?token=...  — it posts this",
-    "manifest to GitHub and shows you the credentials. Otherwise, by hand:",
-    "",
     "Register it at:  https://github.com/settings/apps/new",
     "",
     `  GitHub App name       ${manifest.name}`,
