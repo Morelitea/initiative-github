@@ -10,6 +10,25 @@
  * here is an address — a route is a path and an endpoint is an id, and the
  * operator's registration says where the app lives.
  *
+ * ## What an endpoint says about itself
+ *
+ * Every endpoint here carries a `label`, a `description`, a `group` and its
+ * `returns`, because an endpoint is also a step on somebody's automation canvas
+ * and those four are what a canvas has to draw one with. Without them the best
+ * a consumer can do is scrape a title off the id, offer nothing to the step
+ * below, and put all fourteen in one flat list.
+ *
+ * Two fields of that vocabulary are deliberately absent everywhere:
+ *
+ *   * **`needs_subject`**, which says what a run must already be *about* for an
+ *     endpoint to mean anything. Nothing here needs one: every endpoint names
+ *     what it acts on — a repository, an issue number, a board — which is
+ *     exactly what makes them the reusable ones, usable from a nightly schedule
+ *     that is about nothing at all. Saying nothing is read as needing nothing,
+ *     and claiming a need this app does not have would warn somebody off an
+ *     arrangement that would have worked.
+ *   * **`picker`**, for the reason given on {@link param}.
+ *
  * **No embedded page.** This app deliberately mounts no surface of its own:
  * everything it offers lands inside Initiative's own — dashboard widgets, and
  * the companion dashboard that arranges them — rather than in an iframe holding
@@ -17,7 +36,13 @@
  * is better as parts.
  */
 
-import type { Endpoint, EndpointParam, Manifest } from "initiative-app-kit";
+import type {
+  Endpoint,
+  EndpointParam,
+  EndpointReturn,
+  LocalizedText,
+  Manifest,
+} from "initiative-app-kit";
 
 import { EMIT_ENDPOINTS } from "./github/emissions.js";
 import { PERMISSIONS } from "./github/registration.js";
@@ -49,12 +74,25 @@ export const WRITE_IDS = {
   moveProjectItem: declare("move-project-item"),
 } as const;
 
+/** One label, in the four languages this app's settings are written in. */
+function text(en: string, de: string, es: string, fr: string): LocalizedText {
+  return { en, de, es, fr };
+}
+
 /**
  * One parameter, in the four languages this app's settings are written in.
  *
  * Typed and labelled rather than named, because these are what a person filling
  * in an automation step is shown. A bare list of keys is enough for a machine
  * and leaves whoever is wiring it up guessing at `option_id`.
+ *
+ * **No `picker` on any of them**, which is a decision rather than an omission.
+ * A picker asks a consumer to draw a richer control over its *own* data — an
+ * Initiative project, a tag — and everything asked for here is a GitHub thing:
+ * a repository name, an issue number, a login, a node id off a Projects v2
+ * board. Initiative cannot list any of those, so naming a picker would name a
+ * control nobody can draw, and a consumer that does not know the name falls
+ * back to the plain field it was already drawing.
  */
 function param(
   key: string,
@@ -64,7 +102,32 @@ function param(
   es: string,
   fr: string
 ): EndpointParam {
-  return { key, type, label: { en, de, es, fr } };
+  return { key, type, label: text(en, de, es, fr) };
+}
+
+/**
+ * One value an endpoint hands back, by name, type and the words a consumer
+ * picks it out by.
+ *
+ * Declared rather than discovered, because a consumer arranges these before the
+ * endpoint has ever run: an automation offers them as values a later step may
+ * read, and a step wired to something this app does not return has to be
+ * refusable when somebody wires it rather than the first time it fires.
+ *
+ * The vocabulary is four scalar types and a list flag, which is the whole of
+ * it — there is no way to describe an object, so a read answering with a list
+ * of rows declares the scalars beside it and says so in a comment rather than
+ * lying about the shape.
+ */
+function value(
+  key: string,
+  type: EndpointReturn["type"],
+  en: string,
+  de: string,
+  es: string,
+  fr: string
+): EndpointReturn {
+  return { key, type, label: text(en, de, es, fr) };
 }
 
 /** Which repository, on every write that acts inside one. */
@@ -72,6 +135,31 @@ const REPO = param("repo", "string", "Repository", "Repository", "Repositorio", 
 
 /** Which issue or pull request. They share a number space at GitHub. */
 const NUMBER = param("number", "int", "Number", "Nummer", "Número", "Numéro");
+
+/** Which issue or pull request the call ended up acting on. */
+const NUMBER_OUT = value("number", "int", "Number", "Nummer", "Número", "Numéro");
+
+/** Where a person goes to look at what just happened. */
+const LINK_OUT = value("html_url", "url", "Link", "Link", "Enlace", "Lien");
+
+/**
+ * Why a read has no answer — the one value every read may hand back instead of
+ * the rest of them.
+ *
+ * Unavailability travels in the body rather than as a status, because a widget
+ * draws "connect your account" and draws nothing at all from a 4xx. That makes
+ * it part of every read's shape rather than an error path, so it belongs in
+ * every read's declaration: an automation that branches on it is asking the
+ * right question, and one that binds `total` and quietly gets nothing is not.
+ */
+const UNAVAILABLE = value(
+  "unavailable",
+  "string",
+  "Why there is no answer",
+  "Warum es keine Antwort gibt",
+  "Por qué no hay respuesta",
+  "Pourquoi il n'y a pas de réponse"
+);
 
 /**
  * What this app will do at GitHub, and whose credential each runs on.
@@ -98,6 +186,14 @@ export const WRITE_ENDPOINTS: readonly Endpoint[] = [
   {
     id: WRITE_IDS.openIssue,
     direction: "write",
+    label: text("Open an issue", "Issue öffnen", "Abrir una incidencia", "Ouvrir un ticket"),
+    description: text(
+      "Opens one in the connected repository.",
+      "Öffnet eines im verbundenen Repository.",
+      "Abre una en el repositorio conectado.",
+      "En ouvre un dans le dépôt connecté."
+    ),
+    group: "issues",
     actors: ["member"],
     requires: { all_of: ["workspace", "account"] },
     params: [
@@ -107,19 +203,56 @@ export const WRITE_ENDPOINTS: readonly Endpoint[] = [
       param("labels", "string", "Labels", "Labels", "Etiquetas", "Étiquettes"),
       param("assignees", "string", "Assignees", "Zuständige", "Asignados", "Assignés"),
     ],
+    // GitHub's own numeric id as well as the two anybody reads. It costs
+    // nothing to declare what the handler already sends, and it is the only
+    // identifier that survives a repository being renamed.
+    returns: [
+      NUMBER_OUT,
+      LINK_OUT,
+      value("id", "int", "GitHub id", "GitHub-ID", "ID de GitHub", "Identifiant GitHub"),
+    ],
   },
   {
     id: WRITE_IDS.comment,
     direction: "write",
+    label: text("Comment", "Kommentieren", "Comentar", "Commenter"),
+    description: text(
+      "Adds a comment to an issue or a pull request.",
+      "Fügt einem Issue oder Pull Request einen Kommentar hinzu.",
+      "Añade un comentario a una incidencia o pull request.",
+      "Ajoute un commentaire à un ticket ou une pull request."
+    ),
+    group: "issues",
     actors: ["member"],
     requires: { all_of: ["workspace", "account"] },
     // Issues and pull requests share a number space and a comments endpoint, so
     // this is one write rather than two that differ by a URL segment.
     params: [REPO, NUMBER, param("body", "string", "Body", "Text", "Cuerpo", "Corps")],
+    // The comment's id, not the issue's — this is the one write whose subject
+    // and whose result are different things.
+    returns: [
+      value(
+        "id",
+        "int",
+        "Comment id",
+        "Kommentar-ID",
+        "ID del comentario",
+        "Identifiant du commentaire"
+      ),
+      LINK_OUT,
+    ],
   },
   {
     id: WRITE_IDS.closeIssue,
     direction: "write",
+    label: text("Close an issue", "Issue schließen", "Cerrar una incidencia", "Fermer un ticket"),
+    description: text(
+      "Closes it as completed or as not planned.",
+      "Schließt es als erledigt oder als nicht geplant.",
+      "La cierra como completada o como no planificada.",
+      "Le ferme comme terminé ou comme non planifié."
+    ),
+    group: "issues",
     actors: ["member"],
     requires: { all_of: ["workspace", "account"] },
     params: [
@@ -132,17 +265,44 @@ export const WRITE_ENDPOINTS: readonly Endpoint[] = [
         label: { en: "Reason", de: "Grund", es: "Motivo", fr: "Raison" },
       },
     ],
+    // `state` because one endpoint answers for both directions and a step
+    // after this one may want to check rather than assume.
+    returns: [NUMBER_OUT, value("state", "string", "State", "Status", "Estado", "État"), LINK_OUT],
   },
   {
     id: WRITE_IDS.reopenIssue,
     direction: "write",
+    label: text(
+      "Reopen an issue",
+      "Issue wieder öffnen",
+      "Reabrir una incidencia",
+      "Rouvrir un ticket"
+    ),
+    description: text(
+      "Puts a closed issue back into the open state.",
+      "Versetzt ein geschlossenes Issue zurück in den offenen Zustand.",
+      "Devuelve una incidencia cerrada al estado abierto.",
+      "Remet un ticket fermé à l'état ouvert."
+    ),
+    group: "issues",
     actors: ["member"],
     requires: { all_of: ["workspace", "account"] },
     params: [REPO, NUMBER],
+    // `state` because one endpoint answers for both directions and a step
+    // after this one may want to check rather than assume.
+    returns: [NUMBER_OUT, value("state", "string", "State", "Status", "Estado", "État"), LINK_OUT],
   },
   {
     id: WRITE_IDS.label,
     direction: "write",
+    label: text("Change labels", "Labels ändern", "Cambiar etiquetas", "Modifier les étiquettes"),
+    description: text(
+      "Adds or removes labels on an issue or a pull request.",
+      "Fügt an einem Issue oder Pull Request Labels hinzu oder entfernt sie.",
+      "Añade o quita etiquetas en una incidencia o pull request.",
+      "Ajoute ou retire des étiquettes sur un ticket ou une pull request."
+    ),
+    group: "issues",
     actors: ["member"],
     requires: { all_of: ["workspace", "account"] },
     params: [
@@ -151,10 +311,28 @@ export const WRITE_ENDPOINTS: readonly Endpoint[] = [
       param("add", "string", "Labels to add", "Hinzuzufügende Labels", "Etiquetas a añadir", "Étiquettes à ajouter"),
       param("remove", "string", "Labels to remove", "Zu entfernende Labels", "Etiquetas a quitar", "Étiquettes à retirer"),
     ],
+    // The number and nothing else. This one is several calls to GitHub rather
+    // than one — removals, then additions — so there is no single response to
+    // carry a link out of, and inventing one would be describing a field the
+    // handler does not send.
+    returns: [NUMBER_OUT],
   },
   {
     id: WRITE_IDS.requestReview,
     direction: "write",
+    label: text(
+      "Request a review",
+      "Review anfragen",
+      "Solicitar una revisión",
+      "Demander une revue"
+    ),
+    description: text(
+      "Asks people or teams to review a pull request.",
+      "Bittet Personen oder Teams, einen Pull Request zu prüfen.",
+      "Pide a personas o equipos que revisen una pull request.",
+      "Demande à des personnes ou des équipes de relire une pull request."
+    ),
+    group: "reviews",
     actors: ["member"],
     requires: { all_of: ["workspace", "account"] },
     params: [
@@ -163,6 +341,7 @@ export const WRITE_ENDPOINTS: readonly Endpoint[] = [
       param("reviewers", "string", "Reviewers", "Reviewer", "Revisores", "Relecteurs"),
       param("team_reviewers", "string", "Team reviewers", "Team-Reviewer", "Equipos revisores", "Équipes relectrices"),
     ],
+    returns: [NUMBER_OUT, LINK_OUT],
   },
   {
     // Projects v2 is organization-scoped, which is the argument for running
@@ -171,6 +350,19 @@ export const WRITE_ENDPOINTS: readonly Endpoint[] = [
     // what says which boards those are.
     id: WRITE_IDS.moveProjectItem,
     direction: "write",
+    label: text(
+      "Move a project card",
+      "Projektkarte verschieben",
+      "Mover una tarjeta de proyecto",
+      "Déplacer une carte de projet"
+    ),
+    description: text(
+      "Sets one single-select field on a Projects v2 card.",
+      "Setzt ein Einfachauswahl-Feld auf einer Projects-v2-Karte.",
+      "Establece un campo de selección única en una tarjeta de Projects v2.",
+      "Définit un champ à choix unique sur une carte Projects v2."
+    ),
+    group: "projects",
     actors: ["member"],
     // No `workspace`: a Projects v2 board belongs to the organization rather
     // than to a repository, so the guild's repository setting says nothing
@@ -182,6 +374,9 @@ export const WRITE_ENDPOINTS: readonly Endpoint[] = [
       param("field_id", "string", "Field", "Feld", "Campo", "Champ"),
       param("option_id", "string", "Value", "Wert", "Valor", "Valeur"),
     ],
+    // The card that moved, so a step after this one can act on the same card
+    // without having been told the id twice.
+    returns: [value("item_id", "string", "Card", "Karte", "Tarjeta", "Carte")],
   },
 ];
 
@@ -358,6 +553,14 @@ export const manifest: Manifest = {
     {
       id: READ_IDS.openIssues,
       direction: "read",
+      label: text("Open issues", "Offene Issues", "Incidencias abiertas", "Tickets ouverts"),
+      description: text(
+        "How many issues are open, and how that is trending.",
+        "Wie viele Issues offen sind und wie sich das entwickelt.",
+        "Cuántas incidencias están abiertas y su tendencia.",
+        "Combien de tickets sont ouverts, et la tendance."
+      ),
+      group: "issues",
       // Every read runs on the caller's own GitHub credential, so there is one
       // actor and no fallback. An installation-wide answer would be the state
       // of a private repository handed to whoever opened a dashboard.
@@ -411,6 +614,11 @@ export const manifest: Manifest = {
           },
         },
       ],
+      returns: [
+        value("total", "int", "Total", "Gesamt", "Total", "Total"),
+        value("delta", "int", "Change", "Veränderung", "Variación", "Variation"),
+        UNAVAILABLE,
+      ],
       // Per member, like every read here. How many issues are open is one
       // answer for a whole guild and it is still not one every member is
       // entitled to: it is the state of a private repository, and a member who
@@ -424,6 +632,14 @@ export const manifest: Manifest = {
     {
       id: READ_IDS.reviewQueue,
       direction: "read",
+      label: text("Waiting on you", "Wartet auf dich", "Esperando por ti", "En attente de vous"),
+      description: text(
+        "Pull requests that asked for your review.",
+        "Pull Requests, die deine Review angefragt haben.",
+        "Pull requests que pidieron tu revisión.",
+        "Pull requests qui ont demandé votre revue."
+      ),
+      group: "reviews",
       actors: ["member"],
       visibility: "member",
       cache_ttl_seconds: 60,
@@ -447,6 +663,12 @@ export const manifest: Manifest = {
           },
         },
       ],
+      // The count, and not the ten rows beside it. A return is a named scalar
+      // or a list of them, so a list of `{number, title, url}` objects has no
+      // expression here — and describing it as three separate lists would be a
+      // shape this app does not send. The widget draws the rows; a step in an
+      // automation gets the number it can actually branch on.
+      returns: [value("total", "int", "Total", "Gesamt", "Total", "Total"), UNAVAILABLE],
       // Per member, and it could not be anything else: "waiting on me" has no
       // meaning without a me.
       requires: { all_of: ["workspace", "account"] },
@@ -454,6 +676,19 @@ export const manifest: Manifest = {
     {
       id: READ_IDS.dependabotAlerts,
       direction: "read",
+      label: text(
+        "Dependabot alerts",
+        "Dependabot-Warnungen",
+        "Alertas de Dependabot",
+        "Alertes Dependabot"
+      ),
+      description: text(
+        "Open dependency alerts, worst first.",
+        "Offene Abhängigkeitswarnungen, die schlimmsten zuerst.",
+        "Alertas de dependencias abiertas, las peores primero.",
+        "Alertes de dépendances ouvertes, les pires d'abord."
+      ),
+      group: "security",
       actors: ["member"],
       visibility: "member",
       // Five minutes. An advisory is published, not typed, so this changes on
@@ -492,6 +727,14 @@ export const manifest: Manifest = {
           },
         },
       ],
+      // The total and the link. The per-severity breakdown is a list of
+      // objects, which this vocabulary cannot describe — see the review queue
+      // above for why it is left undeclared rather than approximated.
+      returns: [
+        value("total", "int", "Total", "Gesamt", "Total", "Total"),
+        value("url", "url", "Link", "Link", "Enlace", "Lien"),
+        UNAVAILABLE,
+      ],
       // Per member, and the consequence is sharpest here: reading Dependabot
       // alerts needs security access on the repository, so this answers for the
       // people who hold it and refuses for everyone else. That is the point
@@ -502,6 +745,19 @@ export const manifest: Manifest = {
     {
       id: READ_IDS.issueThroughput,
       direction: "read",
+      label: text(
+        "Issues opened and closed",
+        "Geöffnete und geschlossene Issues",
+        "Incidencias abiertas y cerradas",
+        "Tickets ouverts et fermés"
+      ),
+      description: text(
+        "A fortnight of opens against closes.",
+        "Zwei Wochen Öffnungen gegen Schließungen.",
+        "Dos semanas de aperturas frente a cierres.",
+        "Deux semaines d'ouvertures contre fermetures."
+      ),
+      group: "issues",
       actors: ["member"],
       visibility: "member",
       // Five minutes: a fortnight of daily counts does not change by the second,
@@ -532,6 +788,13 @@ export const manifest: Manifest = {
           label: { en: "Label", de: "Label", es: "Etiqueta", fr: "Étiquette" },
         },
       ],
+      // Only the one field, and it is worth being plain about why: this read
+      // answers with a fortnight of `{day, opened, closed}` rows, and a series
+      // is the shape a scalar vocabulary cannot describe at all. So the
+      // declaration says what it honestly can. This is a tile that a widget
+      // draws rather than a question an automation asks, and a consumer sees
+      // that from the declaration instead of finding it out by wiring one up.
+      returns: [UNAVAILABLE],
       // Per member, and this is the one where the cost is felt: it is the
       // heaviest call this app makes, and it runs once per member per five
       // minutes. A longer TTL is the lever if that ever bites.
