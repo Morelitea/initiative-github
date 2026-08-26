@@ -45,6 +45,7 @@ import {
   answerChallenge,
   bearerToken,
   delegateHeader,
+  isDigits,
   parseInvoke,
   verifyContextToken,
   verifyDelegationToken,
@@ -112,6 +113,41 @@ import { forgetInstall, startSync, syncInstall } from "./sync.js";
  * set can verify the other's tokens.
  */
 const jwks = new JwksCache();
+
+/**
+ * The guild whose install a member is connecting under.
+ *
+ * Initiative puts it on the handoff because the return leg has no other way to
+ * learn it: the app has to tell the platform this member connected, the channel
+ * is addressed per guild, and GitHub's callback echoes only `state`. So it is
+ * read here, at the moment the platform hands the member over, and carried
+ * through the flow rather than trusted from wherever the browser comes back.
+ *
+ * It routes and authorizes nothing. The write it eventually enables is resolved
+ * by the connection reference within that install, so a value somebody edited
+ * selects an install the reference is not in, and the platform answers 404.
+ */
+function guildFrom(params: URLSearchParams): number | null {
+  const raw = params.get("guild_id");
+  if (raw === null || !isDigits(raw)) return null;
+  const guildId = Number(raw);
+  return Number.isSafeInteger(guildId) && guildId > 0 ? guildId : null;
+}
+
+/**
+ * What a member sees when the handoff carried no guild.
+ *
+ * Which means one of two things and neither is theirs to fix: this app is newer
+ * than the Initiative it is registered with, or somebody opened the connect URL
+ * by hand. Refused before sending them to GitHub, because a flow that cannot be
+ * finished is worse begun — they would authorize, come back, and find the app
+ * unable to record it.
+ */
+const NO_GUILD = page(
+  "Cannot connect from here",
+  "Open this app's settings in Initiative and connect from there. If you did, " +
+    "this deployment's Initiative may be older than this app."
+);
 
 /**
  * Whether `value` is a GitHub account login and nothing else.
@@ -385,10 +421,15 @@ export const server = createServer(async (req, res) => {
     // --- the member's own vendor flow --------------------------------------
     if (req.method === "GET" && path === CONNECT_PATH) {
       // The platform sends the member here with the opaque handle it minted for
-      // them. It is the only name this app ever learns for that person.
+      // them — the only name this app ever learns for that person — and the
+      // guild whose install they are connecting under.
       const connectionRef = url.searchParams.get("connection_ref");
       if (!connectionRef) return send(res, 400, { error: "no connection_ref" });
-      const redirect = await beginOAuth(connectionRef);
+
+      const guildId = guildFrom(url.searchParams);
+      if (guildId === null) return sendPage(res, NO_GUILD);
+
+      const redirect = await beginOAuth(connectionRef, guildId);
       res.writeHead(302, { Location: redirect });
       return res.end();
     }
@@ -408,9 +449,13 @@ export const server = createServer(async (req, res) => {
       // With a handle, installing and authorizing are one trip and the member
       // comes back connected. Without one, it is just the install page.
       const connectionRef = url.searchParams.get("connection_ref");
-      const redirect = connectionRef
-        ? await beginInstall(connectionRef)
-        : await installUrl();
+      const guildId = connectionRef ? guildFrom(url.searchParams) : null;
+      if (connectionRef && guildId === null) return sendPage(res, NO_GUILD);
+
+      const redirect =
+        connectionRef && guildId !== null
+          ? await beginInstall(connectionRef, guildId)
+          : await installUrl();
       if (!redirect) {
         // GitHub would not say what this app is called, which means the private
         // key is wrong or absent. Nothing here can recover from that.

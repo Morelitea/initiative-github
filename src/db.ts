@@ -4,9 +4,9 @@
  * Three tables, and each exists because a process-local map would be wrong in a
  * way that only shows up in production:
  *
- * - **`connections`** — a member's credential at GitHub. In memory, every
- *   restart silently disconnects everybody, and they would have no way to tell
- *   except that things stopped working. A GitHub App's user token expires in
+ * - **`connections`** — a member's credential at GitHub, and the install they
+ *   connected under. In memory, every restart silently disconnects everybody,
+ *   and they would have no way to tell except that things stopped working. A GitHub App's user token expires in
  *   eight hours and is renewed with a refresh token that lasts six months, so
  *   what is kept here is a rotating pair rather than one durable secret.
  * - **`oauth_states`** — the in-flight vendor handshake. This is the one that
@@ -52,8 +52,13 @@ const SCHEMA = [
   // A GitHub App's user token is short-lived and renewable, which an OAuth
   // app's was not — so what is kept is a rotating pair and the two moments it
   // expires, rather than one durable secret.
+  // `guild_id` is which install this member connected under. The app needs it
+  // to tell Initiative anything about the connection — the channel is addressed
+  // per guild — and a credential that lapses has to be reportable, or the
+  // platform goes on believing somebody is connected while every call fails.
   `CREATE TABLE IF NOT EXISTS connections (
      connection_ref     TEXT PRIMARY KEY,
+     guild_id           BIGINT,
      access_token       TEXT NOT NULL,
      refresh_token      TEXT,
      expires_at         TIMESTAMPTZ,
@@ -65,9 +70,14 @@ const SCHEMA = [
   // `code_verifier` is the PKCE half that stays on this side of the handshake
   // by definition — only its hash is sent to GitHub — so an intercepted
   // callback is worth nothing without the row.
+  // `guild_id` is carried from the moment Initiative hands the member over,
+  // not read back off the callback: GitHub controls that query string and
+  // echoes only `state`, so a value that arrived there would be a value the
+  // redirect supplied rather than one bound to this flow.
   `CREATE TABLE IF NOT EXISTS oauth_states (
      state          TEXT PRIMARY KEY,
      connection_ref TEXT NOT NULL,
+     guild_id       BIGINT,
      code_verifier  TEXT,
      expires_at     TIMESTAMPTZ NOT NULL
    )`,

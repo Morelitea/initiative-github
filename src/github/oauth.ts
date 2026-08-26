@@ -38,6 +38,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
 import { config } from "../config.js";
+import { initiative } from "../initiative.js";
 import { pool } from "../db.js";
 import { page } from "../page.js";
 import { CALLBACK_PATH } from "../routes.js";
@@ -69,7 +70,8 @@ const TOKEN_URL = `${config.github.webBase}/login/oauth/access_token`;
  * questions and neither substitutes for the other.
  */
 async function beginFlow(
-  connectionRef: string
+  connectionRef: string,
+  guildId: number
 ): Promise<{ state: string; challenge: string }> {
   const state = randomUUID();
   // 32 bytes as base64url is 43 characters — the shortest verifier the spec
@@ -77,9 +79,9 @@ async function beginFlow(
   const verifier = randomBytes(32).toString("base64url");
 
   await pool.query(
-    `INSERT INTO oauth_states (state, connection_ref, code_verifier, expires_at)
-     VALUES ($1, $2, $3, now() + ($4 || ' minutes')::interval)`,
-    [state, connectionRef, verifier, String(STATE_TTL_MINUTES)]
+    `INSERT INTO oauth_states (state, connection_ref, guild_id, code_verifier, expires_at)
+     VALUES ($1, $2, $3, $4, now() + ($5 || ' minutes')::interval)`,
+    [state, connectionRef, guildId, verifier, String(STATE_TTL_MINUTES)]
   );
   // Swept here rather than by a job: the table is small, and a sweep that runs
   // when somebody connects cannot fall behind in a way that matters.
@@ -105,8 +107,11 @@ function authorizeParams(state: string, challenge: string): URLSearchParams {
 }
 
 /** Where to send the member so GitHub can authorize them. */
-export async function beginOAuth(connectionRef: string): Promise<string> {
-  const { state, challenge } = await beginFlow(connectionRef);
+export async function beginOAuth(
+  connectionRef: string,
+  guildId: number
+): Promise<string> {
+  const { state, challenge } = await beginFlow(connectionRef, guildId);
   const query = authorizeParams(state, challenge);
   return `${config.github.webBase}/login/oauth/authorize?${query}`;
 }
@@ -124,9 +129,12 @@ export async function beginOAuth(connectionRef: string): Promise<string> {
  * called, since the slug is the only thing the install URL needs that the
  * authorize URL does not.
  */
-export async function beginInstall(connectionRef: string): Promise<string> {
+export async function beginInstall(
+  connectionRef: string,
+  guildId: number
+): Promise<string> {
   const app = await appIdentity();
-  const { state, challenge } = await beginFlow(connectionRef);
+  const { state, challenge } = await beginFlow(connectionRef, guildId);
   const query = authorizeParams(state, challenge);
   if (!app) return `${config.github.webBase}/login/oauth/authorize?${query}`;
   return `${config.github.webBase}/apps/${app.slug}/installations/new?${query}`;
@@ -167,17 +175,19 @@ function lapsesAt(seconds: number | undefined): Date | null {
 /** Store what an exchange produced, under the handle it belongs to. */
 async function store(
   connectionRef: string,
+  guildId: number,
   tokens: TokenResponse,
   accountLabel: string | null
 ): Promise<void> {
   await pool.query(
     `INSERT INTO connections (
-       connection_ref, access_token, refresh_token,
+       connection_ref, guild_id, access_token, refresh_token,
        expires_at, refresh_expires_at, account_label
      )
-     VALUES ($1, $2, $3, $4, $5, $6)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (connection_ref) DO UPDATE
-        SET access_token       = EXCLUDED.access_token,
+        SET guild_id           = EXCLUDED.guild_id,
+            access_token       = EXCLUDED.access_token,
             refresh_token      = EXCLUDED.refresh_token,
             expires_at         = EXCLUDED.expires_at,
             refresh_expires_at = EXCLUDED.refresh_expires_at,
@@ -185,6 +195,7 @@ async function store(
             updated_at         = now()`,
     [
       connectionRef,
+      guildId,
       seal(tokens.access_token!),
       tokens.refresh_token ? seal(tokens.refresh_token) : null,
       lapsesAt(tokens.expires_in),
@@ -203,11 +214,12 @@ export async function completeOAuth(params: URLSearchParams): Promise<string> {
   // racing a second exchange of the same code.
   const claimed = await pool.query<{
     connection_ref: string;
+    guild_id: string | null;
     code_verifier: string | null;
   }>(
     `DELETE FROM oauth_states
       WHERE state = $1 AND expires_at > now()
-      RETURNING connection_ref, code_verifier`,
+      RETURNING connection_ref, guild_id, code_verifier`,
     [state]
   );
   const claim = claimed.rows[0];
@@ -241,7 +253,9 @@ export async function completeOAuth(params: URLSearchParams): Promise<string> {
   });
   const user = (await who.json()) as { login?: string };
 
-  await store(claim.connection_ref, tokens, user.login ? `@${user.login}` : null);
+  const guildId = Number(claim.guild_id);
+  const label = user.login ? `@${user.login}` : null;
+  await store(claim.connection_ref, guildId, tokens, label);
 
   // A delivery that arrived because this person just installed the app carries
   // the installation as well. Nothing here needs it — the repository is what
@@ -253,7 +267,55 @@ export async function completeOAuth(params: URLSearchParams): Promise<string> {
     console.log(`a member authorized after installing (installation ${installationId})`);
   }
 
+  // Holding the credential is not the same as being connected, and this is the
+  // half that was missing. Initiative decides whether a source may run from its
+  // OWN record of the connection, not from anything this app knows: a member
+  // connection is satisfied when the app writes back a managed value, and one
+  // that declares fields nobody has written is never satisfied at all. So a
+  // token stored and never announced is a member who authorized GitHub and
+  // still cannot see a single tile.
+  if (!(await announce(guildId, claim.connection_ref, user.login ?? null, label))) {
+    return page(
+      "Nearly there",
+      "GitHub authorized this app, but Initiative did not record it. Try " +
+        "connecting again from the app's settings — nothing was lost."
+    );
+  }
+
   return page("Connected", "You can close this tab and go back to Initiative.");
+}
+
+/**
+ * Tell Initiative this member is connected, or that they no longer are.
+ *
+ * The value written is the GitHub login and nothing else. It is not a
+ * credential — the token stays sealed in this app's own database — but the
+ * platform needs *something* stored against the connection, because that is
+ * precisely how it decides a per-member connection is satisfied. Passing `null`
+ * clears it, which is how a credential that lapsed stops reading as connected.
+ *
+ * Never throws. A platform that is unreachable is a connection this app holds
+ * and Initiative does not yet know about, which the caller reports honestly
+ * rather than turning into a failed connect.
+ */
+async function announce(
+  guildId: number,
+  connectionRef: string,
+  login: string | null,
+  accountLabel: string | null
+): Promise<boolean> {
+  if (!Number.isInteger(guildId)) return false;
+  try {
+    await initiative.writeConnection(guildId, connectionRef, {
+      values: { account_login: login },
+      status: login ? "connected" : "pending",
+      ...(accountLabel ? { account_label: accountLabel } : {}),
+    });
+    return true;
+  } catch (error) {
+    console.error(`could not report connection ${connectionRef}`, error);
+    return false;
+  }
 }
 
 /**
@@ -271,13 +333,14 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
   try {
     await client.query("BEGIN");
     const locked = await client.query<{
+      guild_id: string | null;
       access_token: string;
       refresh_token: string | null;
       account_label: string | null;
       stale: boolean;
       renewable: boolean;
     }>(
-      `SELECT access_token, refresh_token, account_label,
+      `SELECT guild_id, access_token, refresh_token, account_label,
               (expires_at IS NOT NULL
                  AND expires_at <= now() + ($2 || ' seconds')::interval) AS stale,
               (refresh_expires_at IS NULL OR refresh_expires_at > now()) AS renewable
@@ -309,6 +372,7 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
         connectionRef,
       ]);
       await client.query("COMMIT");
+      await disconnect(row.guild_id, connectionRef);
       return null;
     }
 
@@ -325,6 +389,7 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
         connectionRef,
       ]);
       await client.query("COMMIT");
+      await disconnect(row.guild_id, connectionRef);
       return null;
     }
 
@@ -354,6 +419,25 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
   } finally {
     client.release();
   }
+}
+
+/**
+ * Say that a credential this app was holding is gone.
+ *
+ * Called after the transaction has committed, never inside it: this is a
+ * network call, and holding a row lock across one would make every other
+ * refresh for that member wait on a platform that may be unreachable.
+ *
+ * Without it the picture goes permanently stale in the direction that matters.
+ * This app forgets a lapsed credential and reports nothing, so Initiative goes
+ * on showing the member as connected, offering them no way to reconnect, while
+ * every tile they own answers `not-connected` from the app's side.
+ */
+async function disconnect(guildId: string | null, connectionRef: string): Promise<void> {
+  // A row written before the guild was carried through the flow has none. There
+  // is nothing to address the channel with, and nothing to be done about it.
+  if (guildId === null) return;
+  await announce(Number(guildId), connectionRef, null, null);
 }
 
 /** The credential behind a handle, or null if that member has not connected. */

@@ -107,9 +107,33 @@ export const manifest: Manifest = {
         es: "Tu cuenta de GitHub",
         fr: "Votre compte GitHub",
       },
-      // No fields: the vendor flow produces the credential, and this app holds
-      // it rather than anyone typing it in.
-      fields: [],
+      // One field, and nobody types it. The vendor flow produces the
+      // credential, this app holds it sealed, and what goes here is the GitHub
+      // login it was obtained for — `managed`, so only the app may write it.
+      //
+      // It is not decoration and it is not a credential. The platform decides
+      // whether a per-member connection is satisfied from what is *stored
+      // against it*, and a connection declaring no fields can never be
+      // satisfied by anything — so with `fields: []` a member could authorize
+      // GitHub, have their token sealed here, and still be told to connect by
+      // every tile they own, permanently.
+      //
+      // Writing the login rather than the token is the deliberate half: the
+      // platform learns that this member connected and as whom, and holds
+      // nothing that could act on their behalf.
+      fields: [
+        {
+          key: "account_login",
+          type: "string",
+          managed: true,
+          label: {
+            en: "GitHub login",
+            de: "GitHub-Anmeldename",
+            es: "Usuario de GitHub",
+            fr: "Identifiant GitHub",
+          },
+        },
+      ],
       connect_path: CONNECT_PATH,
       access_hint: {
         api: "GitHub",
