@@ -123,6 +123,28 @@ guild admin — and everything below follows from having one.
   somebody's deployment, and that stays first-party — an app declares what its
   vendor did and stops there. `automations` is not a feature this app declares.
 
+### Fixed
+
+- **A member who connected their GitHub account was still told to connect, by
+  every tile, forever.** The app stored the credential and never told Initiative
+  it had one.
+
+  The platform decides whether a per-member connection may be used from its own
+  record — `is_satisfied` reads what is stored *against the connection*, and a
+  connection declaring no fields is never satisfied by anything. `account`
+  declared `fields: []`, so there was nothing to store and nothing to satisfy
+  it, and the write-back that would have stored it was never called.
+
+  Three things close it: `account` declares one `managed` field carrying the
+  GitHub login — not the token, which stays sealed here — the callback writes
+  it back, and the guild id needed to address that write is carried from the
+  handoff through `oauth_states` rather than read off a callback GitHub
+  controls. A credential that later lapses is now reported too, so the platform
+  stops showing somebody as connected while every call fails.
+
+  It predates this release and only broke `review-queue`, which is why it was
+  not noticed; moving every source onto the same gate made it total.
+
 ### Changed
 
 - **Every source runs on the caller's own GitHub credential.** Not the

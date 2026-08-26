@@ -362,6 +362,13 @@ createdb initiative_github_test
 DATABASE_URL=postgres://localhost/initiative_github_test npm test
 ```
 
+The schema is applied with `CREATE TABLE IF NOT EXISTS` and there is no
+column-by-column upgrade path — nothing is deployed anywhere that would need
+one. The consequence lands during development rather than in production: a
+database created before a column was added does not get it, and the failure is
+a runtime `column … does not exist` rather than anything at boot. Drop and
+recreate it when that happens.
+
 Then an operator registers it: the deployment fetches
 `/.well-known/initiative-app.json`, posts a challenge to `/v1/handshake`, and
 both ends prove they hold the same secret without either sending it.

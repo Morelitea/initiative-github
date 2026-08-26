@@ -238,8 +238,28 @@ describe("the choices this app makes", () => {
     const account = manifest.connections?.find((c) => c.id === "account");
     expect(account?.scope).toBe("interactive");
     expect(account?.connect_path).toBeTruthy();
-    // And nothing for anyone to type: the vendor flow produces it.
-    expect(account?.fields).toEqual([]);
+
+    // And nothing for anyone to type: the vendor flow produces it, so every
+    // field is `managed`. This used to assert no fields at all, which is a
+    // stronger statement of the same intent and was wrong for a reason nothing
+    // here could see — the platform can never satisfy a connection that
+    // declares none, so a member who connected was told to connect forever.
+    expect(account?.fields.length).toBeGreaterThan(0);
+    for (const field of account?.fields ?? []) {
+      expect(field.managed, `${field.key} is typed by a person`).toBe(true);
+      expect(field.required, `${field.key} is required of a person`).toBeUndefined();
+    }
+  });
+
+  it("stores a name against the connection, never a credential", () => {
+    // What the platform holds for a member is a login. The token stays sealed
+    // in this app's own database — Initiative learns that somebody connected
+    // and as whom, and holds nothing that could act for them.
+    const account = manifest.connections?.find((c) => c.id === "account");
+    for (const field of account?.fields ?? []) {
+      expect(field.type, `${field.key} is a secret`).not.toBe("secret");
+    }
+    expect(account?.fields.map((field) => field.key)).toEqual(["account_login"]);
   });
 
   it("asks an admin for an account, and for nothing it can work out itself", () => {
