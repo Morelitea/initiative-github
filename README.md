@@ -527,6 +527,277 @@ On github.com they are `api.github.com` and `github.com` and both default
 correctly; on Enterprise they are different shapes of the same host, so an app
 that configures one and hardcodes the other works everywhere except there.
 
+## Setting it up beside a self-hosted Initiative
+
+Start to finish, for somebody running Initiative from its own
+`docker-compose.yml` on one machine. No Kubernetes, no Helm — two more
+containers beside the two you already have.
+
+At the end: this app registered with your Initiative, a GitHub App registered
+to your account, and the widgets installable in your guild.
+
+### First, one decision
+
+**Two addresses matter and they have different requirements.** Getting this
+wrong is the thing that wastes an afternoon.
+
+`APP_PUBLIC_URL` is where a **browser** reaches this app. GitHub redirects a
+member's browser there after they authorize, and that browser is on your
+machine — so `http://localhost:8080` is a perfectly good answer.
+
+The **webhook** is different: GitHub's own servers post to it, and they cannot
+reach your laptop. So on a localhost setup you simply do not get deliveries.
+
+| Without a public address | With a tunnel |
+| --- | --- |
+| Dashboard widgets work | Dashboard widgets work |
+| Connecting your account works | Connecting your account works |
+| Installs are noticed within 5 minutes, by the poll | Installs are noticed in seconds |
+| Repository events are never republished | Repository events reach subscribers |
+
+If that first column is fine, use `http://localhost:8080` and skip every mention
+of a tunnel below. If you want events, put something like `cloudflared tunnel
+--url http://localhost:8080` in front of it and use the address it prints
+everywhere `APP_PUBLIC_URL` appears — **including on the GitHub App form**, which
+matches it exactly.
+
+### Step 1 — Register the GitHub App
+
+This is a *GitHub App*, not an OAuth App, and it is registered once per
+deployment because GitHub matches every URL on it against a live host.
+
+Print the exact fields for your address:
+
+```bash
+git clone https://github.com/Morelitea/initiative-github
+cd initiative-github && npm install
+APP_PUBLIC_URL=http://localhost:8080 npm run github-app
+```
+
+Then open **<https://github.com/settings/apps/new>** and fill it in. For an
+organization use `https://github.com/organizations/YOUR-ORG/settings/apps/new`
+instead.
+
+| Field | Value |
+| --- | --- |
+| GitHub App name | anything unique — GitHub App names are global |
+| Homepage URL | `https://github.com/Morelitea/initiative-github` |
+| Callback URL | `http://localhost:8080/connect/github/callback` |
+| Expire user authorization tokens | **checked** |
+| Request user authorization (OAuth) during installation | **checked** |
+| Setup URL | `http://localhost:8080/setup/github` |
+| Webhook → Active | checked if you have a tunnel, **unchecked** otherwise |
+| Webhook URL | `http://localhost:8080/webhooks/github` |
+| Webhook secret | `openssl rand -hex 32` — keep it |
+| Where can this be installed | Any account |
+
+Then **Repository permissions**: Issues → *Read and write*, Pull requests →
+*Read and write*, Dependabot alerts → *Read-only*. And **Organization
+permissions**: Projects → *Read and write*.
+
+> Dependabot alerts is spelled `vulnerability_alerts` in the API and *Dependabot
+> alerts* on the form. Projects at the **organization** level is the one that
+> covers Projects v2; the repository-level *Projects* is the older classic board
+> and is not the same permission.
+
+Under **Subscribe to events**, tick **Issues** and **Pull request**. Skip this
+if you left the webhook inactive.
+
+Create it. On the page that follows, collect four things:
+
+1. **Client ID** — shown at the top.
+2. **Client secret** — *Generate a new client secret*, copy it now.
+3. **Private key** — *Generate a private key*. A `.pem` downloads.
+4. **Webhook secret** — the value you generated above.
+
+### Step 2 — Make the secrets the two containers share
+
+```bash
+openssl rand -hex 32            # → GITHUB_APP_SECRET, shared with Initiative
+openssl rand -base64 32         # → GITHUB_ENCRYPTION_KEY, seals member tokens
+openssl genrsa 2048 > platform-signing.pem   # Initiative's app-platform key
+base64 -w0 your-app.private-key.pem          # → GITHUB_APP_PRIVATE_KEY
+```
+
+The last one matters: a PEM has newlines and an environment variable is one
+line, so this app reads the key as base64 of the whole file. (It also accepts a
+real PEM or one with `\n` typed literally — all three work.)
+
+Put them in the `.env` beside your `docker-compose.yml`:
+
+```bash
+GITHUB_APP_SECRET=...
+GITHUB_ENCRYPTION_KEY=...
+GITHUB_CLIENT_ID=Iv23li...
+GITHUB_CLIENT_SECRET=...
+GITHUB_APP_PRIVATE_KEY=LS0tLS1CRUdJTiBS...
+GITHUB_WEBHOOK_SECRET=...
+GITHUB_APP_PUBLIC_URL=http://localhost:8080
+```
+
+### Step 3 — Tell Initiative the app exists
+
+Two files beside your compose. First `app-services.json`:
+
+```json
+[
+  {
+    "public_id": "morelitea.github",
+    "base_url": "http://initiative-github:8080",
+    "allowed_origins": ["http://localhost:8080"],
+    "secret_env": "GITHUB_APP_SECRET",
+    "grants": [],
+    "mandatory": false
+  }
+]
+```
+
+`base_url` is how **Initiative's container** reaches the app — a service name on
+the compose network, not localhost. `allowed_origins` is the browser-facing
+address, and is worth setting rather than leaving empty: empty defaults it to
+`base_url`, which would publish an address no browser can resolve.
+
+Then get the catalog entries, without which the app registers and **no guild can
+install it**:
+
+```bash
+mkdir -p catalog
+curl -L -o catalog/morelitea.github.json \
+  https://github.com/Morelitea/initiative-github/releases/latest/download/morelitea.github.json
+curl -L -o catalog/morelitea.github-overview.json \
+  https://github.com/Morelitea/initiative-github/releases/latest/download/morelitea.github-overview.json
+```
+
+The second is a companion dashboard with this app's four widgets already laid
+out — installable separately, and the quickest way to see anything.
+
+Now add to the **`initiative`** service in your compose:
+
+```yaml
+    volumes:
+      - ./uploads:/app/uploads
+      - ./app-services.json:/app/app-services.json:ro
+      - ./catalog:/app/catalog:ro
+    environment:
+      # …everything already there, plus:
+      APP_SERVICES_CONFIG: /app/app-services.json
+      MARKETPLACE_EXTRA_CATALOG_DIR: /app/catalog
+      GITHUB_APP_SECRET: ${GITHUB_APP_SECRET:?set it in .env}
+      # Signs the tokens Initiative presents to apps. Without it registrations
+      # reconcile and then fail verification, permanently.
+      APP_PLATFORM_SIGNING_PRIVATE_KEY_PEM: |
+        -----BEGIN PRIVATE KEY-----
+        ...paste platform-signing.pem here, indented like this...
+        -----END PRIVATE KEY-----
+      # Hourly by default, which is a long time to watch a "pending" row while
+      # you are setting up. Put it back afterwards.
+      APP_SERVICE_VERIFY_INTERVAL_SECONDS: 60
+```
+
+### Step 4 — Add the app and its database
+
+```yaml
+  initiative-github-db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: github
+      POSTGRES_PASSWORD: github
+      POSTGRES_DB: initiative_github
+    volumes:
+      - github_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U github"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  initiative-github:
+    image: ghcr.io/morelitea/initiative-github:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://github:github@initiative-github-db:5432/initiative_github
+      # Server-to-server: how THIS container reaches Initiative.
+      INITIATIVE_BASE_URL: http://initiative:8173
+      # Browser-facing: where GitHub sends a member back.
+      APP_PUBLIC_URL: ${GITHUB_APP_PUBLIC_URL:-http://localhost:8080}
+      INITIATIVE_APP_SECRET: ${GITHUB_APP_SECRET:?set it in .env}
+      APP_ENCRYPTION_KEY: ${GITHUB_ENCRYPTION_KEY:?set it in .env}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:?}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:?}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?}
+    depends_on:
+      initiative-github-db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+```
+
+and beside the existing `postgres_data:` volume, add `github_data:`.
+
+`INITIATIVE_APP_SECRET` here and `GITHUB_APP_SECRET` on Initiative are **the same
+value under two names** — each side calls it what it is to them. That is the
+whole handshake: both prove they hold it, neither sends it.
+
+### Step 5 — Start it, and check
+
+```bash
+docker compose up -d
+curl http://localhost:8080/readyz                       # {"ok":true}
+curl http://localhost:8080/.well-known/initiative-app.json | head -c 80
+docker compose logs initiative | grep "app services"    # 1 created
+```
+
+Within a minute the registration verifies. `1 created` followed by nothing else
+means Initiative wrote the row and could not reach the app — check `base_url`
+matches the service name.
+
+### Step 6 — Install it in your guild
+
+In Initiative: **guild settings → Apps**. *GitHub* is there; install it. Then
+open its settings and fill in:
+
+- **Owner or organization** — your GitHub username, or the org's name. Just the
+  account: `octocat`, not `octocat/hello-world`.
+- **Repositories** — comma-separated, or leave blank for every repository the
+  installation covers.
+
+Install **GitHub overview** the same way for a dashboard that already has the
+four widgets on it.
+
+### Step 7 — Install the GitHub App on your account
+
+The half GitHub owns. Visit `http://localhost:8080/install/github` and it
+redirects to your app's install page — choose the account and which repositories
+it may see.
+
+Installing and authorizing are one trip here, so you will likely come back
+already connected.
+
+### Step 8 — Connect your account
+
+If step 7 did not do it: in the app's settings in Initiative, **Your GitHub
+account → Connect**. You are sent to GitHub, you authorize, you come back.
+
+Every widget runs on *your* credential, so a member who has not connected sees
+"connect your account" rather than somebody else's numbers, and what you see is
+exactly what you can see at GitHub.
+
+### When something is wrong
+
+| What you see | What it means |
+| --- | --- |
+| Container exits immediately | A required setting is missing; the log names it. |
+| `GITHUB_APP_PRIVATE_KEY is not a PEM private key` | The base64 lost a character, or you pasted the `.pem` path rather than its contents. |
+| Registration stuck `pending` | Initiative cannot reach `base_url`, or the two secrets differ. |
+| Every tile says *connect your account* | You have not connected, or the write-back failed — see the next row. |
+| *Nearly there* after authorizing | GitHub authorized you and Initiative did not record it. Try again; nothing was lost. |
+| Tile says *not installed* | Step 7 is not done for the account in step 6, or you left **Repositories** blank and the app is not installed anywhere. |
+| Tile says *repository-required* | The install covers several repositories and the tile does not say which. Name one in the app's settings, or set `repo` on the dashboard tile. |
+| `column … does not exist` | Your database predates a column. There is no migration tool here — drop the database and let it recreate. |
+| Redirect mismatch at GitHub | `APP_PUBLIC_URL` and the Callback URL on the form disagree. They must match exactly, scheme and port included. |
+
 ## What is deliberately simple here
 
 The issue counts come back as a single number because that is what the widget
