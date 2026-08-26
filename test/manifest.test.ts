@@ -397,10 +397,14 @@ describe("what an endpoint says about itself", () => {
     }
   });
 
-  it("claims no picker, because everything it asks for is a GitHub thing", () => {
-    // A picker asks the consumer to draw a control over its OWN data. A
-    // repository name, an issue number, a login and a Projects v2 node id are
-    // none of them things Initiative can list.
+  it("claims no picker, because no consumer could populate one", () => {
+    // A picker names one of the CONSUMER's own controls and the vocabulary is
+    // open — but a consumer only offers what it can fill, and the automation
+    // editor fills its six from Initiative's own data. It holds no GitHub
+    // credential, so it can list nothing this app asks for.
+    //
+    // `project_id` is the trap: it names a Projects v2 board rather than an
+    // Initiative project, so the picker that looks right is the wrong one.
     for (const endpoint of endpoints()) {
       for (const param of endpoint.params ?? []) {
         expect(param.picker, `${endpoint.id}/${param.key}`).toBeUndefined();

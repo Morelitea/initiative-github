@@ -133,10 +133,14 @@ guild admin — and everything below follows from having one.
   `needs_subject` says what a run must already be *about*, and nothing here
   needs one — every endpoint names what it acts on, which is exactly what makes
   them usable from a nightly schedule that is about nothing at all, and
-  claiming a need would warn people off arrangements that work. `picker` asks
-  the consumer to draw a control over its *own* data, and a repository name, an
-  issue number and a Projects v2 node id are none of them things Initiative can
-  list.
+  claiming a need would warn people off arrangements that work. `picker` names
+  one of the consumer's own richer controls, and a consumer only offers what it
+  can populate — the automation editor fills its six from Initiative's own data
+  and holds no GitHub credential to list anything this app asks for.
+  `project_id` is the one that would look right and be wrong: it names a board
+  at GitHub, not an Initiative project. A repository picker is not ruled out by
+  the design; it would need this app to declare a read that lists them, which is
+  a bigger decision than a hint on a param.
 
   What a read cannot say is worth knowing too: the return vocabulary is four
   scalar types and a list flag, so the review queue's rows and the throughput

@@ -87,12 +87,25 @@ function text(en: string, de: string, es: string, fr: string): LocalizedText {
  * and leaves whoever is wiring it up guessing at `option_id`.
  *
  * **No `picker` on any of them**, which is a decision rather than an omission.
- * A picker asks a consumer to draw a richer control over its *own* data — an
- * Initiative project, a tag — and everything asked for here is a GitHub thing:
- * a repository name, an issue number, a login, a node id off a Projects v2
- * board. Initiative cannot list any of those, so naming a picker would name a
- * control nobody can draw, and a consumer that does not know the name falls
- * back to the plain field it was already drawing.
+ * A picker names one of the *consumer's* richer controls — the vocabulary is
+ * open and belongs to whoever draws it — and it is a hint rather than a
+ * promise: the value on the wire is the same either way, so a name the consumer
+ * does not know falls back to the plain field rather than losing the param.
+ *
+ * There is nothing here to ask for. It is not that a picker must name something
+ * inside Initiative; it is that a consumer can only offer a control it can
+ * populate, and the automation editor populates its six — a project, a task, a
+ * document, a calendar, a queue, an initiative — from data it already holds. It
+ * holds no GitHub credential, so it can list none of what this app asks for.
+ *
+ * `project_id` is the trap worth naming. It is a *Projects v2 board*, not an
+ * Initiative project, so `picker: "project"` would draw a control that stores an
+ * Initiative id in a field this app hands to GitHub as a node id — right-looking
+ * and wrong.
+ *
+ * What would change this is not a name but a source for the options: a consumer
+ * could offer a repository picker if this app declared a read that lists them.
+ * That is a bigger decision than a hint on a param, and it is not this change.
  */
 function param(
   key: string,
