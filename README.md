@@ -380,9 +380,9 @@ ghcr.io/morelitea/initiative-github:latest
 ```
 
 Published on tag for `linux/amd64` and `linux/arm64`. `/healthz` is liveness;
-`/readyz` additionally proves the database is reachable, so a pod that cannot
-serve a source is not sent traffic. `SIGTERM` finishes in-flight requests before
-the pool closes.
+`/readyz` additionally proves the database is reachable, so an instance that
+cannot serve a source is not sent traffic. `SIGTERM` finishes in-flight requests
+before the pool closes.
 
 ### What it needs
 
@@ -508,8 +508,9 @@ number.
 ### Two addresses, deliberately separate
 
 `INITIATIVE_BASE_URL` is **server-to-server** — where this app fetches the keys
-a context token is verified against. In a cluster it should be the in-cluster
-Service, so verification does not depend on the public ingress being up.
+a context token is verified against. Where Initiative has a private address as
+well as a public one, use the private one: verification then does not depend on
+whatever fronts the public address being up.
 
 `APP_PUBLIC_URL` is **browser-facing**, and only that.
 
@@ -517,7 +518,7 @@ This app mounts no embedded surface, so it needs no third address for "where the
 iframe loads". An app that *does* embed needs one and must not reuse the
 server-to-server address for it: Initiative builds both the iframe URL and the
 page's `frame-src` from the registration's `embed_origin`, **falling back to
-`base_url` when it is unset** — which is how a cluster ends up framing an
+`base_url` when it is unset** — which is how a deployment ends up framing an
 address no browser can resolve.
 
 GitHub has the same split for the same reason, and it matters only on GitHub
@@ -530,8 +531,8 @@ that configures one and hardcodes the other works everywhere except there.
 ## Setting it up beside a self-hosted Initiative
 
 Start to finish, for somebody running Initiative from its own
-`docker-compose.yml` on one machine. No Kubernetes, no Helm — two more
-containers beside the two you already have.
+`docker-compose.yml` on one machine: two more containers beside the two you
+already have.
 
 At the end: this app registered with your Initiative, a GitHub App registered
 to your account, and the widgets installable in your guild.
@@ -545,26 +546,35 @@ wrong is the thing that wastes an afternoon.
 member's browser there after they authorize, and that browser is on your
 machine — so `http://localhost:8080` is a perfectly good answer.
 
-The **webhook** is different: GitHub's own servers post to it, and they cannot
-reach your laptop. So on a localhost setup you simply do not get deliveries.
+The **webhook** is different: GitHub's own servers post to it, so it has to be
+an address reachable from outside your machine.
 
-| Without a public address | With a tunnel |
+If you are already following Initiative's own advice to put it behind HTTPS —
+Caddy, Traefik or nginx in front, as its installation checklist says — then this
+app is one more hostname on the same proxy, pointed at port 8080. Use that
+hostname everywhere `APP_PUBLIC_URL` appears below, **including on the GitHub
+App form**, which matches it exactly.
+
+If you are trying it out on one machine with nothing in front, use
+`http://localhost:8080` and leave the webhook off. Here is what that costs:
+
+| On localhost | Behind a public hostname |
 | --- | --- |
 | Dashboard widgets work | Dashboard widgets work |
 | Connecting your account works | Connecting your account works |
 | Installs are noticed within 5 minutes, by the poll | Installs are noticed in seconds |
 | Repository events are never republished | Repository events reach subscribers |
 
-If that first column is fine, use `http://localhost:8080` and skip every mention
-of a tunnel below. If you want events, put something like `cloudflared tunnel
---url http://localhost:8080` in front of it and use the address it prints
-everywhere `APP_PUBLIC_URL` appears — **including on the GitHub App form**, which
-matches it exactly.
+Nothing about that is one-way: the address lives in one environment variable and
+one field on the GitHub App form, so moving from the first column to the second
+later is editing both and restarting.
 
 ### Step 1 — Register the GitHub App
 
-This is a *GitHub App*, not an OAuth App, and it is registered once per
-deployment because GitHub matches every URL on it against a live host.
+A GitHub App is a party at GitHub in its own right. It has an identity it signs
+with, an organization installs it and chooses which repositories it may see, and
+members separately authorize it to act as themselves. You register one per
+deployment, because GitHub matches every URL on it against a live host.
 
 Print the exact fields for your address:
 
@@ -595,10 +605,10 @@ Then **Repository permissions**: Issues → *Read and write*, Pull requests →
 *Read and write*, Dependabot alerts → *Read-only*. And **Organization
 permissions**: Projects → *Read and write*.
 
-> Dependabot alerts is spelled `vulnerability_alerts` in the API and *Dependabot
-> alerts* on the form. Projects at the **organization** level is the one that
-> covers Projects v2; the repository-level *Projects* is the older classic board
-> and is not the same permission.
+> Two of those have a near neighbour on the same form. Dependabot alerts is
+> spelled `vulnerability_alerts` in the API and *Dependabot alerts* on the page.
+> And Projects appears twice: take the **organization** one, which covers
+> Projects v2 boards — the repository one covers classic project boards.
 
 Under **Subscribe to events**, tick **Issues** and **Pull request**. Skip this
 if you left the webhook inactive.
