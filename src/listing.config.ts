@@ -56,13 +56,13 @@ export function listings(version: string): Listing[] {
     name: "GitHub",
     publisher: PUBLISHER,
     description:
-      "Your repository's issues and reviews, on a dashboard and in automations.",
+      "Your repository's issues, reviews and dependency alerts, on a dashboard.",
     long_description: [
       "See what your repository is doing without leaving Initiative.",
       "",
-      "A guild admin points the app at one repository and supplies read access once, and the issue count and the last fortnight's activity are there for everybody. Members who want their own review queue connect their own GitHub account; nobody else has to.",
+      "A guild admin names the organization once. Access is the GitHub App installation that organization granted — nobody pastes a token — so the issue count, the last fortnight's activity and the open Dependabot alerts are there for everybody. Members who want their own review queue connect their own GitHub account; nobody else has to.",
       "",
-      "It also contributes automation nodes: start a run when an issue is opened or a review is requested, and open an issue from one — as the member who set it up, never as the app.",
+      "An install can cover several repositories, and each dashboard says which one its tiles are about — so one team's board shows one team's repository.",
     ].join("\n"),
     version,
   });
@@ -75,7 +75,7 @@ export function listings(version: string): Listing[] {
       publisher: PUBLISHER,
       description: "The repository at a glance: open issues, reviews, throughput.",
       long_description:
-        "A ready-made arrangement of the GitHub app's three widgets. Install the GitHub app first — this dashboard draws its data from it.",
+        "A ready-made arrangement of the GitHub app's four widgets. Install the GitHub app first — this dashboard draws its data from it, and without it the tiles have nothing to read.",
       version,
     },
     layout: { columns: 12 },
@@ -88,15 +88,22 @@ export function listings(version: string): Listing[] {
         binding: { source_id: "open-issues" },
       },
       {
-        // Guild-scoped beside per-member on one dashboard, deliberately: the
-        // two either side of it answer for the whole guild, and this one
-        // answers for whoever is looking. A member who has not connected their
-        // account sees this tile ask them to, and the other two work.
+        // Guild-scoped either side of per-member on one dashboard, deliberately:
+        // the tiles around it answer for the whole guild, and this one answers
+        // for whoever is looking. A member who has not connected their account
+        // sees this tile ask them to, and the other three work.
         id: "reviews",
         type: appWidgetType(LISTING_UID, "review-queue"),
         title: "Waiting on your review",
-        grid: { x: 3, y: 0, w: 9, h: 3 },
+        grid: { x: 3, y: 0, w: 6, h: 3 },
         binding: { source_id: "review-queue" },
+      },
+      {
+        id: "alerts",
+        type: appWidgetType(LISTING_UID, "dependabot-alerts"),
+        title: "Dependabot alerts",
+        grid: { x: 9, y: 0, w: 3, h: 3 },
+        binding: { source_id: "dependabot-alerts" },
       },
       {
         id: "throughput",

@@ -29,12 +29,31 @@
  * that does not start.
  */
 
-function required(name: string): string {
+import { parseSetupTokens } from "initiative-app-kit";
+
+import { SETTINGS } from "./settings.js";
+
+type Required = (typeof SETTINGS.required)[number];
+type Optional = (typeof SETTINGS.optional)[number];
+
+function required(name: Required): string {
   const value = process.env[name];
   if (!value) {
     throw new Error(`${name} is required — see README.md`);
   }
   return value;
+}
+
+/** A setting that has a default. Named here so the contract stays complete. */
+function optional(name: Optional): string | undefined {
+  return process.env[name] || undefined;
+}
+
+/** `value` with every trailing `/` removed. */
+function withoutTrailingSlash(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") end -= 1;
+  return value.slice(0, end);
 }
 
 /**
@@ -46,10 +65,14 @@ function required(name: string): string {
  * whole file. All three are common enough that refusing two of them is a
  * deployment failure with a message about cryptography.
  */
-function privateKey(name: string): string {
+function privateKey(name: Required): string {
   const raw = required(name).trim();
+  // `split`/`join` rather than a pattern: the thing being replaced is the two
+  // literal characters a backslash and an `n`, and writing that as a pattern
+  // means escaping a backslash twice over — which is exactly the kind of
+  // expression that is read as correct and is not.
   const pem = raw.includes("-----BEGIN")
-    ? raw.replace(/\\n/g, "\n")
+    ? raw.split("\\n").join("\n")
     : Buffer.from(raw, "base64").toString("utf-8");
   if (!pem.includes("-----BEGIN")) {
     throw new Error(
@@ -61,7 +84,22 @@ function privateKey(name: string): string {
 }
 
 export const config = {
-  port: Number(process.env.PORT ?? 8080),
+  port: Number(optional("PORT") ?? 8080),
+
+  /**
+   * Turns on the one-click registration flow, and is the only thing guarding
+   * it. Unset by default, which is what an operator should return it to once
+   * they have their credentials: the routes it opens create a GitHub App and
+   * show its secrets, and they are needed once in a deployment's life.
+   *
+   * Not named for GitHub, because nothing about the shape is: any app with a
+   * per-deployment vendor registration needs the same switch, and the kit owns
+   * it so an operator learns one name rather than one per integration. More
+   * than one may be held — comma or space separated — which is what lets a
+   * second operator be let in, or a token replaced, without ending a flow
+   * somebody has already started.
+   */
+  setupTokens: parseSetupTokens(optional("INITIATIVE_APP_SETUP_TOKEN")),
 
   /** The shared secret this app's registration was wired with. */
   appSecret: required("INITIATIVE_APP_SECRET"),
@@ -74,7 +112,7 @@ export const config = {
   initiativeBaseUrl: required("INITIATIVE_BASE_URL"),
 
   /** Browser-facing: where GitHub redirects a member back to. */
-  publicUrl: required("APP_PUBLIC_URL").replace(/\/+$/, ""),
+  publicUrl: withoutTrailingSlash(required("APP_PUBLIC_URL")),
 
   /** Members' credentials and in-flight vendor handshakes live here. */
   databaseUrl: required("DATABASE_URL"),
@@ -116,10 +154,10 @@ export const config = {
     webhookSecret: required("GITHUB_WEBHOOK_SECRET"),
 
     /** Where the API answers. */
-    apiBase: (process.env.GITHUB_API_BASE ?? "https://api.github.com").replace(/\/+$/, ""),
+    apiBase: withoutTrailingSlash(optional("GITHUB_API_BASE") ?? "https://api.github.com"),
 
     /** Where a person is sent — authorize, install, and the token exchange. */
-    webBase: (process.env.GITHUB_WEB_BASE ?? "https://github.com").replace(/\/+$/, ""),
+    webBase: withoutTrailingSlash(optional("GITHUB_WEB_BASE") ?? "https://github.com"),
   },
 
   /**
@@ -133,5 +171,5 @@ export const config = {
    * after an admin filled the form in sends no signal Initiative knows about,
    * so this poll is what turns that install from `invalid` to `ok`.
    */
-  syncIntervalSeconds: Number(process.env.SYNC_INTERVAL_SECONDS ?? 300),
+  syncIntervalSeconds: Number(optional("SYNC_INTERVAL_SECONDS") ?? 300),
 } as const;

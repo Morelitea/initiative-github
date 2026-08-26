@@ -8,16 +8,25 @@
  *   public by design; it forbids anything whose secrecy could matter.
  * - **`/v1/handshake`** — the operator wiring this app up proves they hold the
  *   same secret, and so does this app. Neither sends it.
- * - **`/data/*` and `/actions/*`** — Initiative calling in, carrying a context
- *   token naming one guild, one install and one scope. Verified per call.
+ * - **`/data/*`** — Initiative calling in, carrying a context token naming one
+ *   guild, one install and one scope. Verified per call.
  * - **`/connect/*`, `/install/*`, `/setup/*`** — a person's browser, running
- *   the vendor's flow. Three plain pages and no embedded surface: a member
- *   connecting their own account, an org owner installing the GitHub App, and
- *   where GitHub returns them afterwards.
+ *   the vendor's flow. Plain pages and no embedded surface: a member connecting
+ *   their own account, an org owner installing the GitHub App, and — only while
+ *   an operator has switched it on — the two that register the GitHub App in
+ *   the first place.
  * - **`/webhooks/github`** — the *vendor* calling in, verified against GitHub's
- *   own webhook secret rather than against Initiative's. This is the trigger
- *   half of the automation surface: a delivery here becomes an event in every
- *   guild watching that repository.
+ *   own webhook secret rather than against Initiative's. An organization
+ *   installing this app, removing it, or changing which repositories it may see
+ *   arrives here, and re-runs the sync for the installs it affects; repository
+ *   activity arrives here too and is republished to whoever asked for it.
+ * - **`/v1/events*`, `/v1/operations`** — a *delegate* calling in, proving
+ *   itself with a token it signed and a key the deployment publishes. The only
+ *   surfaces here Initiative is not a party to: an automation service asks to
+ *   be told when something happens at GitHub, and asks this app to act at
+ *   GitHub on its behalf — because this app is the one holding the credential,
+ *   and that is the containment rather than an accident of layering. Nothing
+ *   about the dashboard depends on either.
  *
  * Calls in the other direction — pulling installs, emitting events — go through
  * `initiative.ts`, and everything about which installs exist comes from
@@ -31,11 +40,16 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import {
+  DelegationTokenError,
   JwksCache,
   answerChallenge,
   bearerToken,
+  delegateHeader,
+  parseInvoke,
   verifyContextToken,
+  verifyDelegationToken,
   type ContextClaims,
+  type DelegationClaims,
 } from "initiative-app-kit";
 
 import { config } from "./config.js";
@@ -46,14 +60,40 @@ import { page } from "./page.js";
 import {
   CALLBACK_PATH,
   CONNECT_PATH,
+  EVENTS_PATH,
   INSTALL_PATH,
+  OPERATIONS_PATH,
+  REGISTERED_PATH,
+  REGISTER_PATH,
   SETUP_PATH,
+  SUBSCRIPTIONS_PATH,
   WEBHOOK_PATH,
 } from "./routes.js";
-import { createIssue } from "./github/actions.js";
-import { issueThroughput, openIssues, reviewQueue } from "./github/queries.js";
+import {
+  listSubscriptions,
+  spendToken,
+  subscribe,
+  unsubscribe,
+} from "./events.js";
+import { invoke } from "./operations.js";
+import { EVENT_TYPES } from "./github/events.js";
+import { OPERATIONS } from "./github/operations.js";
+import {
+  dependabotAlerts,
+  issueThroughput,
+  openIssues,
+  reviewQueue,
+} from "./github/queries.js";
 import { installUrl } from "./github/app.js";
 import { beginInstall, beginOAuth, completeOAuth } from "./github/oauth.js";
+import {
+  authorized,
+  convert,
+  credentialsPage,
+  registerPage,
+  setupEnabled,
+  verifyState,
+} from "./github/setup.js";
 import {
   DELIVERY_HEADER,
   EVENT_HEADER,
@@ -63,7 +103,35 @@ import {
 } from "./github/webhooks.js";
 import { forgetInstall, startSync, syncInstall } from "./sync.js";
 
+/**
+ * One cache, two documents.
+ *
+ * Initiative's own signing key answers "did Initiative send this"; a delegate's
+ * key answers "did that delegate send this". Both are fetched from the same
+ * deployment and cached per document, so one instance serves both and neither
+ * set can verify the other's tokens.
+ */
 const jwks = new JwksCache();
+
+/**
+ * Whether `value` is a GitHub account login and nothing else.
+ *
+ * GitHub's own rule: letters, digits and hyphens, at most 39 characters. Worth
+ * checking because the value becomes a path segment in the URL an operator's
+ * browser is redirected to, and worth writing out because that is the sort of
+ * check a pattern is trusted for and quietly gets wrong.
+ */
+function isOrganizationLogin(value: string): boolean {
+  if (!value || value.length > 39) return false;
+  for (const character of value) {
+    const alphanumeric =
+      (character >= "a" && character <= "z") ||
+      (character >= "A" && character <= "Z") ||
+      (character >= "0" && character <= "9");
+    if (!alphanumeric && character !== "-") return false;
+  }
+  return true;
+}
 
 /** A header as one value; `node:http` gives an array for a repeated one. */
 function header(req: IncomingMessage, name: string): string | undefined {
@@ -112,12 +180,21 @@ function sendBytes(res: ServerResponse, status: number, payload: string): void {
 const MANIFEST_DOCUMENT = JSON.stringify(document);
 
 
-function sendPage(res: ServerResponse, html: string): void {
+function sendPage(
+  res: ServerResponse,
+  html: string,
+  options: { secret?: boolean } = {}
+): void {
   res.writeHead(200, {
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(html),
     // Not framed by anyone: this app mounts no embedded surface.
     "Content-Security-Policy": "frame-ancestors 'none'",
+    // One page here renders credentials. It must not sit in a shared cache, and
+    // the setup token must not travel onward in a Referer header to GitHub.
+    ...(options.secret
+      ? { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" }
+      : {}),
   });
   res.end(html);
 }
@@ -159,6 +236,58 @@ async function context(
     send(res, 401, { error: (error as Error).message });
     return null;
   }
+}
+
+/**
+ * Verify the delegation token on an inbound call from an automation service.
+ *
+ * The mirror of `context` above, for the other kind of caller, and it answers
+ * 401 itself for the same reason.
+ *
+ * Three things happen here and the order matters. The caller names which
+ * delegate it is, which decides *which* published key set is fetched — a
+ * selector, and nothing is believed on the strength of it. The signature then
+ * decides whether that name was true. And only then is the token spent: a
+ * delegation token is one-shot, and burning it before it verified would let
+ * anybody invalidate a real one by presenting a forgery with a guessed id.
+ */
+async function delegate(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<DelegationClaims | null> {
+  const token = bearerToken(req.headers);
+  const named = delegateHeader(req.headers);
+  if (!token || !named) {
+    send(res, 401, { error: "no delegation token" });
+    return null;
+  }
+
+  let claims: DelegationClaims;
+  try {
+    claims = await verifyDelegationToken(token, {
+      publicId: manifest.service.public_id,
+      delegate: named,
+      baseUrl: config.initiativeBaseUrl,
+      jwks,
+    });
+  } catch (error) {
+    // One sentence for every reason. Which of them applies is either the
+    // deployment's own wiring or a detail of the token, and neither is
+    // something to describe to a caller that has not proved anything yet.
+    if (error instanceof DelegationTokenError) {
+      send(res, 401, { error: "that token did not verify" });
+    } else {
+      console.error("delegation check failed", error);
+      send(res, 503, { error: "could not check that token" });
+    }
+    return null;
+  }
+
+  if (!(await spendToken(claims.jti, claims.expiresAt))) {
+    send(res, 401, { error: "that token has already been used" });
+    return null;
+  }
+  return claims;
 }
 
 export const server = createServer(async (req, res) => {
@@ -213,7 +342,16 @@ export const server = createServer(async (req, res) => {
     if (req.method === "GET" && path === "/data/review-queue") {
       const claims = await context(req, res, { scope: "data", sourceId: "review-queue" });
       if (!claims) return;
-      return send(res, 200, await reviewQueue(claims));
+      return send(res, 200, await reviewQueue(claims, url.searchParams));
+    }
+
+    if (req.method === "GET" && path === "/data/dependabot-alerts") {
+      const claims = await context(req, res, {
+        scope: "data",
+        sourceId: "dependabot-alerts",
+      });
+      if (!claims) return;
+      return send(res, 200, await dependabotAlerts(claims, url.searchParams));
     }
 
     if (req.method === "GET" && path === "/data/issue-throughput") {
@@ -222,20 +360,7 @@ export const server = createServer(async (req, res) => {
         sourceId: "issue-throughput",
       });
       if (!claims) return;
-      return send(res, 200, await issueThroughput(claims));
-    }
-
-    // --- actions, called by the automation service ------------------------
-    if (req.method === "POST" && path === "/actions/create-issue") {
-      // An `action` token, naming this operation. A token minted to fetch a
-      // source cannot run this — the scope is pinned per call.
-      const claims = await context(req, res, { scope: "action" });
-      if (!claims) return;
-      if (claims.action_id !== "create-issue") {
-        return send(res, 403, { error: "token is not for this operation" });
-      }
-      const body = JSON.parse((await readBody(req)).toString("utf-8"));
-      return send(res, 200, await createIssue(claims, body));
+      return send(res, 200, await issueThroughput(claims, url.searchParams));
     }
 
     // --- lifecycle ---------------------------------------------------------
@@ -313,7 +438,144 @@ export const server = createServer(async (req, res) => {
       );
     }
 
+    // --- registering this deployment's own GitHub App ----------------------
+    // Two routes that exist only while `INITIATIVE_APP_SETUP_TOKEN` is set. They
+    // create a GitHub App and show its secrets, which is a thing to be able to
+    // do once and then not be able to do — so "off" is `404`, indistinguishable
+    // from a deployment that never had the feature.
+    if (req.method === "GET" && (path === REGISTER_PATH || path === REGISTERED_PATH)) {
+      if (!setupEnabled()) return send(res, 404, { error: "no such route" });
+
+      if (path === REGISTER_PATH) {
+        // The token comes back rather than a yes, because the state minted for
+        // the round trip is signed with it — so removing one token ends the
+        // flows it opened without touching anybody else's.
+        const token = authorized(url.searchParams.get("token"));
+        if (!token) return send(res, 404, { error: "no such route" });
+        const org = url.searchParams.get("org");
+        // An organization login is a path segment on GitHub's own URL, and this
+        // one arrived in a query string. Read character by character rather than
+        // matched: the value decides what URL an operator's browser is sent to.
+        if (org !== null && !isOrganizationLogin(org)) {
+          return send(res, 400, { error: "that is not an organization login" });
+        }
+        return sendPage(res, registerPage(org, token), { secret: true });
+      }
+
+      // GitHub returns the operator here with a code and the state this app
+      // signed. The setup token is not in the redirect, so the state is what
+      // carries the authority — see `setup.ts`.
+      if (!verifyState(url.searchParams.get("state"))) {
+        return send(res, 404, { error: "no such route" });
+      }
+      const code = url.searchParams.get("code");
+      if (!code) return send(res, 400, { error: "no code" });
+
+      const credentials = await convert(code);
+      if (!credentials) {
+        return sendPage(
+          res,
+          page(
+            "Could not finish",
+            "GitHub would not exchange that code. It is good for an hour and " +
+              "for one attempt — start again from the setup link."
+          ),
+          { secret: true }
+        );
+      }
+      return sendPage(res, credentialsPage(credentials), { secret: true });
+    }
+
+    // --- what this app produces, and who has asked for it ------------------
+    // Unauthenticated, and it is the same list the manifest declares. A
+    // subscriber connecting directly needs to know what it may ask for, and
+    // making it prove itself to read a public vocabulary would be a credential
+    // spent on nothing.
+    if (req.method === "GET" && path === EVENTS_PATH) {
+      return send(res, 200, {
+        public_id: manifest.service.public_id,
+        event_types: EVENT_TYPES,
+      });
+    }
+
+    // Everything below is a delegate acting for one guild. The token names the
+    // guild; nothing in the request may widen that.
+    if (path === SUBSCRIPTIONS_PATH && (req.method === "POST" || req.method === "GET")) {
+      const claims = await delegate(req, res);
+      if (!claims) return;
+
+      if (req.method === "GET") {
+        return send(res, 200, {
+          items: await listSubscriptions(claims.signer.publicId, claims.guildId),
+        });
+      }
+
+      let body: unknown;
+      try {
+        body = JSON.parse((await readBody(req)).toString("utf-8"));
+      } catch {
+        return send(res, 400, { error: "body is not json" });
+      }
+      const result = await subscribe(claims.signer.publicId, claims.guildId, body);
+      if (!result.ok) return send(res, result.status, { error: result.error });
+      // The secret appears here and nowhere else, ever. A subscriber that loses
+      // it re-subscribes to the same address and is given a fresh one.
+      return send(res, 201, { ...result.view, secret: result.secret });
+    }
+
+    if (req.method === "DELETE" && path.startsWith(`${SUBSCRIPTIONS_PATH}/`)) {
+      const id = Number(path.slice(SUBSCRIPTIONS_PATH.length + 1));
+      if (!Number.isInteger(id)) return send(res, 404, { error: "no such subscription" });
+
+      const claims = await delegate(req, res);
+      if (!claims) return;
+      // Matched on the delegate and the guild as well as the id, so one
+      // subscriber cannot reach another's by guessing a number — and the
+      // delegate is the registration whose key verified, not a name it typed.
+      const removed = await unsubscribe(claims.signer.publicId, claims.guildId, id);
+      if (!removed) return send(res, 404, { error: "no such subscription" });
+      return send(res, 204, null);
+    }
+
+    // --- being asked to act at GitHub --------------------------------------
+    // The only surface here that writes. `GET` is the closed set of things this
+    // app will do, public like the manifest; `POST` runs one, and takes the
+    // same delegation token the subscriptions do.
+    if (path === OPERATIONS_PATH && (req.method === "GET" || req.method === "POST")) {
+      if (req.method === "GET") {
+        return send(res, 200, {
+          public_id: manifest.service.public_id,
+          operations: OPERATIONS,
+        });
+      }
+
+      const claims = await delegate(req, res);
+      if (!claims) return;
+
+      let body: unknown;
+      try {
+        body = JSON.parse((await readBody(req)).toString("utf-8"));
+      } catch {
+        return send(res, 400, { error: "body is not json" });
+      }
+      // The kit refuses an id this app does not declare, so nothing past here
+      // can name an operation that was not written for it.
+      const parsed = parseInvoke(body, OPERATIONS);
+      if (!parsed.ok) return send(res, 400, { error: parsed.error });
+      if (parsed.request.guild_id !== claims.guildId) {
+        return send(res, 403, { error: "that token is for another guild" });
+      }
+
+      const outcome = await invoke(claims, parsed.request);
+      if ("error" in outcome) return send(res, outcome.status, { error: outcome.error });
+      return send(res, 200, outcome);
+    }
+
     // --- the vendor calling in ---------------------------------------------
+    // This app subscribes to no repository activity. What arrives here is the
+    // installation lifecycle, which GitHub sends to every app whether it asked
+    // or not — and which is the one thing this app cannot work out for itself
+    // in time to matter.
     if (req.method === "POST" && path === WEBHOOK_PATH) {
       // Read as bytes and verified before anything parses them: a signature is
       // over what arrived, and a re-serialized object is different bytes.
@@ -335,7 +597,11 @@ export const server = createServer(async (req, res) => {
         return send(res, 400, { error: "body is not json" });
       }
 
-      const result = await handleDelivery(event, payload);
+      const result = await handleDelivery(
+        event,
+        payload,
+        header(req, DELIVERY_HEADER) ?? "",
+      );
       // 200 whatever the outcome. GitHub retries a failure, and a delivery this
       // app has no install for is not going to succeed on the second attempt —
       // the delivery id goes into the log so an admin can still find it.
@@ -344,10 +610,7 @@ export const server = createServer(async (req, res) => {
           `delivery ${header(req, DELIVERY_HEADER) ?? "?"} (${event}): ${result.reason}`
         );
       }
-      return send(res, 200, {
-        emitted: result.emitted,
-        ...(result.resynced === undefined ? {} : { resynced: result.resynced }),
-      });
+      return send(res, 200, { resynced: result.resynced, published: result.published });
     }
 
     return send(res, 404, { error: "no such route" });

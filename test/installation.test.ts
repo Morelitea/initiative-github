@@ -21,7 +21,7 @@ const {
   config: configCall,
   installs,
   reportStatus,
-  installationForRepo,
+  installationForOwner,
   rememberWorkspace,
   workspaceFor,
   forgetWorkspace,
@@ -31,7 +31,7 @@ const {
   config: vi.fn(),
   installs: vi.fn(),
   reportStatus: vi.fn(async () => ({})),
-  installationForRepo: vi.fn(async () => null as number | null),
+  installationForOwner: vi.fn(async () => null as number | null),
   rememberWorkspace: vi.fn(async () => {}),
   workspaceFor: vi.fn(async () => null as unknown),
   forgetWorkspace: vi.fn(async () => {}),
@@ -59,7 +59,7 @@ vi.mock("../src/github/app.js", async () => {
   const actual = await vi.importActual<typeof import("../src/github/app.js")>(
     "../src/github/app.js"
   );
-  return { ...actual, installationForRepo };
+  return { ...actual, installationForOwner };
 });
 
 import { forgetInstallation, installationToken } from "../src/github/app.js";
@@ -76,7 +76,7 @@ function installConfig(overrides: Record<string, unknown> = {}) {
     config_state: "ok",
     config_state_detail: null,
     needs_config: false,
-    connections: { workspace: { owner: "acme", repo: "widgets" } },
+    connections: { workspace: { owner: "acme", repos: "widgets" } },
     member_connections: [],
     ...overrides,
   };
@@ -95,27 +95,33 @@ describe("finding the guild's access", () => {
     // in the repository they were always going to fill in, and the app asks
     // GitHub whether it has been installed there.
     configCall.mockResolvedValue(installConfig());
-    installationForRepo.mockResolvedValue(4242);
+    installationForOwner.mockResolvedValue(4242);
 
     await expect(syncInstall(500)).resolves.toBe(true);
 
-    expect(installationForRepo).toHaveBeenCalledWith("acme", "widgets");
+    // Asked of the account, not of a repository: one grant covers every
+    // repository the organization chose, so asking per repository would be one
+    // call per repository to learn the same id.
+    expect(installationForOwner).toHaveBeenCalledWith("acme");
     expect(rememberWorkspace).toHaveBeenCalledWith(
       11,
       500,
-      { owner: "acme", repo: "widgets" },
+      { owner: "acme", repos: ["widgets"] },
       4242
     );
     expect(reportStatus).toHaveBeenCalledWith(500, { state: "ok" });
   });
 
-  it("says so when nobody has installed the app on that repository", async () => {
-    // The form is finished and the app is not installed where it points. That
-    // is a different problem with a different owner — somebody at GitHub, not
-    // the admin who just filled the form in — so it gets its own reason rather
-    // than reading as "not configured".
-    configCall.mockResolvedValue(installConfig());
-    installationForRepo.mockResolvedValue(null);
+  it("says so when nothing can be resolved without an installation", async () => {
+    // A form naming an account and no repositories, with nothing installed on
+    // that account: neither side has a list, so no tile can answer. A different
+    // problem with a different owner — somebody at GitHub, not the admin who
+    // just filled the form in — so it gets its own reason rather than reading
+    // as "not configured".
+    configCall.mockResolvedValue(
+      installConfig({ connections: { workspace: { owner: "acme", repos: "" } } })
+    );
+    installationForOwner.mockResolvedValue(null);
 
     await expect(syncInstall(500)).resolves.toBe(false);
 
@@ -125,18 +131,32 @@ describe("finding the guild's access", () => {
     });
   });
 
+  it("calls an install usable when the guild named its repositories", async () => {
+    // The change least privilege bought. Reads run on each member's own GitHub
+    // credential, so those tiles answer with or without an installation — and
+    // telling an admin their working dashboard is invalid would be false.
+    //
+    // What is still missing is the webhook, which is why the poll keeps
+    // looking rather than treating this as settled.
+    configCall.mockResolvedValue(installConfig());
+    installationForOwner.mockResolvedValue(null);
+
+    await expect(syncInstall(500)).resolves.toBe(true);
+    expect(reportStatus).toHaveBeenCalledWith(500, { state: "ok" });
+  });
+
   it("records the absence, so a source answers rather than guessing", async () => {
     // Written down as null rather than left at whatever it was. An install that
     // was working and has been uninstalled at GitHub has to stop working here.
     configCall.mockResolvedValue(installConfig());
-    installationForRepo.mockResolvedValue(null);
+    installationForOwner.mockResolvedValue(null);
 
     await syncInstall(500);
 
     expect(rememberWorkspace).toHaveBeenCalledWith(
       11,
       500,
-      { owner: "acme", repo: "widgets" },
+      { owner: "acme", repos: ["widgets"] },
       null
     );
   });
@@ -144,12 +164,34 @@ describe("finding the guild's access", () => {
   it("asks again on every sync, because an org can narrow what it granted", async () => {
     // Removing one repository from an installation is invisible from every
     // other angle: the installation still exists, the token still mints, and
-    // the calls quietly come back empty.
-    configCall.mockResolvedValue(installConfig());
-    installationForRepo.mockResolvedValueOnce(4242).mockResolvedValueOnce(null);
+    // the calls quietly come back empty. Checked on an install that named no
+    // repositories, since that is the one whose answer depends on the grant.
+    configCall.mockResolvedValue(
+      installConfig({ connections: { workspace: { owner: "acme", repos: "" } } })
+    );
+    installationForOwner.mockResolvedValueOnce(4242).mockResolvedValueOnce(null);
 
     await expect(syncInstall(500)).resolves.toBe(true);
     await expect(syncInstall(500)).resolves.toBe(false);
+  });
+
+  it("records the installation going away even where nothing stops working", async () => {
+    // The dashboard carries on — but the webhook does not, and the row is what
+    // routes a delivery back to a guild. Writing the absence down is how the
+    // next delivery for that installation finds nobody rather than finding a
+    // guild that has not been in it for a week.
+    configCall.mockResolvedValue(installConfig());
+    installationForOwner.mockResolvedValueOnce(4242).mockResolvedValueOnce(null);
+
+    await syncInstall(500);
+    await syncInstall(500);
+
+    expect(rememberWorkspace).toHaveBeenLastCalledWith(
+      11,
+      500,
+      { owner: "acme", repos: ["widgets"] },
+      null
+    );
   });
 
   it("does not go looking when there is no repository yet", async () => {
@@ -159,17 +201,17 @@ describe("finding the guild's access", () => {
 
     await expect(syncInstall(500)).resolves.toBe(false);
 
-    expect(installationForRepo).not.toHaveBeenCalled();
+    expect(installationForOwner).not.toHaveBeenCalled();
     // `needs_config` already says an admin has not finished; reporting
     // `invalid` as well would call an unfinished form a fault.
     expect(reportStatus).not.toHaveBeenCalled();
   });
 
   it("reports a finished form that still names nothing usable", async () => {
-    // `owner/repo` typed into one box, which would otherwise build a path with
-    // an extra segment in it and 404 forever.
+    // `owner/repo` typed into the owner box, which would otherwise build every
+    // URL with an extra segment in it and 404 forever.
     configCall.mockResolvedValue(
-      installConfig({ connections: { workspace: { owner: "acme/widgets", repo: "x" } } })
+      installConfig({ connections: { workspace: { owner: "acme/widgets" } } })
     );
 
     await expect(syncInstall(500)).resolves.toBe(false);
@@ -221,7 +263,7 @@ describe("letting go of an installation's token", () => {
       await installationToken(901);
       workspaceFor.mockResolvedValue({
         owner: "acme",
-        repo: "widgets",
+        repos: ["widgets"],
         installationId: 901,
       });
 
@@ -283,7 +325,7 @@ describe("letting go of an installation's token", () => {
       await installationToken(904);
       workspaceFor.mockResolvedValue({
         owner: "acme",
-        repo: "widgets",
+        repos: ["widgets"],
         installationId: 904,
       });
       installs.mockResolvedValue([{ install_id: 11, guild_id: 500, enabled: false }]);

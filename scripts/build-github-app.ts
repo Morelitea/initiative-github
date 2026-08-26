@@ -39,6 +39,7 @@ if (!publicUrl) {
 
 const manifest = githubAppManifest(publicUrl, {
   name: process.env.GITHUB_APP_NAME,
+  homepage: process.env.GITHUB_APP_HOMEPAGE,
 });
 
 writeFileSync("github-app.json", `${JSON.stringify(manifest, null, 2)}\n`, "utf-8");
@@ -51,10 +52,15 @@ process.stdout.write(
   [
     "wrote github-app.json",
     "",
+    "One click instead of this form: set GITHUB_APP_SETUP_TOKEN, start the app,",
+    "and open  <APP_PUBLIC_URL>/setup/github/register?token=...  — it posts this",
+    "manifest to GitHub and shows you the credentials. Otherwise, by hand:",
+    "",
     "Register it at:  https://github.com/settings/apps/new",
     "",
     `  GitHub App name       ${manifest.name}`,
     `  Homepage URL          ${manifest.url}`,
+    "                        (a link for a reader — not an address this app serves)",
     `  Callback URL          ${manifest.callback_urls[0]}`,
     "  Expire user tokens    yes",
     "  Request user auth     yes  (installing and connecting become one trip)",

@@ -29,11 +29,15 @@
  * @see https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app
  */
 
+import { stripTrailingSlashes } from "initiative-app-kit";
+
 import {
   CALLBACK_PATH,
+  REGISTERED_PATH,
   SETUP_PATH,
   WEBHOOK_PATH,
 } from "../routes.js";
+import { SUBSCRIBED_EVENTS } from "./events.js";
 
 /**
  * What this app asks an organization for, and nothing beyond it.
@@ -41,32 +45,87 @@ import {
  * Read this list against what the code does, because a reviewer at an
  * organization will:
  *
- *   * `issues: write` — the counts and the fortnight of activity are reads; the
- *     `create-issue` automation action is the write. Read alone would be enough
- *     for the dashboard, and is not enough for the automation node.
- *   * `pull_requests: read` — "which pull requests are waiting on my review".
+ *   * `issues: write` — reading is how many are open and a fortnight of opens
+ *     against closes; writing is opening one, commenting, closing, reopening
+ *     and labelling. Labels ride this permission rather than one of their own,
+ *     which is worth knowing before looking for a `labels` key that does not
+ *     exist. The `issues` deliveries this app republishes need only the read.
+ *   * `pull_requests: write` — reading is "which pull requests are waiting on
+ *     my review"; writing is requesting one. Commenting on a pull request does
+ *     *not* need this: pull requests and issues share a comments endpoint and a
+ *     number space, so a comment is an issues write wherever it lands.
+ *   * `vulnerability_alerts: read` — open Dependabot alerts, by severity. Note
+ *     the key: the permission is called "Dependabot alerts" everywhere a person
+ *     reads it and `vulnerability_alerts` everywhere a machine does, and a key
+ *     GitHub does not recognize is not an error — it is a permission that
+ *     silently was not asked for.
+ *   * `organization_projects: write` — moving a card on a Projects v2 board.
+ *     **The one permission here that reaches past a repository**, because a
+ *     board does: Projects v2 belongs to the organization, has no REST surface,
+ *     and has no repository-scoped equivalent. `repository_projects` is the
+ *     classic repo board and is a different, older thing. An organization that
+ *     does not want this should say so — the operation is the only thing that
+ *     uses it, and everything else here keeps working without it.
  *   * `metadata: read` — mandatory for every GitHub App, and granted implicitly
- *     by the two above. Stated so the list is the whole truth.
+ *     by the others. Stated so the list is the whole truth.
  *
  * Widening this is not free and not silent: GitHub asks every organization that
  * has already installed the app to approve the new permission, and the app
- * keeps the old grant until they do.
+ * keeps the old grant until they do — so a permission added later arrives
+ * broken for everybody who installed before it. Which is the argument for
+ * asking now rather than in pieces, and against asking for anything speculative:
+ * a permission with nothing behind it is one an organization grants for no
+ * feature, and a reviewer cannot tell "not used yet" from "used for something
+ * not described". Each of these arrived with the code that uses it, and
+ * `test/github-app.test.ts` is what keeps that true.
  */
 export const PERMISSIONS: Readonly<Record<string, string>> = {
   issues: "write",
-  pull_requests: "read",
+  pull_requests: "write",
+  vulnerability_alerts: "read",
+  organization_projects: "write",
   metadata: "read",
 };
 
 /**
- * Which deliveries this app is sent.
+ * Which deliveries this app subscribes to.
  *
- * `issues` and `pull_request` are the two the trigger nodes fire on. The
- * installation lifecycle — an org installing, uninstalling, or changing which
- * repositories the app can see — arrives whether or not it is subscribed to,
- * so it is not listed here and is still handled.
+ * Derived from the translator rather than written out here, which is the whole
+ * point of the file it comes from: an event handled in code but missing from
+ * this list never arrives, and an event on this list that nothing handles is
+ * delivery volume for nobody. Neither failure says anything at either end.
+ *
+ * Two things worth knowing about changing it:
+ *
+ *   * **Adding one is cheap; adding a permission is not.** A webhook event is
+ *     not a permission, so a delivery covered by a permission this app already
+ *     holds costs no organization a re-approval. Widening {@link PERMISSIONS}
+ *     is the opposite — every existing installation keeps the old grant until
+ *     somebody approves the new one.
+ *   * **The installation lifecycle is not here, and must not be.** GitHub's own
+ *     words: "All GitHub Apps receive this event by default. You cannot
+ *     manually subscribe to this event." Naming it would be asking for
+ *     something already arriving.
  */
-export const WEBHOOK_EVENTS: readonly string[] = ["issues", "pull_request"];
+export const WEBHOOK_EVENTS: readonly string[] = SUBSCRIBED_EVENTS;
+
+/**
+ * Where somebody deciding whether to install this app goes to read about it.
+ *
+ * The one URL on the registration that is **not** an address this deployment
+ * answers on. Everything else here — the callback, the setup page, the webhook
+ * — is matched exactly by GitHub against a live host, which is why each
+ * deployment registers its own app. This is a link on a page, so it should be
+ * the same stable place for all of them, and the project's own page is the only
+ * thing that is stable across self-hosters.
+ *
+ * An operator with somewhere better to send people overrides it. A private
+ * deployment pointing at an internal runbook is a perfectly good answer, and a
+ * URL nobody outside the company can open is not, which is why this is not
+ * defaulted to the deployment's own address: a homepage no reader can reach is
+ * worse than one that is merely generic.
+ */
+export const HOMEPAGE = "https://github.com/Morelitea/initiative-github";
 
 /** The registration, as GitHub's own manifest format. */
 export interface GithubAppManifest {
@@ -101,25 +160,40 @@ export interface GithubAppManifest {
  *     re-reads that on the next delivery anyway.
  *
  * @param publicUrl the deployment's `APP_PUBLIC_URL`, without a trailing slash
+ * @param options.homepage where to send a reader; not an address this app serves
  */
 export function githubAppManifest(
   publicUrl: string,
-  options: { name?: string; description?: string; public?: boolean } = {}
+  options: {
+    name?: string;
+    description?: string;
+    homepage?: string;
+    public?: boolean;
+  } = {}
 ): GithubAppManifest {
-  const base = publicUrl.replace(/\/+$/, "");
+  const base = stripTrailingSlashes(publicUrl);
   return {
     name: options.name ?? "Initiative for GitHub",
-    url: base,
+    // Deliberately not `base`. See HOMEPAGE: this is the one field a reader
+    // follows rather than a machine.
+    url: options.homepage ?? HOMEPAGE,
     hook_attributes: { url: `${base}${WEBHOOK_PATH}`, active: true },
-    // Where GitHub returns a person after they authorize, and — because
-    // `request_oauth_on_install` is on — after they install as well.
-    redirect_url: `${base}${CALLBACK_PATH}`,
+    // Three redirects, three audiences, and they are not interchangeable —
+    // which is easy to get wrong because all three are "where GitHub sends
+    // somebody afterwards":
+    //
+    //   * `redirect_url` — the *operator*, once, immediately after this
+    //     manifest creates the app. It carries the code that is exchanged for
+    //     the app's credentials, and it is never used again.
+    //   * `callback_urls` — a *member*, every time they authorize.
+    //   * `setup_url` — an *organization owner*, after they install.
+    redirect_url: `${base}${REGISTERED_PATH}`,
     callback_urls: [`${base}${CALLBACK_PATH}`],
     setup_url: `${base}${SETUP_PATH}`,
     description:
       options.description ??
-      "Brings a repository's issues and reviews into Initiative as dashboard " +
-        "widgets and automation nodes.",
+      "Brings a repository's issues, reviews and dependency alerts into " +
+        "Initiative as dashboard widgets.",
     // Installable by any organization, which is what a marketplace listing
     // implies: the guilds that install it are not the ones that deployed it.
     public: options.public ?? true,

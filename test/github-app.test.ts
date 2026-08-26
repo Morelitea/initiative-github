@@ -24,34 +24,25 @@ import { describe, expect, it } from "vitest";
 
 import { config } from "../src/config.js";
 import { appJwt } from "../src/github/app.js";
+import { SUBSCRIBED_EVENTS } from "../src/github/events.js";
+import { OPERATION_IDS, OPERATIONS } from "../src/github/operations.js";
 import {
+  HOMEPAGE,
   PERMISSIONS,
-  WEBHOOK_EVENTS,
   githubAppManifest,
 } from "../src/github/registration.js";
-import { EVENTS, translate } from "../src/github/webhooks.js";
 import { manifest } from "../src/manifest.config.js";
 import {
   CALLBACK_PATH,
   CONNECT_PATH,
   INSTALL_PATH,
+  REGISTERED_PATH,
   SETUP_PATH,
   WEBHOOK_PATH,
 } from "../src/routes.js";
 
 const PUBLIC_URL = config.publicUrl;
 const registration = githubAppManifest(PUBLIC_URL);
-
-/** One delivery of each kind this app subscribes to, as GitHub sends it. */
-const DELIVERIES: Record<string, Array<Record<string, unknown>>> = {
-  issues: [
-    { action: "opened", issue: { number: 1, title: "t", html_url: "u", labels: [] } },
-    { action: "closed", issue: { number: 1, title: "t", html_url: "u", labels: [] } },
-  ],
-  pull_request: [
-    { action: "review_requested", pull_request: { number: 2, title: "t", html_url: "u" } },
-  ],
-};
 
 describe("saying who this app is", () => {
   it("signs a JWT the private key actually backs", () => {
@@ -97,27 +88,56 @@ describe("saying who this app is", () => {
 });
 
 describe("the registration this app needs at GitHub", () => {
-  it("builds every URL from the one public address", () => {
+  it("builds every address it answers on from the one public address", () => {
     // A callback on one host and a webhook on another is a deployment that
     // half-works, and nothing at either end says which half.
-    const urls = [
-      registration.url,
+    const served = [
       registration.hook_attributes.url,
       registration.redirect_url,
       registration.setup_url,
       ...registration.callback_urls,
     ];
-    for (const url of urls) expect(url.startsWith(PUBLIC_URL)).toBe(true);
+    for (const url of served) expect(url.startsWith(PUBLIC_URL)).toBe(true);
+  });
+
+  it("points its homepage somewhere a reader can actually go", () => {
+    // The one field on the registration that is not an address this deployment
+    // answers on — it is a link, shown to whoever is deciding whether to
+    // install. Defaulting it to the deployment's own URL would send every
+    // reader at a container that serves them no page, and on a private
+    // deployment at a host they cannot resolve.
+    expect(registration.url).toBe(HOMEPAGE);
+    expect(registration.url.startsWith("https://")).toBe(true);
+    expect(registration.url.startsWith(PUBLIC_URL)).toBe(false);
+  });
+
+  it("lets an operator send readers somewhere of their own", () => {
+    const own = githubAppManifest(PUBLIC_URL, { homepage: "https://runbook.acme.test" });
+    expect(own.url).toBe("https://runbook.acme.test");
+    // And changing it moves nothing that GitHub matches.
+    expect(own.callback_urls).toEqual(registration.callback_urls);
+    expect(own.hook_attributes.url).toBe(registration.hook_attributes.url);
   });
 
   it("names the routes this app serves, not ones it might", () => {
     expect(registration.hook_attributes.url).toBe(`${PUBLIC_URL}${WEBHOOK_PATH}`);
     expect(registration.setup_url).toBe(`${PUBLIC_URL}${SETUP_PATH}`);
     expect(registration.callback_urls).toEqual([`${PUBLIC_URL}${CALLBACK_PATH}`]);
-    // The redirect after installing has to be the same place as the redirect
-    // after authorizing, because with `request_oauth_on_install` they are one
-    // journey and one handler.
-    expect(registration.redirect_url).toBe(registration.callback_urls[0]);
+    expect(registration.redirect_url).toBe(`${PUBLIC_URL}${REGISTERED_PATH}`);
+  });
+
+  it("keeps its three redirects apart", () => {
+    // All three are "where GitHub sends somebody afterwards", which is exactly
+    // why they get conflated. They have three audiences and three moments: the
+    // operator once, at creation; a member every time they authorize; an
+    // organization owner when they install. Pointing one at another's route
+    // fails only when somebody happens to exercise that path.
+    const redirects = [
+      registration.redirect_url,
+      registration.callback_urls[0],
+      registration.setup_url,
+    ];
+    expect(new Set(redirects).size).toBe(3);
   });
 
   it("sends the member's connection to the callback it registered", () => {
@@ -143,23 +163,78 @@ describe("the registration this app needs at GitHub", () => {
 });
 
 describe("asking for no more than it uses", () => {
-  it("asks for three permissions and no others", () => {
+  it("asks for these permissions and no others", () => {
     // Written out rather than derived, because this is the list an organization
     // reviews, and a test that computed it from the code would agree with any
-    // change the code made.
+    // change the code made. Two keys are worth reading twice:
+    //
+    //   * `vulnerability_alerts`, not `dependabot_alerts` — the permission has
+    //     a name for people and a key for machines, and GitHub does not
+    //     complain about the wrong one, it just grants nothing.
+    //   * `organization_projects`, not `repository_projects` — Projects v2 is
+    //     organization-scoped and the repository key is the older, classic
+    //     board. Same trap, one letter further apart.
     expect(PERMISSIONS).toEqual({
       issues: "write",
-      pull_requests: "read",
+      pull_requests: "write",
+      vulnerability_alerts: "read",
+      organization_projects: "write",
       metadata: "read",
     });
     expect(registration.default_permissions).toEqual(PERMISSIONS);
   });
 
-  it("asks for nothing about the organization or its people", () => {
-    // A GitHub App can ask for members, teams, billing and administration. This
-    // one reads a repository and opens issues in it.
+  it("has something behind every permission it asks for", () => {
+    // The rule the list follows. A permission with no feature behind it is one
+    // an organization grants for nothing, and a reviewer cannot tell "not used
+    // yet" from "used for something not described".
+    const declared = new Set([
+      ...(manifest.data_sources ?? []).map((source) => source.id),
+      ...OPERATIONS.map((operation) => operation.id),
+    ]);
+    const uses: Record<string, string[]> = {
+      issues: ["open-issues", "issue-throughput", OPERATION_IDS.openIssue],
+      pull_requests: ["review-queue", OPERATION_IDS.requestReview],
+      vulnerability_alerts: ["dependabot-alerts"],
+      organization_projects: [OPERATION_IDS.moveProjectItem],
+    };
     for (const permission of Object.keys(PERMISSIONS)) {
-      expect(permission).not.toMatch(/^(members|organization|administration)/);
+      // Granted implicitly by the rest and required of every GitHub App.
+      if (permission === "metadata") continue;
+      expect(uses[permission], `nothing declared uses ${permission}`).toBeDefined();
+      for (const user of uses[permission]) expect(declared).toContain(user);
+    }
+  });
+
+  it("asks to write only where an operation writes", () => {
+    // A `write` an organization grants and nothing exercises is the worst kind
+    // of over-permission: invisible in the app's behaviour and permanent in the
+    // grant. So every one has to be named by something in OPERATIONS.
+    const writing = Object.entries(PERMISSIONS)
+      .filter(([, level]) => level === "write")
+      .map(([permission]) => permission);
+    expect(writing.length).toBeGreaterThan(0);
+    expect(OPERATIONS.length).toBeGreaterThan(0);
+    expect(writing.sort()).toEqual([
+      "issues",
+      "organization_projects",
+      "pull_requests",
+    ]);
+  });
+
+  it("reaches past a repository in exactly one place, and names it", () => {
+    // A GitHub App can ask for members, teams, billing and administration. This
+    // one asks for none of that. The single organization-scoped permission is
+    // `organization_projects`, and it is org-scoped because a Projects v2 board
+    // is — there is no repository-scoped equivalent to prefer instead.
+    const organizationWide = Object.keys(PERMISSIONS).filter((permission) =>
+      /^(members|organization|administration|team)/.test(permission)
+    );
+    expect(organizationWide).toEqual(["organization_projects"]);
+    // And nothing about people, which is the part that has no repository in it
+    // at all.
+    for (const permission of Object.keys(PERMISSIONS)) {
+      expect(permission).not.toMatch(/^(members|administration|team)/);
     }
   });
 
@@ -174,38 +249,38 @@ describe("asking for no more than it uses", () => {
   });
 });
 
-describe("subscribing to exactly what it handles", () => {
-  it("handles every event it subscribed to", () => {
-    // An event nobody translates is a delivery answered `unhandled` forever,
-    // and GitHub reports it as a green tick.
-    for (const event of WEBHOOK_EVENTS) {
-      const payloads = DELIVERIES[event];
-      expect(payloads, `no sample delivery for ${event}`).toBeDefined();
-      for (const payload of payloads) {
-        expect(translate(event, payload), `${event} is not translated`).not.toBeNull();
-      }
+describe("subscribing to what it republishes, and nothing else", () => {
+  it("asks for exactly the deliveries the translator handles", () => {
+    // The failure this catches is the quietest one on the registration: an
+    // event handled in code and absent from the form never arrives, and
+    // nothing at either end says so. Both readings come from one table.
+    expect(registration.default_events).toEqual([...SUBSCRIBED_EVENTS]);
+    expect(registration.default_events.length).toBeGreaterThan(0);
+  });
+
+  it("subscribes to nothing it is not already permitted to read", () => {
+    // A webhook event is not a permission of its own — it is delivered under
+    // the permission that covers the resource. So a subscription this app is
+    // not permitted for is one GitHub silently never sends.
+    const needed: Record<string, string> = {
+      issues: "issues",
+      pull_request: "pull_requests",
+    };
+    for (const event of registration.default_events) {
+      expect(needed[event], `nothing maps ${event} to a permission`).toBeDefined();
+      expect(["read", "write"]).toContain(PERMISSIONS[needed[event]]);
     }
   });
 
-  it("subscribed to every event it handles", () => {
-    // The direction that fails silently: a trigger node that can never fire,
-    // because the delivery that would fire it was never asked for.
-    for (const event of Object.keys(DELIVERIES)) {
-      expect(WEBHOOK_EVENTS).toContain(event);
+  it("still hears the installation lifecycle, because it cannot not", () => {
+    // GitHub's own words: "All GitHub Apps receive this event by default. You
+    // cannot manually subscribe to this event." So naming them would be asking
+    // for something already arriving — and a webhook endpoint that hears an
+    // organization install, uninstall, or re-scope the app either way, which
+    // is the one thing this app cannot work out for itself in time to matter.
+    for (const event of ["installation", "installation_repositories"]) {
+      expect(registration.default_events).not.toContain(event);
     }
-  });
-
-  it("produces exactly the events the manifest declares", () => {
-    // Initiative refuses an event the pinned definition does not name, so a
-    // translator that produced a fourth would emit into a wall.
-    const produced = new Set<string>();
-    for (const [event, payloads] of Object.entries(DELIVERIES)) {
-      for (const payload of payloads) {
-        const translated = translate(event, payload);
-        if (translated) produced.add(translated.type);
-      }
-    }
-    expect([...produced].sort()).toEqual([...(manifest.events ?? [])].sort());
-    expect([...produced].sort()).toEqual([...Object.values(EVENTS)].sort());
+    expect(registration.hook_attributes.active).toBe(true);
   });
 });

@@ -6,24 +6,31 @@
  * deployment does. `npm run manifest` writes it.
  *
  * Read this file first if you are starting an app. It is the whole surface: a
- * connection each vendor account authorizes, sources the platform fetches,
- * widgets drawn from those sources, the events this app emits, and the
- * automation nodes it contributes. Nothing here is an address — every route is
+ * connection each vendor account authorizes, sources the platform fetches, and
+ * widgets drawn from those sources. Nothing here is an address — every route is
  * a path, and the operator's registration says where the app lives.
  *
  * **No embedded page.** This app deliberately mounts no surface of its own:
- * everything it offers lands inside Initiative's own — dashboard widgets and
- * automation nodes — rather than in an iframe holding a second UI. An embed is
- * for an app whose product *is* a page; an integration is better as parts.
+ * everything it offers lands inside Initiative's own — dashboard widgets, and
+ * the companion dashboard that arranges them — rather than in an iframe holding
+ * a second UI. An embed is for an app whose product *is* a page; an integration
+ * is better as parts.
  */
 
 import type { Manifest } from "initiative-app-kit";
 
+import { EVENT_TYPES } from "./github/events.js";
 import { PERMISSIONS } from "./github/registration.js";
+import { PUBLIC_ID } from "./public-id.js";
 import { CONNECT_PATH } from "./routes.js";
 
-/** Namespaces everything this app publishes: widgets, events, automation nodes. */
-export const PUBLIC_ID = "morelitea.github";
+/**
+ * Namespaces everything this app publishes.
+ *
+ * Re-exported rather than declared, because the event vocabulary is namespaced
+ * under it and lives in a module this one imports — see `public-id.ts`.
+ */
+export { PUBLIC_ID };
 
 /**
  * What an admin is shown that this app will be able to do, in GitHub's own
@@ -59,17 +66,36 @@ export const manifest: Manifest = {
 
   // Declared and cross-checked against the blocks below, in both directions.
   // A feature with no block would advertise something this app cannot do.
-  features: ["data", "widgets", "events", "automations"],
+  //
+  // `events` is the contract, and it belongs here rather than only on the wire
+  // for that reason: this app holds GitHub's webhook connection, so it is the
+  // authority on what a GitHub event means here, and a consumer reads this list
+  // to know what it may ask for. Delivery itself does not go through Initiative
+  // — see `../events.ts`.
+  //
+  // `automations` is not declared and will not be. A node an app contributes is
+  // a thing that executes inside somebody's deployment, and what executes stays
+  // first-party.
+  features: ["data", "widgets", "events"],
 
   default_name: "GitHub",
 
   connections: [
     {
-      // The member's own GitHub account, for the two things that are about
-      // them specifically: which pull requests are waiting on their review,
-      // and opening an issue as themselves. Everything a whole guild sees the
-      // same answer to runs on the organization's own installation instead, so
-      // connecting this is optional and nobody is asked for it to read a number.
+      // The member's own GitHub account, and **everything here runs on it** —
+      // every widget, every source, and a write wherever there is a member to
+      // attribute it to.
+      //
+      // That is the whole permission model. A source cannot ask Initiative
+      // whether this person may see a private repository, because a context
+      // token names a guild and an install and nothing about what they may
+      // reach. GitHub can answer that, and does, if the call runs on their
+      // credential. So the app stops deciding and lets the repository's own
+      // permissions decide.
+      //
+      // The cost is that connecting is not optional: a member who has not gets
+      // `CONNECTION_REQUIRED` from every tile. That is the correct answer — the
+      // alternative is showing them the state of a repository they are not on.
       //
       // GitHub authorizes a *person*, so the app holds one credential per
       // person. Installing never waits for anybody to do this.
@@ -95,17 +121,19 @@ export const manifest: Manifest = {
       },
     },
     {
-      // The guild-wide half, and now the *only* thing an admin types: which
-      // repository this guild cares about. Not a credential — a setting — but
-      // it rides the same form machinery.
+      // The only thing an admin types: which repository this guild cares
+      // about. Not a credential — a setting — but it rides the same form
+      // machinery.
+      //
+      // It says *which* repository, and never who may see it. Naming one here
+      // grants nobody anything: the call still runs on the caller's own GitHub
+      // credential, so a member who is not on that repository gets GitHub's own
+      // answer about it, which is that there is no such repository.
       //
       // What used to sit beside it was a token an admin pasted so the whole
-      // guild could read the repository. A GitHub App does not need one: the
-      // organization installs the app, and the app asks GitHub which
-      // installation covers what was typed here. So the guild's access is the
-      // organization's own grant — visible in its settings, scoped to the
-      // repositories it chose, and revoked by a button that belongs to it —
-      // rather than one person's credential wearing the guild's name.
+      // guild could read the repository. That is gone twice over — a GitHub App
+      // needs no pasted credential, and the guild does not read on a shared one
+      // at all any more.
       id: "workspace",
       scope: "static",
       label: {
@@ -127,14 +155,22 @@ export const manifest: Manifest = {
           },
         },
         {
-          key: "repo",
+          // Optional, and blank is the answer to reach for. The organization
+          // already chose which repositories to grant when it installed the
+          // app; asking an admin to restate that list here is asking them to
+          // keep two copies of one decision in step. Filled in only to narrow
+          // *further* than the installation does.
+          //
+          // Comma-separated because a connection's fields draw from one closed
+          // set of types and there is no array in it — deliberately, since that
+          // is what lets one renderer draw every app's settings page.
+          key: "repos",
           type: "string",
-          required: true,
           label: {
-            en: "Repository",
-            de: "Repository",
-            es: "Repositorio",
-            fr: "Dépôt",
+            en: "Repositories (comma-separated; blank for all)",
+            de: "Repositories (kommagetrennt; leer für alle)",
+            es: "Repositorios (separados por comas; vacío para todos)",
+            fr: "Dépôts (séparés par des virgules ; vide pour tous)",
           },
         },
       ],
@@ -151,32 +187,134 @@ export const manifest: Manifest = {
       cache_ttl_seconds: 60,
       params_schema: [
         {
+          // Which repository this tile is about, and the whole of how one
+          // widget serves several teams. A source cannot be told which
+          // initiative is asking — a context token names a guild and an install
+          // and nothing finer — so the *dashboard* says, through a fixed value
+          // on its binding. A dashboard belongs to exactly one initiative, so
+          // binding it there is what pins one team to one repository.
+          //
+          // Optional: an install covering one repository needs nobody to say so.
+          key: "repo",
+          type: "string",
+          label: {
+            en: "Repository",
+            de: "Repository",
+            es: "Repositorio",
+            fr: "Dépôt",
+          },
+        },
+        {
           key: "label",
           type: "string",
           label: { en: "Label", de: "Label", es: "Etiqueta", fr: "Étiquette" },
         },
+        {
+          key: "milestone",
+          type: "string",
+          label: {
+            en: "Milestone",
+            de: "Meilenstein",
+            es: "Hito",
+            fr: "Jalon",
+          },
+        },
+        {
+          key: "assignee",
+          type: "string",
+          label: {
+            en: "Assignee",
+            de: "Zuständige Person",
+            es: "Persona asignada",
+            fr: "Personne assignée",
+          },
+        },
       ],
-      // Guild-scoped, and this is the choice worth copying. How many issues
-      // are open is one answer for the whole guild, so it runs on the
-      // organization's installation and nobody has to connect a personal
-      // account to see it. Naming no per-member connection is also what lets
-      // the platform cache it once per guild instead of once per member.
+      // Per member, like every source here. How many issues are open is one
+      // answer for a whole guild and it is still not one every member is
+      // entitled to: it is the state of a private repository, and a member who
+      // is not on that repository at GitHub has no business reading it here.
       //
-      // The installation is not named here because it is not a connection: an
-      // admin does not supply it, so there is nothing for Initiative to hold or
-      // to ask for. `workspace` is what this source needs from a person.
-      requires: { all_of: ["workspace"] },
+      // Naming `account` is what makes that true rather than merely intended —
+      // the platform refuses the call before it reaches this app when the
+      // caller has not connected one, and the app then runs on their token.
+      requires: { all_of: ["workspace", "account"] },
     },
     {
       id: "review-queue",
       path: "/data/review-queue",
       visibility: "member",
       cache_ttl_seconds: 60,
+      params_schema: [
+        {
+          // Which repository this tile is about, and the whole of how one
+          // widget serves several teams. A source cannot be told which
+          // initiative is asking — a context token names a guild and an install
+          // and nothing finer — so the *dashboard* says, through a fixed value
+          // on its binding. A dashboard belongs to exactly one initiative, so
+          // binding it there is what pins one team to one repository.
+          //
+          // Optional: an install covering one repository needs nobody to say so.
+          key: "repo",
+          type: "string",
+          label: {
+            en: "Repository",
+            de: "Repository",
+            es: "Repositorio",
+            fr: "Dépôt",
+          },
+        },
+      ],
       // Per member, and it could not be anything else: "waiting on me" has no
-      // meaning without a me. This is the one source that needs the member's
-      // own account, and the only reason this app asks for one.
-      // The one widget that does need a member, because the one source behind
-      // it does.
+      // meaning without a me. It was once the only source here that named an
+      // account; now it is unremarkable.
+      requires: { all_of: ["workspace", "account"] },
+    },
+    {
+      id: "dependabot-alerts",
+      path: "/data/dependabot-alerts",
+      visibility: "member",
+      // Five minutes. An advisory is published, not typed, so this changes on
+      // GitHub's schedule rather than a member's.
+      cache_ttl_seconds: 300,
+      params_schema: [
+        {
+          // Which repository this tile is about, and the whole of how one
+          // widget serves several teams. A source cannot be told which
+          // initiative is asking — a context token names a guild and an install
+          // and nothing finer — so the *dashboard* says, through a fixed value
+          // on its binding. A dashboard belongs to exactly one initiative, so
+          // binding it there is what pins one team to one repository.
+          //
+          // Optional: an install covering one repository needs nobody to say so.
+          key: "repo",
+          type: "string",
+          label: {
+            en: "Repository",
+            de: "Repository",
+            es: "Repositorio",
+            fr: "Dépôt",
+          },
+        },
+        {
+          // A floor, not a filter: a team that has decided low-severity
+          // advisories are noise wants "critical and high", not "high only".
+          key: "severity",
+          type: "select",
+          options: ["critical", "high", "medium", "low"],
+          label: {
+            en: "Lowest severity to show",
+            de: "Niedrigste anzuzeigende Schwere",
+            es: "Severidad mínima a mostrar",
+            fr: "Gravité minimale à afficher",
+          },
+        },
+      ],
+      // Per member, and the consequence is sharpest here: reading Dependabot
+      // alerts needs security access on the repository, so this answers for the
+      // people who hold it and refuses for everyone else. That is the point
+      // rather than a shortcoming — how exposed a repository is is not a fact
+      // to hand to whoever opens a dashboard.
       requires: { all_of: ["workspace", "account"] },
     },
     {
@@ -186,15 +324,54 @@ export const manifest: Manifest = {
       // Five minutes: a fortnight of daily counts does not change by the second,
       // and this is the most expensive call this app makes.
       cache_ttl_seconds: 300,
-      // Guild-scoped for the same reason as the issue count, and it matters
-      // more here: this is the heaviest call, and it runs once per guild per
-      // five minutes rather than once per member.
-      requires: { all_of: ["workspace"] },
+      params_schema: [
+        {
+          // Which repository this tile is about, and the whole of how one
+          // widget serves several teams. A source cannot be told which
+          // initiative is asking — a context token names a guild and an install
+          // and nothing finer — so the *dashboard* says, through a fixed value
+          // on its binding. A dashboard belongs to exactly one initiative, so
+          // binding it there is what pins one team to one repository.
+          //
+          // Optional: an install covering one repository needs nobody to say so.
+          key: "repo",
+          type: "string",
+          label: {
+            en: "Repository",
+            de: "Repository",
+            es: "Repositorio",
+            fr: "Dépôt",
+          },
+        },
+        {
+          key: "label",
+          type: "string",
+          label: { en: "Label", de: "Label", es: "Etiqueta", fr: "Étiquette" },
+        },
+      ],
+      // Per member, and this is the one where the cost is felt: it is the
+      // heaviest call this app makes, and it now runs once per member per five
+      // minutes rather than once per guild. A longer TTL is the lever if that
+      // ever bites.
+      requires: { all_of: ["workspace", "account"] },
     },
   ],
 
-  // Three, because they show the three shapes a widget takes: one number, a
-  // list, and a series. A fourth of the same shape would teach nothing.
+  // What this app publishes when something happens at GitHub, and the whole of
+  // what a subscriber may ask for. Built from the translator so the list cannot
+  // name a type nothing produces — see `github/events.ts` for the table all
+  // three readings come from.
+  //
+  // Note what is not describable here: which initiative an event belongs to. An
+  // app has none to name, so an event is guild-wide and a consumer narrows
+  // itself by a payload field instead. That is what `repository` is for.
+  events: [...EVENT_TYPES],
+
+  // Three shapes a widget takes — one number, a list, and a series — and four
+  // widgets, because the fourth is not here to demonstrate a shape. It reuses
+  // the list deliberately: it exists because `vulnerability_alerts` is a
+  // permission every organization installing this app has to grant, and a
+  // permission with nothing reading it is one they should refuse.
   widgets: [
     {
       id: "open-issues",
@@ -218,12 +395,12 @@ export const manifest: Manifest = {
       // marketplace can show the widget before anything is connected.
       sample_data: { "open-issues": { total: 42, delta: -3 } },
       // The same terms as the source it draws, and that is the rule rather
-      // than a coincidence. A widget that names more than its sources do is
-      // refused with `CONNECTION_REQUIRED` before either is called — so a tile
-      // answered from the guild's own access, asking each member for a personal
-      // account, refuses for everyone who has not connected one and shows a
-      // number that never needed them.
-      requires: { all_of: ["workspace"] },
+      // than a coincidence: a widget naming more than its sources do is refused
+      // before either is called. What changed is which way the mismatch used to
+      // go — this tile named an account its source did not need, and refused
+      // for members who would have seen the right number without one. Now the
+      // source needs it too, and the two agree.
+      requires: { all_of: ["workspace", "account"] },
     },
     {
       id: "review-queue",
@@ -252,8 +429,37 @@ export const manifest: Manifest = {
           ],
         },
       },
-      // The one widget that does need a member, because the one source behind
-      // it does.
+      requires: { all_of: ["workspace", "account"] },
+    },
+    {
+      id: "dependabot-alerts",
+      meta: {
+        name: {
+          en: "Dependabot alerts",
+          de: "Dependabot-Warnungen",
+          es: "Alertas de Dependabot",
+          fr: "Alertes Dependabot",
+        },
+        description: {
+          en: "Open dependency alerts, worst first.",
+          de: "Offene Abhängigkeitswarnungen, die schlimmsten zuerst.",
+          es: "Alertas de dependencias abiertas, las peores primero.",
+          fr: "Alertes de dépendances ouvertes, les pires d'abord.",
+        },
+      },
+      sources: ["dependabot-alerts"],
+      module_source: ALERTS_WIDGET(),
+      sample_data: {
+        "dependabot-alerts": {
+          total: 7,
+          severities: [
+            { severity: "critical", count: 1 },
+            { severity: "high", count: 2 },
+            { severity: "medium", count: 4 },
+          ],
+          url: "#",
+        },
+      },
       requires: { all_of: ["workspace", "account"] },
     },
     {
@@ -285,136 +491,9 @@ export const manifest: Manifest = {
           ],
         },
       },
-      requires: { all_of: ["workspace"] },
+      requires: { all_of: ["workspace", "account"] },
     },
   ],
-
-  // Namespaced under this app's own service id, and checked again at ingress
-  // against the registration that emits them.
-  events: [
-    `app.${PUBLIC_ID}.issue-opened`,
-    `app.${PUBLIC_ID}.issue-closed`,
-    `app.${PUBLIC_ID}.review-requested`,
-  ],
-
-  // What this app contributes to the automation canvas. Opaque to Initiative,
-  // which stores it verbatim; the automation service parses it against its own
-  // contract. See AUTOMATION.md for the shape and what it maps onto.
-  automation: {
-    contract: 1,
-    domain: {
-      id: "github",
-      label: { en: "GitHub", de: "GitHub", es: "GitHub", fr: "GitHub" },
-      icon: "Braces",
-    },
-    nodes: [
-      {
-        key: "issue-opened",
-        category: "trigger",
-        icon: "Zap",
-        label: {
-          en: "A GitHub issue is opened",
-          de: "Ein GitHub-Issue wird geöffnet",
-          es: "Se abre una incidencia de GitHub",
-          fr: "Un ticket GitHub est ouvert",
-        },
-        description: {
-          en: "Starts when someone opens an issue in the connected repository.",
-          de: "Startet, wenn jemand ein Issue im verbundenen Repository öffnet.",
-          es: "Empieza cuando alguien abre una incidencia en el repositorio conectado.",
-          fr: "Démarre quand quelqu'un ouvre un ticket dans le dépôt connecté.",
-        },
-        // Which emitted event fires it. Must be one this manifest declares —
-        // a trigger naming an event the app never emits could never fire.
-        event: `app.${PUBLIC_ID}.issue-opened`,
-        // The same closed field vocabulary a connection uses, so one renderer
-        // draws a node's form and a connection's alike.
-        fields: [
-          {
-            key: "label",
-            type: "string",
-            label: {
-              en: "Only issues with this label",
-              de: "Nur Issues mit diesem Label",
-              es: "Solo incidencias con esta etiqueta",
-              fr: "Uniquement les tickets avec ce label",
-            },
-          },
-        ],
-        // What the event carries into the run, for later nodes to read.
-        outputs: ["issue_number", "issue_title", "issue_url", "issue_labels"],
-      },
-      {
-        key: "review-requested",
-        category: "trigger",
-        icon: "Zap",
-        label: {
-          en: "A review is requested",
-          de: "Eine Review wird angefragt",
-          es: "Se solicita una revisión",
-          fr: "Une revue est demandée",
-        },
-        description: {
-          en: "Starts when a pull request asks someone for review.",
-          de: "Startet, wenn ein Pull Request jemanden um Review bittet.",
-          es: "Empieza cuando un pull request pide revisión a alguien.",
-          fr: "Démarre quand une pull request demande une revue.",
-        },
-        event: `app.${PUBLIC_ID}.review-requested`,
-        fields: [],
-        outputs: ["pull_number", "pull_title", "pull_url"],
-      },
-      {
-        key: "create-issue",
-        category: "action",
-        icon: "FolderPlus",
-        label: {
-          en: "Open a GitHub issue",
-          de: "Ein GitHub-Issue öffnen",
-          es: "Abrir una incidencia de GitHub",
-          fr: "Ouvrir un ticket GitHub",
-        },
-        description: {
-          en: "Opens an issue in the connected repository, as the member who owns the automation.",
-          de: "Öffnet ein Issue im verbundenen Repository, als das Mitglied, dem die Automatisierung gehört.",
-          es: "Abre una incidencia en el repositorio conectado, como el miembro dueño de la automatización.",
-          fr: "Ouvre un ticket dans le dépôt connecté, au nom du membre propriétaire de l'automatisation.",
-        },
-        // The operation this node calls, served at `operations[].path`.
-        operation: "create-issue",
-        fields: [
-          {
-            key: "title",
-            type: "string",
-            required: true,
-            label: { en: "Title", de: "Titel", es: "Título", fr: "Titre" },
-          },
-          {
-            key: "body",
-            type: "string",
-            label: { en: "Body", de: "Text", es: "Cuerpo", fr: "Corps" },
-          },
-          {
-            key: "label",
-            type: "string",
-            label: { en: "Label", de: "Label", es: "Etiqueta", fr: "Étiquette" },
-          },
-        ],
-        outputs: ["issue_number", "issue_url"],
-      },
-    ],
-    // Where each action is served. Called with a context token scoped to
-    // `action`, naming this operation and nothing else.
-    operations: [
-      {
-        id: "create-issue",
-        path: "/actions/create-issue",
-        // A write at the vendor, so it runs as the member who authorized it —
-        // never from an app-wide credential.
-        requires: { all_of: ["workspace", "account"] },
-      },
-    ],
-  },
 };
 
 /**
@@ -457,6 +536,26 @@ export default function render({ data }) {
     items: items.map((item) => ({
       label: "#" + item.number + " " + item.title,
       href: item.url,
+    })),
+  };
+}
+`.trim();
+}
+
+function ALERTS_WIDGET(): string {
+  return `
+export default function render({ data }) {
+  const rows = data["dependabot-alerts"] ?? {};
+  const severities = rows.severities ?? [];
+  if (!severities.length) {
+    return { kind: "empty", label: "No open Dependabot alerts" };
+  }
+  return {
+    kind: "list",
+    items: severities.map((entry) => ({
+      label: entry.severity.charAt(0).toUpperCase() + entry.severity.slice(1)
+        + " \u00b7 " + entry.count,
+      href: rows.url,
     })),
   };
 }

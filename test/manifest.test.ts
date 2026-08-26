@@ -14,22 +14,9 @@
 import { describe, expect, it } from "vitest";
 import { appDocument, validateDocument, validateManifest } from "initiative-app-kit";
 
+import { EVENT_TYPES, translate } from "../src/github/events.js";
+import { WEBHOOK_EVENTS } from "../src/github/registration.js";
 import { PUBLIC_ID, manifest } from "../src/manifest.config.js";
-
-/** The opaque block, typed just enough for these assertions. */
-const automation = () =>
-  (manifest.automation ?? {}) as {
-    contract?: number;
-    domain?: { id?: string };
-    nodes?: Array<{
-      key: string;
-      category: string;
-      event?: string;
-      operation?: string;
-      fields?: Array<{ type: string }>;
-    }>;
-    operations?: Array<{ id: string; path: string }>;
-  };
 
 describe("the manifest", () => {
   it("has nothing the kit can object to", () => {
@@ -57,7 +44,6 @@ describe("the manifest", () => {
       ...(manifest.connections ?? []).map((c) => c.connect_path),
       ...(manifest.data_sources ?? []).map((s) => s.path),
       ...(manifest.embeds ?? []).map((e) => e.path),
-      ...(automation().operations ?? []).map((o: { path: string }) => o.path),
     ].filter(Boolean) as string[];
 
     expect(paths.length).toBeGreaterThan(0);
@@ -67,53 +53,45 @@ describe("the manifest", () => {
     }
   });
 
+  it("declares no feature it cannot deliver", () => {
+    // A feature with no block behind it advertises something the app cannot do,
+    // and the platform refuses it — in both directions.
+    //
+    // `automations` is absent on purpose rather than for want of a block: a
+    // node an app contributes is a thing that executes inside somebody's
+    // deployment, and what executes stays first-party.
+    expect(manifest.features).toEqual(["data", "widgets", "events"]);
+    expect(manifest.automation).toBeUndefined();
+  });
+
+  it("declares an event vocabulary the code actually produces", () => {
+    // The declaration is the contract: this app holds GitHub's webhook
+    // connection, so it is the authority on what these mean, and a consumer
+    // reads this list to know what it may ask for. A type here that nothing
+    // translates would be a subscription that never fires, with the subscriber
+    // having no way to find out.
+    expect(manifest.events).toEqual([...EVENT_TYPES]);
+    expect(manifest.events?.length).toBeGreaterThan(0);
+  });
+
   it("namespaces every event under its own service id", () => {
-    for (const event of manifest.events ?? []) {
-      expect(event.startsWith(`app.${PUBLIC_ID}.`)).toBe(true);
-    }
-  });
-});
-
-describe("the automation surface", () => {
-  it("declares a domain and a contract version", () => {
-    expect(automation().contract).toBe(1);
-    expect(automation().domain?.id).toBeTruthy();
-  });
-
-  it("only triggers on events this manifest actually emits", () => {
-    // A trigger naming an event the app never emits could never fire, and
-    // nothing downstream would say so.
-    const emitted = new Set(manifest.events ?? []);
-    for (const node of automation().nodes ?? []) {
-      if (node.category !== "trigger") continue;
-      expect(node.event).toBeTruthy();
-      expect(emitted.has(node.event!)).toBe(true);
+    // The prefix the platform checks against the emitting registration. A type
+    // outside it is refused, and the refusal names a prefix rather than the
+    // mistake.
+    for (const type of manifest.events ?? []) {
+      expect(type.startsWith(`app.${PUBLIC_ID}.`)).toBe(true);
+      expect(type.length).toBeGreaterThan(`app.${PUBLIC_ID}.`.length);
     }
   });
 
-  it("only acts through operations this manifest serves", () => {
-    const served = new Set((automation().operations ?? []).map((o) => o.id));
-    for (const node of automation().nodes ?? []) {
-      if (node.category !== "action") continue;
-      expect(node.operation).toBeTruthy();
-      expect(served.has(node.operation!)).toBe(true);
+  it("subscribes to every delivery it needs to produce those", () => {
+    // The registration is a form somebody fills in once. An event handled in
+    // code but missing from it simply never arrives — so both come from the
+    // same table, and this is what says so.
+    expect(WEBHOOK_EVENTS.length).toBeGreaterThan(0);
+    for (const delivery of WEBHOOK_EVENTS) {
+      expect(translate(delivery, { action: "\u0000none" })).toBeNull();
     }
-  });
-
-  it("keeps secrets out of node config", () => {
-    // A node's config lives in an automation's graph and is shown in an editor.
-    // A credential belongs in a connection, which is held in custody.
-    for (const node of automation().nodes ?? []) {
-      for (const field of node.fields ?? []) {
-        expect(field.type).not.toBe("secret");
-      }
-    }
-  });
-
-  it("has both directions — something to start on, something to do", () => {
-    const categories = new Set((automation().nodes ?? []).map((n) => n.category));
-    expect(categories.has("trigger")).toBe(true);
-    expect(categories.has("action")).toBe(true);
   });
 });
 
@@ -122,21 +100,33 @@ describe("who a source is answered for", () => {
     manifest.data_sources?.find((source) => source.id === id);
   const namedBy = (id: string) => sourceById(id)?.requires?.all_of ?? [];
 
-  it("answers a question about the repository without asking anyone for an account", () => {
-    // The rule this file exists to hold. How many issues are open is one answer
-    // for every member, so asking each of them to hand over a personal GitHub
-    // account to see it would be asking for a credential to do a job that needs
-    // none. It is answered from the organization's installation — which is not
-    // a connection, so it is named by nothing here.
-    for (const id of ["open-issues", "issue-throughput"]) {
-      expect(namedBy(id)).toEqual(["workspace"]);
+  it("answers every question from the credential of whoever asked", () => {
+    // The rule this file exists to hold, and it is the reverse of what it used
+    // to hold. "How many issues are open" is one answer for every member and
+    // still not one every member is entitled to: it is the state of a private
+    // repository, and answering it from the organization's installation shows
+    // that state to members with no access to the repository at all.
+    //
+    // The app cannot make that judgement — a context token names a guild and an
+    // install and nothing about what this person may see. GitHub can, and does,
+    // if the call runs on their credential. So every source names one.
+    for (const source of manifest.data_sources ?? []) {
+      expect(
+        namedBy(source.id),
+        `${source.id} is answered from something other than the caller`
+      ).toContain("account");
     }
   });
 
-  it("answers a question about a person from that person's own account", () => {
-    // "Waiting on my review" resolves against whoever's credential it runs on,
-    // so the caller's is the only one that answers the question asked.
-    expect(namedBy("review-queue")).toContain("account");
+  it("costs every member a connection, which is the price of that", () => {
+    // Stated as a test because it is the thing somebody will later want to
+    // "fix" by making a tile work without one. A member who has connected no
+    // GitHub account gets `CONNECTION_REQUIRED` from every tile, and that is
+    // correct: the alternative is showing them a private repository's state.
+    expect((manifest.widgets ?? []).length).toBeGreaterThan(0);
+    for (const widget of manifest.widgets ?? []) {
+      expect(widget.requires?.all_of, `${widget.id}`).toContain("account");
+    }
   });
 
   it("names the repository setting on every source", () => {
@@ -164,16 +154,14 @@ describe("who a source is answered for", () => {
     }
   });
 
-  it("writes only as a member, never as the app", () => {
-    // An action opens an issue under somebody's name, so it runs on that
-    // member's own credential — the issue is theirs, and it stops working when
-    // they disconnect. The app has a credential of its own now and this is
-    // exactly where it must not be used.
-    const automation = manifest.automation as
-      | { operations?: Array<{ id: string; requires?: { all_of?: string[] } }> }
-      | undefined;
-    for (const operation of automation?.operations ?? []) {
-      expect(operation.requires?.all_of).toContain("account");
+  it("keeps every source on the read path", () => {
+    // This app writes now, and the separation is what keeps that honest: a
+    // source is answered on a context token Initiative minted for a dashboard,
+    // and a write is answered on a delegation token an automation signed. A
+    // source that mutated anything would be a write reachable by whoever can
+    // render a widget.
+    for (const source of manifest.data_sources ?? []) {
+      expect(source.path.startsWith("/data/")).toBe(true);
     }
   });
 });
@@ -212,15 +200,28 @@ describe("the choices this app makes", () => {
     }
   });
 
-  it("says what it will use the member's credential for", () => {
+  it("says what it will use the member's credential for, writes included", () => {
     const account = manifest.connections?.find((c) => c.id === "account");
-    // Shown beside the form, so a member sees the write before they authorize
-    // rather than after. `issues:write` is there because the automation action
-    // opens issues — an app that only read would ask for less, and should.
-    expect(account?.access_hint?.scopes).toContain("issues:write");
+    const scopes = account?.access_hint?.scopes ?? [];
+    // Shown beside the form, so a member sees what they are authorizing before
+    // they do it — and it has to include the writes, because a member's own
+    // credential is what an operation runs on wherever there is one. Hiding
+    // that behind a list of reads would be asking for one thing and doing
+    // another.
+    expect(scopes).toContain("issues:write");
+    expect(scopes).toContain("pull_requests:write");
+    // Still a ceiling rather than a grant: a GitHub App's user token carries
+    // the installation's permissions narrowed to what that member already
+    // reaches, so a member who cannot write to the repository still cannot.
+    //
     // Permissions, not scopes. `repo` is an OAuth app's vocabulary and grants
     // everything that person can reach in every repository they can reach.
-    expect(account?.access_hint?.scopes).not.toContain("repo");
+    expect(scopes).not.toContain("repo");
+    for (const scope of scopes) {
+      expect(scope, `${scope} is not a permission:level pair`).toMatch(
+        /^[a-z_]+:(read|write)$/
+      );
+    }
   });
 
   it("mounts no embedded surface", () => {
@@ -241,15 +242,32 @@ describe("the choices this app makes", () => {
     expect(account?.fields).toEqual([]);
   });
 
-  it("takes the repository as two fields rather than one", () => {
-    // An admin who typed `acme/widgets` into a single box would produce a path
-    // with an extra segment in it, and every call would 404 with nothing saying
-    // why. Two required fields is the form making that impossible.
+  it("asks an admin for an account, and for nothing it can work out itself", () => {
+    // The owner is the one thing this app cannot derive. Which repositories it
+    // may see is the organization's own answer, given when it installed the
+    // app — so the field that narrows further is optional, and blank means
+    // "everything you granted" rather than "nothing".
     const workspace = manifest.connections?.find((c) => c.id === "workspace");
     expect(workspace?.scope).toBe("static");
-    expect(workspace?.fields.map((field) => field.key)).toEqual(["owner", "repo"]);
-    for (const field of workspace?.fields ?? []) {
-      expect(field.required).toBe(true);
+    expect(workspace?.fields.map((field) => field.key)).toEqual(["owner", "repos"]);
+
+    const byKey = Object.fromEntries(
+      (workspace?.fields ?? []).map((field) => [field.key, field])
+    );
+    expect(byKey.owner.required).toBe(true);
+    expect(byKey.repos.required).toBeUndefined();
+  });
+
+  it("lets a dashboard say which repository a tile is about", () => {
+    // The whole of how one widget serves several teams. A source cannot be told
+    // which initiative is asking, so the dashboard says which repository — and
+    // a dashboard belongs to exactly one initiative. Every source has to accept
+    // it or the ones that do not are stuck on whatever the install defaults to.
+    for (const source of manifest.data_sources ?? []) {
+      const params = (source.params_schema ?? []).map((param) => param.key);
+      expect(params, `${source.id} cannot be pointed at a repository`).toContain(
+        "repo"
+      );
     }
   });
 

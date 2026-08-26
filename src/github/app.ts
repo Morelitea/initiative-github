@@ -34,6 +34,7 @@
 import { createSign } from "node:crypto";
 
 import { config } from "../config.js";
+import type { StoredWorkspace } from "./workspace.js";
 
 /** How long an app JWT is asked to live. GitHub's ceiling is ten minutes. */
 const JWT_LIFETIME_SECONDS = 540;
@@ -47,6 +48,9 @@ const JWT_BACKDATE_SECONDS = 60;
 
 /** Refreshed this long before it expires, so a call never races the clock. */
 const TOKEN_SKEW_SECONDS = 60;
+
+/** How long an installation's repository list is reused. */
+const REPOSITORY_CACHE_SECONDS = 300;
 
 function base64url(value: Buffer | string): string {
   return Buffer.from(value).toString("base64url");
@@ -138,35 +142,118 @@ export async function installUrl(): Promise<string | null> {
 // --- finding the installation -----------------------------------------------
 
 /**
- * Which installation covers this repository, if any.
+ * Which installation this account granted, if any.
  *
- * This is what replaces an admin pasting a token. The admin types a repository
- * into Initiative's own settings form — the thing they were always going to
- * type — and the app asks GitHub whether it has been installed there. Nobody
- * hands over a credential, and nobody has to find an installation id.
+ * This is what replaces an admin pasting a token. The admin types an owner into
+ * Initiative's own settings form — the thing they were always going to type —
+ * and the app asks GitHub whether it has been installed there. Nobody hands
+ * over a credential, and nobody has to go and find an installation id.
  *
- * `null` covers three cases the caller treats identically and a person does
- * not: nobody has installed the app on that org, they installed it but did not
- * select this repository, or the repository does not exist. All three mean the
- * same thing here — there is no grant to read this repository with — and the
- * remedy for all three is the same visit to the install page.
+ * Asked of the **account** rather than of one repository, because that is what
+ * an installation belongs to: one grant covers every repository the account
+ * chose, and asking per repository would mean one call per repository to learn
+ * the same id. An account is an organization or a person and GitHub answers
+ * those on different routes without saying which it is, so this tries the one
+ * that is nearly always right and falls back.
+ *
+ * `null` means there is no grant here — nobody installed the app on that
+ * account, or the account does not exist. Both have the same remedy, which is a
+ * visit to the install page.
  */
-export async function installationForRepo(
-  owner: string,
-  repo: string
-): Promise<number | null> {
-  const response = await asApp(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`
-  );
-  if (response.status === 404) return null;
-  if (!response.ok) {
-    console.error(
-      `could not look up the installation for ${owner}/${repo}: ${response.status}`
-    );
-    return null;
+export async function installationForOwner(owner: string): Promise<number | null> {
+  const name = encodeURIComponent(owner);
+  for (const path of [`/orgs/${name}/installation`, `/users/${name}/installation`]) {
+    const response = await asApp(path);
+    if (response.status === 404) continue;
+    if (!response.ok) {
+      console.error(`could not look up the installation for ${owner}: ${response.status}`);
+      return null;
+    }
+    const body = (await response.json()) as { id?: number };
+    if (typeof body.id === "number") return body.id;
   }
-  const body = (await response.json()) as { id?: number };
-  return typeof body.id === "number" ? body.id : null;
+  return null;
+}
+
+/**
+ * Which repositories this installation actually covers.
+ *
+ * The ceiling on everything a guild can point at, and it is GitHub's answer
+ * rather than this app's: an organization that installed the app on two of its
+ * forty repositories granted two, and no configuration on the Initiative side
+ * can widen that. So this is what a repository named in a dashboard is checked
+ * against — not to keep one team out of another's repository, which this app
+ * cannot see well enough to judge, but to keep every team inside what the
+ * organization agreed to.
+ *
+ * Read as the installation, not as the app: the app has no view of what it was
+ * granted until it holds a token for the grant.
+ */
+interface CachedRepositories {
+  names: string[];
+  goodUntil: number;
+}
+
+/**
+ * What each installation covers, briefly.
+ *
+ * Re-read every few minutes rather than per request: it is checked on every
+ * source call that names a repository, and an organization adding one to the
+ * installation is not a thing that needs to be visible within the second. The
+ * `installation_repositories` delivery clears it when it does happen.
+ */
+const repositories = new Map<number, CachedRepositories>();
+
+/** Drop a cached repository list. For the delivery that says it changed. */
+export function forgetRepositories(installationId: number): void {
+  repositories.delete(installationId);
+}
+
+export async function installationRepositories(
+  installationId: number,
+  now: number = Date.now()
+): Promise<string[] | null> {
+  const held = repositories.get(installationId);
+  if (held && held.goodUntil > now) return held.names;
+
+  const token = await installationToken(installationId);
+  if (!token) return null;
+
+  const names: string[] = [];
+  // A hundred at a time. An organization with more than a few hundred
+  // repositories in one installation is unusual and the page walk is bounded
+  // rather than unlimited, so a pathological account cannot hold a request open.
+  for (let page = 1; page <= 10; page += 1) {
+    const response = await fetch(
+      `${config.github.apiBase}/installation/repositories?per_page=100&page=${page}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      }
+    );
+    if (!response.ok) {
+      console.error(
+        `could not list installation ${installationId}'s repositories: ${response.status}`
+      );
+      return null;
+    }
+    const body = (await response.json()) as {
+      repositories?: Array<{ name?: unknown }>;
+    };
+    const batch = body.repositories ?? [];
+    for (const entry of batch) {
+      if (typeof entry.name === "string") names.push(entry.name);
+    }
+    if (batch.length < 100) break;
+  }
+  repositories.set(installationId, {
+    names,
+    goodUntil: now + REPOSITORY_CACHE_SECONDS * 1000,
+  });
+  return names;
 }
 
 // --- the guild's access, minted rather than held ----------------------------
@@ -231,9 +318,77 @@ export async function installationToken(
   return body.token;
 }
 
+/**
+ * Which repository a call is about, checked against what was actually granted.
+ *
+ * Lives here rather than beside the sources because both a read and a write
+ * need it and they hold different credentials: a source reads with the
+ * installation's token, the `create-issue` action writes with a member's. The
+ * question "may this install touch that repository?" is the same either way,
+ * and it is answered from the organization's grant rather than from anything a
+ * caller asserted.
+ *
+ * Narrowest first: what the caller asked for, then the guild's own list if it
+ * names exactly one, then the installation's if *it* covers exactly one.
+ * Anything else is ambiguous and says so rather than picking one.
+ *
+ * This decides *which* repository is asked about and never whether the caller
+ * may see it. That is the credential's job, and on the read path the credential
+ * is the member's own — so a member who cannot reach the repository this picks
+ * gets GitHub's own answer about it, which is that there is no such repository.
+ */
+export type RepositoryChoice =
+  | { owner: string; repo: string }
+  | { unavailable: string };
+
+export async function resolveRepository(
+  workspace: StoredWorkspace | null,
+  wanted?: string | null
+): Promise<RepositoryChoice> {
+  if (!workspace) return { unavailable: "not-configured" };
+
+  // Which repositories are in play is the guild's own answer where it gave one,
+  // and only then the organization's.
+  //
+  // That order matters more than it looks. Reads run on the caller's own GitHub
+  // credential, so asking the installation "what may this app see" answers a
+  // question nobody asked on this path — and it costs a token mint and a page
+  // walk to do it. A guild that named its repositories needs neither, and gets
+  // its dashboard whether or not an organization owner has installed the app
+  // yet. Blank still means "everything the organization granted", which is a
+  // list only the installation can enumerate.
+  let allowed = workspace.repos;
+  if (!allowed.length) {
+    if (workspace.installationId === null) return { unavailable: "not-installed" };
+    const granted = await installationRepositories(workspace.installationId);
+    if (!granted) return { unavailable: "not-installed" };
+    allowed = granted;
+  }
+  const asked = wanted?.trim();
+
+  if (asked) {
+    const repo = allowed.find((name) => name.toLowerCase() === asked.toLowerCase());
+    // Outside the guild's list, or outside what the organization granted. A
+    // distinct answer from "not configured", because the remedy is to fix the
+    // dashboard or widen the installation rather than to fill in a form.
+    if (!repo) return { unavailable: "repository-not-granted" };
+    return { owner: workspace.owner, repo };
+  }
+
+  if (allowed.length === 1) return { owner: workspace.owner, repo: allowed[0] };
+
+  // Several to choose from and nothing said which. A source cannot be told
+  // which initiative is asking — the context token names a guild and an install
+  // and nothing finer — so the *dashboard* is what says, through a fixed `repo`
+  // on its binding. A dashboard belongs to one initiative, so binding it there
+  // is what pins one team to one repository.
+  return { unavailable: "repository-required" };
+}
+
 /** Drop one installation's token. For the uninstall delivery. */
 export function forgetInstallation(installationId: number): void {
   tokens.delete(installationId);
+  repositories.delete(installationId);
 }
 
 /**
@@ -247,5 +402,8 @@ export function forgetInstallationsExcept(installationIds: number[]): void {
   const keep = new Set(installationIds);
   for (const id of tokens.keys()) {
     if (!keep.has(id)) tokens.delete(id);
+  }
+  for (const id of repositories.keys()) {
+    if (!keep.has(id)) repositories.delete(id);
   }
 }
