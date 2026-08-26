@@ -41,7 +41,6 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { publish } from "../subscriptions.js";
 import { syncInstall } from "../sync.js";
-import { forgetInstallation, forgetRepositories } from "./app.js";
 import { translate } from "./emissions.js";
 import {
   installsAwaiting,
@@ -62,11 +61,14 @@ export const DELIVERY_HEADER = "x-github-delivery";
  * default. You cannot manually subscribe to this event." So they are handled
  * here and named nowhere in the registration, which is the least an app can ask
  * for and still know its own state.
+ *
+ * One event, not two. GitHub also sends `installation_repositories` when an
+ * organization widens or narrows what an installation covers, and this app has
+ * nothing to do with it: what a call may reach is the list a guild admin wrote
+ * down, so a grant changing under it moves no boundary here. It falls through
+ * with everything else this app does not publish.
  */
-const LIFECYCLE_EVENTS = new Set([
-  "installation",
-  "installation_repositories",
-]);
+const LIFECYCLE_EVENTS = new Set(["installation"]);
 
 /**
  * Whether GitHub signed these exact bytes.
@@ -136,11 +138,6 @@ export async function handleDelivery(
   const guilds = new Map<number, number>();
 
   if (installationId !== null) {
-    // Whatever just happened, what is held for it is no longer trustworthy: the
-    // token may have been revoked, and the repository list is the very thing
-    // this delivery is usually about.
-    forgetInstallation(installationId);
-    forgetRepositories(installationId);
     for (const install of await installsForInstallation(installationId)) {
       guilds.set(install.appInstallId, install.guildId);
     }

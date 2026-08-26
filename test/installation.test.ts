@@ -1,18 +1,16 @@
 /**
- * The guild's access is the organization's grant, held only while it lasts.
+ * What the installation is for, and what the private key can do with it.
  *
- * This replaces a test about a token an admin pasted, and the claim it makes is
- * stronger. A pasted credential was Initiative's to lend, so "revoked" meant
- * the next configuration pull stopped returning it and this app dropped what it
- * held. An installation is GitHub's, so "revoked" means the app can no longer
- * mint a token at all — there is nothing to drop, because there was never a
- * durable copy to keep.
+ * The installation id is a *routing* fact here and nothing more. A delivery
+ * arrives naming an installation, and this is what turns that back into the
+ * guilds it belongs to — which is the whole of why the app looks it up.
  *
- * What still has to be proved is everything around that: that the installation
- * is found from what an admin typed rather than from anything they pasted, that
- * an install pointing at a repository nobody installed the app on is reported
- * as such rather than left looking broken, and that a token minted for one
- * install stops being held the moment that install goes away.
+ * The claim underneath is the one worth testing: **the private key asks a
+ * question and never acts on the answer.** It signs a JWT good for reading
+ * which account installed the app, and this app mints nothing from it. Every
+ * call that reaches a repository runs on the credential of the member who asked
+ * for it. So the last case here is a grep, and it is the point of the file:
+ * nothing in `src/` asks GitHub for an installation access token.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +24,6 @@ const {
   workspaceFor,
   forgetWorkspace,
   forgetInstallsExcept,
-  knownInstallations,
 } = vi.hoisted(() => ({
   config: vi.fn(),
   installs: vi.fn(),
@@ -36,7 +33,6 @@ const {
   workspaceFor: vi.fn(async () => null as unknown),
   forgetWorkspace: vi.fn(async () => {}),
   forgetInstallsExcept: vi.fn(async () => 0),
-  knownInstallations: vi.fn(async () => [] as number[]),
 }));
 
 vi.mock("../src/initiative.js", () => ({
@@ -50,7 +46,6 @@ vi.mock("../src/github/workspace.js", () => ({
   workspaceFor,
   forgetWorkspace,
   forgetInstallsExcept,
-  knownInstallations,
 }));
 
 // GitHub is stubbed at the one call that matters: "have you been installed on
@@ -62,7 +57,6 @@ vi.mock("../src/github/app.js", async () => {
   return { ...actual, installationForOwner };
 });
 
-import { forgetInstallation, installationToken } from "../src/github/app.js";
 import { forgetInstall, syncAllInstalls, syncInstall } from "../src/sync.js";
 
 /** One install's configuration as the channel returns it. */
@@ -86,7 +80,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   reportStatus.mockResolvedValue({});
   workspaceFor.mockResolvedValue(null);
-  knownInstallations.mockResolvedValue([]);
 });
 
 describe("finding the guild's access", () => {
@@ -112,22 +105,20 @@ describe("finding the guild's access", () => {
     expect(reportStatus).toHaveBeenCalledWith(500, { state: "ok" });
   });
 
-  it("says so when nothing can be resolved without an installation", async () => {
-    // A form naming an account and no repositories, with nothing installed on
-    // that account: neither side has a list, so no tile can answer. A different
-    // problem with a different owner — somebody at GitHub, not the admin who
-    // just filled the form in — so it gets its own reason rather than reading
-    // as "not configured".
+  it("says so when the form names an account and no repository", async () => {
+    // An empty list is an unfinished form, and this app reads it as one — it is
+    // never "every repository the account has". So the reason names the field
+    // that is blank, and nothing goes looking for an installation to fill it.
     configCall.mockResolvedValue(
       installConfig({ connections: { workspace: { owner: "acme", repos: "" } } })
     );
-    installationForOwner.mockResolvedValue(null);
 
     await expect(syncInstall(500)).resolves.toBe(false);
 
+    expect(installationForOwner).not.toHaveBeenCalled();
     expect(reportStatus).toHaveBeenCalledWith(500, {
       state: "invalid",
-      detail: "github_app_not_installed",
+      detail: "no_repository",
     });
   });
 
@@ -161,18 +152,23 @@ describe("finding the guild's access", () => {
     );
   });
 
-  it("asks again on every sync, because an org can narrow what it granted", async () => {
-    // Removing one repository from an installation is invisible from every
-    // other angle: the installation still exists, the token still mints, and
-    // the calls quietly come back empty. Checked on an install that named no
-    // repositories, since that is the one whose answer depends on the grant.
-    configCall.mockResolvedValue(
-      installConfig({ connections: { workspace: { owner: "acme", repos: "" } } })
-    );
-    installationForOwner.mockResolvedValueOnce(4242).mockResolvedValueOnce(null);
+  it("asks again on every sync rather than trusting the last answer", async () => {
+    // An organization can uninstall and reinstall, which is a different id
+    // under the same name. Every delivery is routed by that id, so a stale one
+    // is events silently ceasing to arrive.
+    configCall.mockResolvedValue(installConfig());
+    installationForOwner.mockResolvedValueOnce(4242).mockResolvedValueOnce(7)
 
-    await expect(syncInstall(500)).resolves.toBe(true);
-    await expect(syncInstall(500)).resolves.toBe(false);
+    await syncInstall(500);
+    await syncInstall(500);
+
+    expect(installationForOwner).toHaveBeenCalledTimes(2);
+    expect(rememberWorkspace).toHaveBeenLastCalledWith(
+      11,
+      500,
+      { owner: "acme", repos: ["widgets"] },
+      7
+    );
   });
 
   it("records the installation going away even where nothing stops working", async () => {
@@ -223,122 +219,50 @@ describe("finding the guild's access", () => {
   });
 });
 
-describe("letting go of an installation's token", () => {
-  /**
-   * Answer the mint call, so there is something held to let go of.
-   *
-   * A fresh `Response` per call: a body reads once, and every case here counts
-   * how many times GitHub was asked.
-   */
-  function githubMints(token: string) {
-    return vi.spyOn(globalThis, "fetch").mockImplementation(
-      async () =>
-        new Response(
-          JSON.stringify({
-            token,
-            expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-          }),
-          { status: 200 }
-        )
+describe("what the private key can do", () => {
+  it("asks which account installed the app, and nothing else", async () => {
+    // The two routes an app JWT is spent on here, and there is no third. Both
+    // read; neither returns anything that can act.
+    const fetching = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify({ id: 4242 }), { status: 200 })
     );
-  }
-
-  it("mints once and reuses it until it is nearly spent", async () => {
-    // An installation token lasts an hour. Minting one per request would be a
-    // round trip to GitHub in front of every dashboard tile.
-    const fetching = githubMints("ghs_first");
     try {
-      await expect(installationToken(900)).resolves.toBe("ghs_first");
-      await expect(installationToken(900)).resolves.toBe("ghs_first");
-      expect(fetching).toHaveBeenCalledTimes(1);
+      const actual = await vi.importActual<typeof import("../src/github/app.js")>(
+        "../src/github/app.js"
+      );
+      await expect(actual.installationForOwner("acme")).resolves.toBe(4242);
+
+      const asked = fetching.mock.calls.map((call) => String(call[0]));
+      expect(asked).toEqual([expect.stringContaining("/orgs/acme/installation")]);
     } finally {
       fetching.mockRestore();
-      forgetInstallation(900);
     }
   });
 
-  it("drops what it held when the install is removed", async () => {
-    const fetching = githubMints("ghs_second");
-    try {
-      await installationToken(901);
-      workspaceFor.mockResolvedValue({
-        owner: "acme",
-        repos: ["widgets"],
-        installationId: 901,
-      });
+  it("never asks GitHub for a token that acts as the installation", async () => {
+    // The claim the whole permission model rests on, checked against the source
+    // rather than against one path through it: a call this app cannot make is
+    // stronger than one it happens not to make today.
+    //
+    // `POST /app/installations/{id}/access_tokens` is the only route that turns
+    // the private key into something that can read and write inside every
+    // repository an organization granted. Nothing here calls it, so a stolen
+    // key yields the list of organizations and no way into one.
+    const { readdirSync, readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
 
-      await forgetInstall(11);
+    const found: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (entry.name.endsWith(".ts")) {
+          if (readFileSync(path, "utf8").includes("access_tokens")) found.push(path);
+        }
+      }
+    };
+    walk("src");
 
-      // Held tokens outlive the row they were minted for by up to an hour, so
-      // dropping the row is not on its own the end of access.
-      expect(forgetWorkspace).toHaveBeenCalledWith(11);
-      await installationToken(901);
-      expect(fetching).toHaveBeenCalledTimes(2);
-    } finally {
-      fetching.mockRestore();
-      forgetInstallation(901);
-    }
-  });
-
-  it("sweeps what the platform's list no longer accounts for", async () => {
-    // A guild that uninstalled while this app was down sends no signal, so
-    // being absent from the list is the only thing that says so.
-    const fetching = githubMints("ghs_third");
-    try {
-      await installationToken(902);
-      installs.mockResolvedValue([]);
-      knownInstallations.mockResolvedValue([]);
-
-      await syncAllInstalls();
-
-      await installationToken(902);
-      expect(fetching).toHaveBeenCalledTimes(2);
-    } finally {
-      fetching.mockRestore();
-      forgetInstallation(902);
-    }
-  });
-
-  it("keeps one still in the list", async () => {
-    const fetching = githubMints("ghs_fourth");
-    try {
-      await installationToken(903);
-      installs.mockResolvedValue([]);
-      knownInstallations.mockResolvedValue([903]);
-
-      await syncAllInstalls();
-
-      await expect(installationToken(903)).resolves.toBe("ghs_fourth");
-      expect(fetching).toHaveBeenCalledTimes(1);
-    } finally {
-      fetching.mockRestore();
-      forgetInstallation(903);
-    }
-  });
-
-  it("drops one an install was switched off for", async () => {
-    // Switched off is not uninstalled — the configuration is still the
-    // guild's — but this app stops acting on it, which means it stops holding
-    // anything it would act with.
-    const fetching = githubMints("ghs_fifth");
-    try {
-      await installationToken(904);
-      workspaceFor.mockResolvedValue({
-        owner: "acme",
-        repos: ["widgets"],
-        installationId: 904,
-      });
-      installs.mockResolvedValue([{ install_id: 11, guild_id: 500, enabled: false }]);
-      knownInstallations.mockResolvedValue([]);
-
-      await syncAllInstalls();
-
-      expect(configCall).not.toHaveBeenCalled();
-      await installationToken(904);
-      expect(fetching).toHaveBeenCalledTimes(2);
-    } finally {
-      fetching.mockRestore();
-      forgetInstallation(904);
-    }
+    expect(found).toEqual([]);
   });
 });

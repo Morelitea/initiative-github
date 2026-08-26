@@ -258,11 +258,11 @@ describe("the choices this app makes", () => {
     expect(account?.fields.map((field) => field.key)).toEqual(["account_login"]);
   });
 
-  it("asks an admin for an account, and for nothing it can work out itself", () => {
-    // The owner is the one thing this app cannot derive. Which repositories it
-    // may see is the organization's own answer, given when it installed the
-    // app — so the field that narrows further is optional, and blank means
-    // "everything you granted" rather than "nothing".
+  it("asks an admin to write the boundary down, both halves of it", () => {
+    // Two required fields, and together they are the whole of what this install
+    // is about. Required rather than optional on purpose: a blank repository
+    // list read as "everything the account has" would make the widest possible
+    // setting the one an admin gets by not typing.
     const workspace = manifest.connections?.find((c) => c.id === "workspace");
     expect(workspace?.scope).toBe("static");
     expect(workspace?.fields.map((field) => field.key)).toEqual(["owner", "repos"]);
@@ -271,7 +271,7 @@ describe("the choices this app makes", () => {
       (workspace?.fields ?? []).map((field) => [field.key, field])
     );
     expect(byKey.owner.required).toBe(true);
-    expect(byKey.repos.required).toBeUndefined();
+    expect(byKey.repos.required).toBe(true);
   });
 
   it("lets a dashboard say which repository a tile is about", () => {

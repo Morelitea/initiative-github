@@ -1,13 +1,12 @@
 /**
- * Which repository a call is about, when an install covers several.
+ * Which repository a call is about, when an install names several.
  *
  * The whole multi-repository design turns on this one function, and so does the
  * boundary it can and cannot draw.
  *
- * **What it enforces**: every call stays inside what the organization granted.
- * That is GitHub's answer, not this app's — an organization that installed the
- * app on two of its forty repositories granted two, and no configuration on the
- * Initiative side can widen it.
+ * **What it enforces**: every call stays inside the list a guild admin wrote
+ * down. That list is the boundary in full — it is what a delivery is matched
+ * against and what a call is resolved against — so the two cannot drift.
  *
  * **What it cannot**: keeping one team out of another team's repository. A
  * context token names a guild and an install and nothing finer, so this code
@@ -15,202 +14,109 @@
  * `repo` on its dashboard's binding, and what protects that is who may edit the
  * dashboard. Worth being exact about, because "the app checks it" and "the
  * configuration says it" are different promises.
+ *
+ * **What it never does**: ask GitHub anything. Every answer here comes from the
+ * form and the binding, so a tile costs one call — the one that reads the data,
+ * on the member's own credential.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  forgetInstallation,
-  forgetRepositories,
-  resolveRepository,
-} from "../src/github/app.js";
+import { resolveRepository } from "../src/github/app.js";
 import type { StoredWorkspace } from "../src/github/workspace.js";
 
-const INSTALLATION = 4242;
-
-/** An installation covering these repositories, and a token to read them with. */
-function githubGrants(names: string[]) {
-  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-    const url = String(input);
-    if (url.includes("/access_tokens")) {
-      return new Response(
-        JSON.stringify({
-          token: "ghs_test",
-          expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-        }),
-        { status: 200 }
-      );
-    }
-    return new Response(
-      JSON.stringify({ repositories: names.map((name) => ({ name })) }),
-      { status: 200 }
-    );
-  });
+function workspace(repos: string[]): StoredWorkspace {
+  return { owner: "acme", repos, installationId: 4242 };
 }
 
-function workspace(repos: string[]): StoredWorkspace {
-  return { owner: "acme", repos, installationId: INSTALLATION };
+/** Anything reaching the network from here is a bug this asserts against. */
+function watchFetch() {
+  return vi.spyOn(globalThis, "fetch");
 }
 
 afterEach(() => {
   vi.restoreAllMocks();
-  forgetInstallation(INSTALLATION);
-  forgetRepositories(INSTALLATION);
 });
 
 describe("when nobody said which", () => {
-  it("uses the one the guild named", async () => {
-    githubGrants(["widgets", "gadgets"]);
-    await expect(resolveRepository(workspace(["gadgets"]))).resolves.toEqual({
+  it("uses the one the guild named", () => {
+    expect(resolveRepository(workspace(["gadgets"]))).toEqual({
       owner: "acme",
       repo: "gadgets",
     });
   });
 
-  it("uses the one the installation covers, when the guild named none", async () => {
-    // The useful default. The organization already chose when it installed the
-    // app, and making an admin restate that is two copies of one decision.
-    githubGrants(["widgets"]);
-    await expect(resolveRepository(workspace([]))).resolves.toEqual({
-      owner: "acme",
-      repo: "widgets",
-    });
-  });
-
-  it("refuses to guess between several", async () => {
+  it("refuses to guess between several", () => {
     // The answer that makes a dashboard say which. Picking the first would be
     // a tile quietly reporting one team's numbers to another.
-    githubGrants(["widgets", "gadgets"]);
-    await expect(resolveRepository(workspace([]))).resolves.toEqual({
+    expect(resolveRepository(workspace(["widgets", "gadgets"]))).toEqual({
       unavailable: "repository-required",
     });
-    await expect(resolveRepository(workspace(["widgets", "gadgets"]))).resolves.toEqual({
-      unavailable: "repository-required",
-    });
-  });
-});
-
-describe("what it asks GitHub, and when", () => {
-  it("asks nothing when the guild named its repositories", async () => {
-    // Reads run on the caller's own credential, so "what may this app see" is a
-    // question nobody asked on this path — and answering it costs a token mint
-    // and a page walk. A guild that named its repositories needs neither.
-    const fetching = githubGrants(["widgets", "gadgets"]);
-    await expect(resolveRepository(workspace(["gadgets"]))).resolves.toEqual({
-      owner: "acme",
-      repo: "gadgets",
-    });
-    expect(fetching).not.toHaveBeenCalled();
-  });
-
-  it("resolves before an organization has installed the app", async () => {
-    // The consequence worth having: a guild whose admin filled the form in gets
-    // its dashboard without waiting on an organization owner. What still waits
-    // on the installation is the webhook, which is a different surface.
-    const fetching = githubGrants(["widgets"]);
-    await expect(
-      resolveRepository({ owner: "acme", repos: ["gadgets"], installationId: null })
-    ).resolves.toEqual({ owner: "acme", repo: "gadgets" });
-    expect(fetching).not.toHaveBeenCalled();
-  });
-
-  it("still asks when the guild named none, because only GitHub knows", async () => {
-    const fetching = githubGrants(["widgets"]);
-    await expect(resolveRepository(workspace([]))).resolves.toEqual({
-      owner: "acme",
-      repo: "widgets",
-    });
-    expect(fetching).toHaveBeenCalled();
   });
 });
 
 describe("when a dashboard said which", () => {
-  it("takes it", async () => {
-    githubGrants(["widgets", "gadgets"]);
-    await expect(resolveRepository(workspace([]), "gadgets")).resolves.toEqual({
+  it("takes it", () => {
+    expect(resolveRepository(workspace(["widgets", "gadgets"]), "gadgets")).toEqual({
       owner: "acme",
       repo: "gadgets",
     });
   });
 
-  it("matches the way GitHub does, and answers in GitHub's spelling", async () => {
+  it("matches the way GitHub does, and answers in GitHub's spelling", () => {
     // Names are case-insensitive there and typed by hand here, so the value
-    // that goes back into a URL is the one GitHub gave rather than the one
-    // somebody typed into a dashboard.
-    githubGrants(["Widgets"]);
-    await expect(resolveRepository(workspace([]), "widgets")).resolves.toEqual({
+    // that goes back into a URL is the one the admin's list gave rather than
+    // the one somebody typed into a dashboard.
+    expect(resolveRepository(workspace(["Widgets", "gadgets"]), "widgets")).toEqual({
       owner: "acme",
       repo: "Widgets",
     });
   });
 
-  it("refuses one the organization did not grant", async () => {
+  it("refuses one outside the list the guild wrote down", () => {
     // The boundary this code does enforce. A dashboard is a definition somebody
-    // edits, so it can name anything; the installation is what decides whether
+    // edits, so it can name anything; the admin's list is what decides whether
     // anything comes back.
-    githubGrants(["widgets"]);
-    await expect(resolveRepository(workspace([]), "secrets")).resolves.toEqual({
-      unavailable: "repository-not-granted",
-    });
-  });
-
-  it("refuses one outside the list the guild narrowed itself to", async () => {
-    // Granted by the organization and still not this install's to read: an
-    // admin who listed one repository meant the others were not theirs.
-    githubGrants(["widgets", "payroll"]);
-    await expect(resolveRepository(workspace(["widgets"]), "payroll")).resolves.toEqual({
-      unavailable: "repository-not-granted",
+    expect(resolveRepository(workspace(["widgets"]), "payroll")).toEqual({
+      unavailable: "repository-not-listed",
     });
   });
 });
 
 describe("when there is nothing to resolve against", () => {
-  it("says not configured before it says anything else", async () => {
-    const fetching = githubGrants(["widgets"]);
-    await expect(resolveRepository(null, "widgets")).resolves.toEqual({
+  it("says not configured for an install nobody has set up", () => {
+    expect(resolveRepository(null, "widgets")).toEqual({
       unavailable: "not-configured",
     });
-    // And asks GitHub nothing: an install with no owner typed has no account to
-    // ask about.
-    expect(fetching).not.toHaveBeenCalled();
   });
 
-  it("says not installed when no installation was found", async () => {
-    const fetching = githubGrants(["widgets"]);
-    await expect(
-      resolveRepository({ owner: "acme", repos: [], installationId: null })
-    ).resolves.toEqual({ unavailable: "not-installed" });
-    expect(fetching).not.toHaveBeenCalled();
-  });
-
-  it("says not installed when the grant has gone away since", async () => {
-    // Recorded as installed and GitHub now refusing: the organization removed
-    // the app between the last sync and this call.
-    vi.spyOn(globalThis, "fetch").mockImplementation(
-      async () => new Response("{}", { status: 404 })
-    );
-    await expect(resolveRepository(workspace([]))).resolves.toEqual({
-      unavailable: "not-installed",
+  it("says not configured for an install that named no repository", () => {
+    // An empty list is an unfinished form rather than a wide one. Nothing in
+    // this app reads it as "everything", so there is no reading of a blank
+    // field that opens a repository the admin did not write down.
+    expect(resolveRepository({ owner: "acme", repos: [], installationId: 4242 })).toEqual({
+      unavailable: "not-configured",
     });
   });
 });
 
-describe("how often it asks", () => {
-  it("reads the granted list once and reuses it", async () => {
-    // Checked on every source call that names a repository, so a round trip per
-    // call would put one in front of every dashboard tile.
-    const fetching = githubGrants(["widgets", "gadgets"]);
-    await resolveRepository(workspace([]), "widgets");
-    await resolveRepository(workspace([]), "gadgets");
-    // One mint, one listing, and nothing for the second call.
-    expect(fetching).toHaveBeenCalledTimes(2);
+describe("what it asks GitHub", () => {
+  it("nothing, on any path", () => {
+    const fetching = watchFetch();
+    resolveRepository(workspace(["gadgets"]));
+    resolveRepository(workspace(["widgets", "gadgets"]), "widgets");
+    resolveRepository(workspace(["widgets"]), "payroll");
+    resolveRepository(workspace([]));
+    resolveRepository(null);
+    expect(fetching).not.toHaveBeenCalled();
   });
 
-  it("reads it again once the delivery says it changed", async () => {
-    const fetching = githubGrants(["widgets"]);
-    await resolveRepository(workspace([]), "widgets");
-    forgetRepositories(INSTALLATION);
-    await resolveRepository(workspace([]), "widgets");
-    expect(fetching).toHaveBeenCalledTimes(3);
+  it("resolves before an organization has installed the app", () => {
+    // The consequence worth having: a guild whose admin filled the form in gets
+    // its dashboard without waiting on an organization owner. What still waits
+    // on the installation is the webhook, which is a different surface.
+    expect(
+      resolveRepository({ owner: "acme", repos: ["gadgets"], installationId: null })
+    ).toEqual({ owner: "acme", repo: "gadgets" });
   });
 });

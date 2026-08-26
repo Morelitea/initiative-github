@@ -29,12 +29,12 @@ import { pool } from "../db.js";
 export interface Workspace {
   owner: string;
   /**
-   * The repositories a guild narrowed itself to.
+   * The repositories this guild's install is about.
    *
-   * Empty means *every repository the installation covers*, which is the
-   * useful default: an organization already chose which repositories to grant
-   * when it installed the app, and making an admin restate that list in
-   * Initiative is asking them to keep two copies of one decision in step.
+   * The whole of the boundary, and the only place it is written down: a
+   * delivery is matched against this list and a call is resolved against it,
+   * so a repository absent from it is one this install has nothing to say
+   * about. An admin names them, which makes the boundary theirs to read.
    */
   repos: string[];
 }
@@ -87,8 +87,8 @@ export async function workspaceFor(
   if (!row) return null;
   return {
     owner: row.owner,
-    // Null and empty mean the same thing: every repository the installation
-    // covers. Nothing writes null, but the column allows one.
+    // The column allows a null and nothing writes one. Read as empty, which
+    // every caller already treats as an install with nothing to answer for.
     repos: row.repos ?? [],
     // `pg` hands back BIGINT as a string, since not every value fits a JS
     // number. An installation id comfortably does, so it is narrowed once here.
@@ -112,9 +112,9 @@ function watching(rows: Array<{ app_install_id: string; guild_id: string }>) {
  * Matched on the **installation** first rather than on the owner's name. A
  * delivery carries the installation that produced it, which is a fact GitHub
  * asserts; an owner is a string an admin typed and a repository can be renamed
- * or transferred under one. Then narrowed by the guild's own list, where it has
- * one — an empty list means every repository the installation covers, so any
- * delivery from that installation is theirs by construction.
+ * or transferred under one. Then narrowed to the guild's own list, which is the
+ * same boundary a call is resolved against — so what a guild is told about and
+ * what it can ask about are one list rather than two that can drift.
  */
 export async function installsWatching(
   installationId: number,
@@ -124,10 +124,8 @@ export async function installsWatching(
     `SELECT app_install_id, guild_id
        FROM workspaces
       WHERE installation_id = $1
-        AND (repos IS NULL
-             OR cardinality(repos) = 0
-             OR EXISTS (SELECT 1 FROM unnest(repos) AS r
-                         WHERE lower(r) = lower($2)))`,
+        AND EXISTS (SELECT 1 FROM unnest(repos) AS r
+                     WHERE lower(r) = lower($2))`,
     [installationId, repo]
   );
   return watching(found.rows);
@@ -174,14 +172,6 @@ export async function installsAwaiting(owner: string): Promise<WatchingInstall[]
     [owner]
   );
   return watching(found.rows);
-}
-
-/** Every installation this app is currently answering for. For the sweep. */
-export async function knownInstallations(): Promise<number[]> {
-  const found = await pool.query<{ installation_id: string }>(
-    "SELECT DISTINCT installation_id FROM workspaces WHERE installation_id IS NOT NULL"
-  );
-  return found.rows.map((row) => Number(row.installation_id));
 }
 
 /** Drop an install's configuration. For the lifecycle removal signal. */

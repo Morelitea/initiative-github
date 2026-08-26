@@ -302,7 +302,7 @@ export const manifest: Manifest = {
       },
     },
     {
-      // The only thing an admin types: which repository this guild cares
+      // The only thing an admin types: which repositories this guild cares
       // about. Not a credential — a setting — but it rides the same form
       // machinery.
       //
@@ -331,22 +331,23 @@ export const manifest: Manifest = {
           },
         },
         {
-          // Optional, and blank is the answer to reach for. The organization
-          // already chose which repositories to grant when it installed the
-          // app; asking an admin to restate that list here is asking them to
-          // keep two copies of one decision in step. Filled in only to narrow
-          // *further* than the installation does.
+          // Required, and it is the whole of the boundary: this app resolves
+          // every call against this list and matches every delivery against it,
+          // so a repository absent from here is one this install has nothing to
+          // say about. Written down where an admin can read it back, rather
+          // than inherited from a grant they would have to go to GitHub to see.
           //
           // Comma-separated because a connection's fields draw from one closed
           // set of types and there is no array in it — deliberately, since that
           // is what lets one renderer draw every app's settings page.
           key: "repos",
           type: "string",
+          required: true,
           label: {
-            en: "Repositories (comma-separated; blank for all)",
-            de: "Repositories (kommagetrennt; leer für alle)",
-            es: "Repositorios (separados por comas; vacío para todos)",
-            fr: "Dépôts (séparés par des virgules ; vide pour tous)",
+            en: "Repositories (comma-separated)",
+            de: "Repositories (kommagetrennt)",
+            es: "Repositorios (separados por comas)",
+            fr: "Dépôts (séparés par des virgules)",
           },
         },
       ],
@@ -374,7 +375,7 @@ export const manifest: Manifest = {
           // on its binding. A dashboard belongs to exactly one initiative, so
           // binding it there is what pins one team to one repository.
           //
-          // Optional: an install covering one repository needs nobody to say so.
+          // Optional: an install naming one repository needs nobody to say so.
           key: "repo",
           type: "string",
           label: {
@@ -435,7 +436,7 @@ export const manifest: Manifest = {
           // on its binding. A dashboard belongs to exactly one initiative, so
           // binding it there is what pins one team to one repository.
           //
-          // Optional: an install covering one repository needs nobody to say so.
+          // Optional: an install naming one repository needs nobody to say so.
           key: "repo",
           type: "string",
           label: {
@@ -467,7 +468,7 @@ export const manifest: Manifest = {
           // on its binding. A dashboard belongs to exactly one initiative, so
           // binding it there is what pins one team to one repository.
           //
-          // Optional: an install covering one repository needs nobody to say so.
+          // Optional: an install naming one repository needs nobody to say so.
           key: "repo",
           type: "string",
           label: {
@@ -515,7 +516,7 @@ export const manifest: Manifest = {
           // on its binding. A dashboard belongs to exactly one initiative, so
           // binding it there is what pins one team to one repository.
           //
-          // Optional: an install covering one repository needs nobody to say so.
+          // Optional: an install naming one repository needs nobody to say so.
           key: "repo",
           type: "string",
           label: {

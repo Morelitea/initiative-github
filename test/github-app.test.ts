@@ -265,8 +265,8 @@ describe("subscribing to what it republishes, and nothing else", () => {
     // GitHub's own words: "All GitHub Apps receive this event by default. You
     // cannot manually subscribe to this event." So naming them would be asking
     // for something already arriving — and a webhook endpoint that hears an
-    // organization install, uninstall, or re-scope the app either way, which
-    // is the one thing this app cannot work out for itself in time to matter.
+    // organization install or uninstall the app either way, which is the one
+    // thing this app cannot work out for itself in time to matter.
     for (const event of ["installation", "installation_repositories"]) {
       expect(registration.default_events).not.toContain(event);
     }

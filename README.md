@@ -37,7 +37,7 @@ the other. Both have to happen; either order works.
 | | In Initiative | At GitHub |
 |---|---|---|
 | **Who** | a guild admin, from the marketplace | somebody who owns the account or organization |
-| **Says** | which repositories this guild cares about | which repositories this app may see, and what it may do in them |
+| **Says** | which repositories this guild cares about, and it is the boundary every call is checked against | what this app may do, and where deliveries come from |
 | **Undone by** | uninstalling in Initiative | uninstalling at GitHub |
 
 Steps 6 and 7 below are those two halves.
@@ -267,8 +267,9 @@ its settings:
 
 - **Owner or organization** — your GitHub username, or the org's name. Just the
   account: `octocat`, not `octocat/hello-world`.
-- **Repositories** — comma-separated, or blank for every repository the
-  installation covers.
+- **Repositories** — comma-separated. This list is the boundary: a call is
+  resolved against it and a delivery is matched against it, so a repository not
+  named here is one this install has nothing to say about.
 
 Install **GitHub overview** the same way for the ready-made dashboard.
 
@@ -329,8 +330,10 @@ Optional:
 | Registration stuck `pending` | Initiative cannot reach `base_url`, or the two secrets differ. |
 | Every tile says *connect your account* | You have not connected, or the write-back failed — see the next row. |
 | *Nearly there* after authorizing | GitHub authorized you and Initiative did not record it. Try again; nothing was lost. |
-| Tile says *not installed* | Step 7 is not done for the account named in step 6, or **Repositories** is blank and the app is not installed anywhere. |
-| Tile says *repository-required* | The install covers several repositories and the tile does not say which. Name one in the app's settings, or set `repo` on the dashboard tile. |
+| Tile says *not configured* | **Owner or organization** or **Repositories** is blank in step 6. Both are required. |
+| Tile says *repository-required* | **Repositories** names several and the tile does not say which. Set `repo` on the dashboard tile. |
+| Tile says *repository-not-listed* | The tile's `repo` is not in **Repositories**. Fix one or the other. |
+| Events never arrive | Step 7 is not done for the account named in step 6. Widgets work without it; deliveries do not. |
 | Redirect mismatch at GitHub | `APP_PUBLIC_URL` and the Callback URL disagree. They must match exactly, scheme and port included. |
 | GitHub's *Recent Deliveries* shows red | `401` is the webhook secret differing between the form and the container. A timeout is the proxy: the Webhook URL does not reach port 8080. |
 

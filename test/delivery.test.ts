@@ -117,8 +117,12 @@ describe("what a delivery does", () => {
     expect(syncInstall).toHaveBeenCalledTimes(1);
   });
 
-  it("follows a change to which repositories it may see", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repos: [] }, 7000);
+  it("leaves a change to the installation's own grant alone", async () => {
+    // GitHub sends this whenever an organization widens or narrows what an
+    // installation covers. Nothing here reads that grant — a call is resolved
+    // against the list a guild admin wrote down — so there is no boundary to
+    // move and no reason to re-sync every guild in the organization.
+    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 7000);
 
     const result = await handleDelivery(
       "installation_repositories",
@@ -130,8 +134,8 @@ describe("what a delivery does", () => {
       "d-4"
     );
 
-    expect(result).toEqual({ resynced: 1, published: 0 });
-    expect(syncInstall).toHaveBeenCalledWith(500);
+    expect(result).toEqual({ resynced: 0, published: 0, reason: "nothing-to-say" });
+    expect(syncInstall).not.toHaveBeenCalled();
   });
 
   it("says so when the change touches nobody here", async () => {
@@ -299,7 +303,7 @@ describe("republishing what a repository did", () => {
 
   it("tells two guilds watching the same repository, and each independently", async () => {
     await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
-    await rememberWorkspace(12, 600, { owner: "acme", repos: [] }, 9011);
+    await rememberWorkspace(12, 600, { owner: "acme", repos: ["widgets"] }, 9011);
     await subscriber(500);
     await subscriber(600);
 

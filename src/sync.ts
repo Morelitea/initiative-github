@@ -2,10 +2,10 @@
  * Keeping this app's picture of its installs true — on both sides.
  *
  * This app is installed twice by two different people, and neither knows about
- * the other. A guild admin installs it in Initiative and says which repository
- * they care about; an organization owner installs the GitHub App at GitHub and
- * says which repositories it may see. Nothing joins those up except this file,
- * and until they agree there is nothing to answer with.
+ * the other. A guild admin installs it in Initiative and names the repositories
+ * they care about; an organization owner installs the GitHub App at GitHub, and
+ * that is what makes deliveries arrive. Nothing joins those up except this
+ * file, and until both have happened there is nothing to answer with.
  *
  * So there are three ways this app learns something changed, and it needs all
  * three:
@@ -34,31 +34,26 @@ import type { Workspace } from "./github/workspace.js";
 import { config } from "./config.js";
 import { initiative } from "./initiative.js";
 import {
-  forgetInstallation,
-  forgetInstallationsExcept,
   installationForOwner,
 } from "./github/app.js";
 import {
   forgetInstallsExcept,
   forgetWorkspace,
-  knownInstallations,
   rememberWorkspace,
-  workspaceFor,
 } from "./github/workspace.js";
 
 /**
  * What a `static` connection's values look like once an admin has filled it in.
  *
- * One required field and one optional one. `repos` is a comma-separated list
- * because the field vocabulary a connection form draws from has no array in it
- * — deliberately, since one closed set of field types is what lets one renderer
- * draw every app's settings page — so a list arrives as a string and is split
- * here rather than anywhere a person can see.
+ * Two fields, both required, and `null` for either one missing — an install
+ * that named no repository has nothing to answer about, so it is unfinished
+ * rather than broad.
  *
- * Blank means *every repository the installation covers*, which is the useful
- * default: the organization already chose which repositories to grant when it
- * installed the app, and asking an admin to restate that list is asking them to
- * keep two copies of one decision in step.
+ * `repos` is a comma-separated list because the field vocabulary a connection
+ * form draws from has no array in it — deliberately, since one closed set of
+ * field types is what lets one renderer draw every app's settings page — so a
+ * list arrives as a string and is split here rather than anywhere a person can
+ * see.
  */
 function readWorkspace(installConfig: InstallConfig): Workspace | null {
   const values = installConfig.connections.workspace;
@@ -78,6 +73,7 @@ function readWorkspace(installConfig: InstallConfig): Workspace | null {
     // which is what they meant.
     .map((name) => (name.includes("/") ? name.slice(name.lastIndexOf("/") + 1) : name))
     .filter(Boolean);
+  if (!repos.length) return null;
 
   return { owner, repos };
 }
@@ -107,43 +103,25 @@ export async function syncInstall(guildId: number): Promise<boolean> {
   }
 
   // Asked every time rather than trusted from last time. An organization can
-  // narrow an installation to fewer repositories without uninstalling it, and
-  // that is invisible from every other angle — the token keeps minting and the
-  // calls start coming back empty.
+  // uninstall and reinstall the app, which is a different installation id under
+  // the same name — and every delivery is routed by that id, so a stale one
+  // means events silently stop arriving.
   const installationId = await installationForOwner(workspace.owner);
   await rememberWorkspace(installId, guildId, workspace, installationId);
 
-  if (installationId === null && !workspace.repos.length) {
-    // The form names an account and no repositories, and nothing has installed
-    // the app on that account — so there is no list to resolve against from
-    // either side and no tile can answer. Reported as its own reason rather
-    // than as "not configured", because the move is somebody else's: an
-    // organization owner, at GitHub.
-    //
-    // An install that *did* name its repositories is not reported here at all.
-    // Reads run on each member's own credential, so those tiles answer with or
-    // without an installation, and calling the install invalid would be telling
-    // an admin their working dashboard is broken. What is still missing in that
-    // case is the webhook — which is why the poll keeps looking.
-    await initiative.reportStatus(guildId, {
-      state: "invalid",
-      detail: "github_app_not_installed",
-    });
-    return false;
-  }
-
+  // Reported `ok` whether or not an organization owner has installed the app at
+  // GitHub yet. Reads and writes run on the caller's own credential against the
+  // repositories this form names, so they answer either way, and telling an
+  // admin their working dashboard is invalid would be false. The installation
+  // is what routes *deliveries* — so until it exists, emissions are what this
+  // guild is missing, and the poll keeps looking because the remedy belongs to
+  // somebody else.
   await initiative.reportStatus(guildId, { state: "ok" });
   return true;
 }
 
 /** Forget an install this app has been removed from. */
 export async function forgetInstall(installId: number): Promise<void> {
-  // Read before the row goes, so the held token can go with it rather than
-  // sitting in memory answering for a guild that is no longer asking.
-  const workspace = await workspaceFor(installId);
-  if (workspace?.installationId !== null && workspace?.installationId !== undefined) {
-    forgetInstallation(workspace.installationId);
-  }
   await forgetWorkspace(installId);
 }
 
@@ -178,10 +156,6 @@ export async function syncAllInstalls(): Promise<void> {
   const present = installs.filter((i) => i.enabled).map((i) => i.install_id);
   const dropped = await forgetInstallsExcept(present);
   if (dropped) console.log(`dropped ${dropped} install(s) this app is no longer in`);
-
-  // Held tokens outlive the rows they were minted for by up to an hour, so the
-  // sweep is what actually ends access rather than expiry doing it eventually.
-  forgetInstallationsExcept(await knownInstallations());
 }
 
 /**
