@@ -1,14 +1,14 @@
 /**
  * The manifest this app serves is one a deployment will take.
  *
- * This is the test worth copying into your own app. It is cheap, it runs
- * offline, and it fails at the moment you break the manifest rather than when
- * an operator tries to register you.
+ * Cheap, offline, and it fails the moment the manifest breaks rather than when
+ * an operator tries to register the app — which is the only other place anybody
+ * would find out.
  *
- * The cases below the first one are about the choices this app makes as a
- * *reference*: least privilege, and asking for nothing it does not use. They
- * are assertions about this app, not about the protocol — but they are the
- * habits the protocol is shaped to reward.
+ * Most of what follows is not the protocol's rules but this app's own: every
+ * permission has something behind it, every source runs on the caller's
+ * credential, and a widget never asks for more than its sources do. Each is a
+ * decision that would otherwise be re-made by accident.
  */
 
 import { describe, expect, it } from "vitest";
@@ -226,8 +226,9 @@ describe("the choices this app makes", () => {
 
   it("mounts no embedded surface", () => {
     // Everything this app offers lands inside Initiative's own surfaces —
-    // widgets and automation nodes — rather than in an iframe holding a second
-    // UI. An embed is for an app whose product *is* a page.
+    // widgets, and the companion dashboard arranging them — rather than in an
+    // iframe holding a second UI. An embed is for an app whose product *is* a
+    // page, and this one's is a set of tiles.
     expect(manifest.embeds).toBeUndefined();
     expect(manifest.features).not.toContain("embeds");
   });

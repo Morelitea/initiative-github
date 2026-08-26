@@ -9,7 +9,7 @@
  * healthy, and cannot be added by anybody. That is a real failure mode and it
  * looks like success from every angle except the one that matters.
  *
- * Two listings here, which is the shape worth copying:
+ * Two listings, and they are separate installs:
  *
  * 1. **The app.** Its definition is the manifest itself, read from the document
  *    this app serves rather than restated — restating it is how a catalog entry

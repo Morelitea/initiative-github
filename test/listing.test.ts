@@ -87,9 +87,9 @@ describe("the companion dashboard", () => {
   });
 
   it("shows every widget this app has", () => {
-    // Not a rule of the protocol — a choice for this app. A companion that
-    // shipped two of three widgets would leave the third with nowhere to be
-    // seen unless a guild built its own dashboard.
+    // A choice rather than a rule. A companion shipping only some of them
+    // leaves the rest with nowhere to be seen unless a guild assembles a
+    // dashboard itself, which is the work this listing exists to save.
     const shown = new Set(
       dashboardWidgets().map((widget) => appWidgetParts(widget.type)?.widgetId)
     );

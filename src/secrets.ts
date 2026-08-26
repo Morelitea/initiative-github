@@ -11,10 +11,9 @@
  * stored alongside, because reusing one with GCM is the way this construction
  * actually breaks.
  *
- * This is in the reference app rather than the kit deliberately. Custody is the
- * app's decision — where the key lives, how it rotates, whether a hosted
- * deployment uses a KMS instead — and a kit that made that choice for everybody
- * would be wrong for most of them.
+ * Custody is this app's decision and stays here rather than in the kit: where
+ * the key lives, how it rotates, whether a deployment would rather use a KMS
+ * are all answers an operator gets to change without the protocol moving.
  */
 
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";

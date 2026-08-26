@@ -23,8 +23,8 @@
  *
  * Reporting the verdict matters as much as reading the values. An admin who
  * typed a repository this app cannot see gets `invalid` beside the install with
- * a reason, rather than three widgets that quietly say "unavailable" with no
- * cause and no clue whose problem it is.
+ * a reason, rather than widgets that quietly say "unavailable" with no cause
+ * and no clue whose problem it is.
  */
 
 import { ChannelError, type InstallConfig } from "initiative-app-kit";
