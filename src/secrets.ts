@@ -1,66 +1,21 @@
 /**
- * Encrypting the one thing in this app worth stealing.
+ * The key this app seals credentials with, and where it comes from.
  *
- * A member's GitHub token reaches whatever that member reaches. Storing it as
- * plaintext in a column would mean a database backup, a replica, or a stray
- * `SELECT` hands over everyone's account at once — so it is sealed with a key
- * the database does not have.
+ * A member's GitHub token reaches whatever that member reaches, so it is sealed
+ * with a key the database does not have. The sealing itself is the kit's — the
+ * construction is the same in every app and breaks quietly when it is wrong.
  *
- * AES-256-GCM: authenticated, so a token that was tampered with fails to open
- * rather than decrypting into something else. A fresh 96-bit nonce per value,
- * stored alongside, because reusing one with GCM is the way this construction
- * actually breaks.
- *
- * Custody is this app's decision and stays here rather than in the kit: where
- * the key lives, how it rotates, whether a deployment would rather use a KMS
- * are all answers an operator gets to change without the protocol moving.
+ * What is this app's, and what this file is, is **custody**: the key arrives in
+ * the environment and is checked once at import, so a deployment with a
+ * truncated one dies at boot rather than the first time somebody connects. An
+ * operator who would rather it came from a KMS changes this and nothing else.
  */
 
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createVault } from "initiative-app-kit";
 
 import { config } from "./config.js";
 
-const ALGORITHM = "aes-256-gcm";
-const NONCE_BYTES = 12;
-const TAG_BYTES = 16;
+const vault = createVault(config.encryptionKey);
 
-/** The key, decoded once. 32 bytes, base64 in the environment. */
-function key(): Buffer {
-  const decoded = Buffer.from(config.encryptionKey, "base64");
-  if (decoded.length !== 32) {
-    throw new Error(
-      "APP_ENCRYPTION_KEY must be 32 bytes, base64-encoded — " +
-        "generate one with: openssl rand -base64 32"
-    );
-  }
-  return decoded;
-}
-
-/** `<nonce>.<ciphertext>.<tag>`, all base64url. */
-export function seal(plaintext: string): string {
-  const nonce = randomBytes(NONCE_BYTES);
-  const cipher = createCipheriv(ALGORITHM, key(), nonce);
-  const sealed = Buffer.concat([
-    cipher.update(plaintext, "utf-8"),
-    cipher.final(),
-  ]);
-  const tag = cipher.getAuthTag();
-  return [nonce, sealed, tag].map((part) => part.toString("base64url")).join(".");
-}
-
-/** The plaintext, or null if it does not open under this key. */
-export function open(sealed: string): string | null {
-  const parts = sealed.split(".");
-  if (parts.length !== 3) return null;
-  try {
-    const [nonce, body, tag] = parts.map((part) => Buffer.from(part, "base64url"));
-    if (nonce.length !== NONCE_BYTES || tag.length !== TAG_BYTES) return null;
-    const decipher = createDecipheriv(ALGORITHM, key(), nonce);
-    decipher.setAuthTag(tag);
-    return Buffer.concat([decipher.update(body), decipher.final()]).toString("utf-8");
-  } catch {
-    // A value that does not authenticate is not an error to handle — it is a
-    // credential that is no longer usable, and the caller treats it as absent.
-    return null;
-  }
-}
+export const seal = vault.seal;
+export const open = vault.open;

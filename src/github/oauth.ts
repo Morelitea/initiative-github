@@ -31,9 +31,14 @@
  * replica and comes back to whichever the load balancer picks.
  */
 
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 
-import { type ConnectOutcome, landingUrl } from "initiative-app-kit";
+import {
+  CHALLENGE_METHOD,
+  type ConnectOutcome,
+  landingUrl,
+  mintPkce,
+} from "initiative-app-kit";
 
 import { config } from "../config.js";
 import { initiative } from "../initiative.js";
@@ -72,9 +77,7 @@ async function beginFlow(
   returnUrl: string | null
 ): Promise<{ state: string; challenge: string }> {
   const state = randomUUID();
-  // 32 bytes as base64url is 43 characters — the shortest verifier the spec
-  // allows, and the length GitHub's own examples use.
-  const verifier = randomBytes(32).toString("base64url");
+  const { verifier, challenge } = mintPkce();
 
   await pool.query(
     `INSERT INTO oauth_states
@@ -86,10 +89,7 @@ async function beginFlow(
   // when somebody connects cannot fall behind in a way that matters.
   await pool.query("DELETE FROM oauth_states WHERE expires_at < now()");
 
-  return {
-    state,
-    challenge: createHash("sha256").update(verifier).digest("base64url"),
-  };
+  return { state, challenge };
 }
 
 /** The query every leg of the flow carries. */
@@ -99,7 +99,7 @@ function authorizeParams(state: string, challenge: string): URLSearchParams {
     redirect_uri: REDIRECT_URI,
     state,
     code_challenge: challenge,
-    code_challenge_method: "S256",
+    code_challenge_method: CHALLENGE_METHOD,
     // No `scope`. A GitHub App's user token carries the installation's
     // permissions, so there is nothing for this app to ask for here.
   });
