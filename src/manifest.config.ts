@@ -682,7 +682,7 @@ export const manifest: Manifest = {
 function METRIC_WIDGET(): string {
   return `
 export default function render({ data }) {
-  const rows = data["open-issues"] ?? {};
+  const rows = data[${JSON.stringify(READ_IDS.openIssues)}] ?? {};
   const total = rows.total ?? 0;
   const delta = rows.delta ?? 0;
   return {
@@ -701,7 +701,7 @@ export default function render({ data }) {
 function LIST_WIDGET(): string {
   return `
 export default function render({ data }) {
-  const rows = data["review-queue"] ?? {};
+  const rows = data[${JSON.stringify(READ_IDS.reviewQueue)}] ?? {};
   const items = rows.items ?? [];
   if (!items.length) {
     return { kind: "empty", label: "Nothing is waiting on you" };
@@ -720,7 +720,7 @@ export default function render({ data }) {
 function ALERTS_WIDGET(): string {
   return `
 export default function render({ data }) {
-  const rows = data["dependabot-alerts"] ?? {};
+  const rows = data[${JSON.stringify(READ_IDS.dependabotAlerts)}] ?? {};
   const severities = rows.severities ?? [];
   if (!severities.length) {
     return { kind: "empty", label: "No open Dependabot alerts" };
@@ -740,7 +740,7 @@ export default function render({ data }) {
 function SERIES_WIDGET(): string {
   return `
 export default function render({ data }) {
-  const rows = data["issue-throughput"] ?? {};
+  const rows = data[${JSON.stringify(READ_IDS.issueThroughput)}] ?? {};
   const points = rows.points ?? [];
   return {
     kind: "series",

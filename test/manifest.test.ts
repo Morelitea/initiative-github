@@ -295,6 +295,22 @@ describe("the choices this app makes", () => {
     }
   });
 
+  it("draws from the ids it binds, in the module itself", () => {
+    // The id is spelled three times — the binding, the sample rows, and the
+    // module's own lookup — and only the first two are data this file can
+    // cross-check. The third is a string inside a string, so it is asserted
+    // here: a module reading a key nothing supplies draws zeros with no error
+    // anywhere, which is the quietest way a widget can be wrong.
+    for (const widget of manifest.widgets ?? []) {
+      for (const id of widget.endpoints ?? []) {
+        expect(
+          widget.module_source.includes(JSON.stringify(id)),
+          `${widget.id} does not read ${id}`
+        ).toBe(true);
+      }
+    }
+  });
+
   it("ships sample data so a preview renders with no network call", () => {
     for (const widget of manifest.widgets ?? []) {
       expect(widget.sample_data).toBeDefined();
