@@ -2,7 +2,7 @@
   "name": "initiative-github",
   "version": "0.0.0-dev",
   "private": true,
-  "description": "The reference Initiative app: GitHub issues and reviews, as dashboard widgets and automation nodes.",
+  "description": "The reference Initiative app: a repository's issues, reviews and dependency alerts as endpoints an automation can call and widgets a dashboard can draw. Clone this to start your own.",
   "license": "MIT",
   "type": "module",
   "engines": {
