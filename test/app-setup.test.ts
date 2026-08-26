@@ -19,22 +19,30 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // plain assignment here would run after `config.ts` had already decided this
 // deployment has no setup token — which is the state the second case below
 // deliberately reproduces, and not the one the rest of the file wants.
-const TOKEN = vi.hoisted(() => {
-  const token = "setup-token-for-tests";
-  process.env.GITHUB_APP_SETUP_TOKEN = token;
-  return token;
+const [TOKEN, SECOND] = vi.hoisted(() => {
+  const tokens = ["setup-token-for-tests", "a-second-operators-token"];
+  // Two, comma separated: an operator may hold more than one so a second
+  // person can be let in, or a token replaced, without ending a flow already
+  // in progress. Everything below has to hold for both.
+  process.env.INITIATIVE_APP_SETUP_TOKEN = tokens.join(",");
+  return tokens;
 });
+
+import { SetupGate } from "initiative-app-kit";
 
 import { config } from "../src/config.js";
 import {
   authorized,
   convert,
   credentialsPage,
-  mintState,
   registerPage,
   setupEnabled,
   verifyState,
 } from "../src/github/setup.js";
+
+/** A state as the first route would mint it, for the second route to check. */
+const mintState = (now: number = Date.now(), token: string = TOKEN) =>
+  new SetupGate({ tokens: config.setupTokens }).mintState(token, now);
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -50,36 +58,38 @@ describe("whether the flow exists at all", () => {
     // configuration is read at import. A fresh registry with the variable gone
     // is the only honest way to see what a deployment that never set it does.
     vi.resetModules();
-    const previous = process.env.GITHUB_APP_SETUP_TOKEN;
-    delete process.env.GITHUB_APP_SETUP_TOKEN;
+    const previous = process.env.INITIATIVE_APP_SETUP_TOKEN;
+    delete process.env.INITIATIVE_APP_SETUP_TOKEN;
     try {
       const fresh = await import("../src/github/setup.js");
       expect(fresh.setupEnabled()).toBe(false);
-      expect(fresh.authorized("anything")).toBe(false);
+      expect(fresh.authorized("anything")).toBeNull();
       expect(fresh.verifyState("anything")).toBe(false);
       // Not "returns something useless" — refuses. A state signed with no key
       // would verify against no key.
-      expect(() => fresh.mintState()).toThrow();
+      expect(() => new SetupGate({ tokens: [] }).mintState("anything")).toThrow();
     } finally {
-      process.env.GITHUB_APP_SETUP_TOKEN = previous;
+      process.env.INITIATIVE_APP_SETUP_TOKEN = previous;
       vi.resetModules();
     }
   });
 });
 
 describe("the token on the first route", () => {
-  it("accepts the one the operator set", () => {
-    expect(authorized(TOKEN)).toBe(true);
+  it("hands back the one the operator set, not merely a yes", () => {
+    // Which token opened the flow decides which token signs its state, so the
+    // answer has to be the token rather than a boolean.
+    expect(authorized(TOKEN)).toBe(TOKEN);
   });
 
   it("refuses a wrong one, a missing one, and a prefix of the right one", () => {
-    expect(authorized("wrong")).toBe(false);
-    expect(authorized(null)).toBe(false);
-    expect(authorized("")).toBe(false);
+    expect(authorized("wrong")).toBeNull();
+    expect(authorized(null)).toBeNull();
+    expect(authorized("")).toBeNull();
     // A length mismatch raises inside the compare rather than returning false,
     // so it is handled before it gets there.
-    expect(authorized(TOKEN.slice(0, -1))).toBe(false);
-    expect(authorized(`${TOKEN}x`)).toBe(false);
+    expect(authorized(TOKEN.slice(0, -1))).toBeNull();
+    expect(authorized(`${TOKEN}x`)).toBeNull();
   });
 });
 
@@ -114,23 +124,34 @@ describe("the state on the second route", () => {
     expect(verifyState(state, Date.now() + 5 * 60 * 1000)).toBe(true);
   });
 
-  it("refuses one minted before the operator rotated the token", () => {
-    // Changing the setup token has to end the flows it authorized, or rotating
-    // it would not be a way of ending them.
-    const state = mintState();
-    const original = config.github.setupToken;
-    try {
-      (config.github as { setupToken: string | null }).setupToken = "a-different-token";
-      expect(verifyState(state)).toBe(false);
-    } finally {
-      (config.github as { setupToken: string | null }).setupToken = original;
+  it("refuses one minted under a token the deployment no longer holds", () => {
+    // Removing a setup token has to end the flows it authorized, or removing it
+    // would not be a way of ending them.
+    const state = new SetupGate({ tokens: ["a-token-since-removed"] }).mintState(
+      "a-token-since-removed"
+    );
+    expect(verifyState(state)).toBe(false);
+  });
+
+  it("keeps a flow opened under a token that is still held", () => {
+    // The point of holding more than one: replacing a token, or letting a
+    // second operator in, must not end somebody else's half-finished flow.
+    for (const token of [TOKEN, SECOND]) {
+      expect(verifyState(mintState(Date.now(), token))).toBe(true);
     }
+  });
+
+  it("recognizes either held token on the first route", () => {
+    expect(authorized(TOKEN)).toBe(TOKEN);
+    expect(authorized(SECOND)).toBe(SECOND);
+    expect(authorized("neither-of-them")).toBeNull();
+    expect(authorized(null)).toBeNull();
   });
 });
 
 describe("the page that posts the manifest", () => {
   it("posts to GitHub, carrying the manifest and a state", () => {
-    const html = registerPage(null);
+    const html = registerPage(null, TOKEN);
     expect(html).toContain(`action="${config.github.webBase}/settings/apps/new"`);
     expect(html).toContain('method="post"');
     expect(html).toContain('name="manifest"');
@@ -138,7 +159,7 @@ describe("the page that posts the manifest", () => {
   });
 
   it("sends it to an organization when one is named", () => {
-    expect(registerPage("acme")).toContain(
+    expect(registerPage("acme", TOKEN)).toContain(
       `action="${config.github.webBase}/organizations/acme/settings/apps/new"`
     );
   });
@@ -147,7 +168,7 @@ describe("the page that posts the manifest", () => {
     // The manifest is JSON in an HTML attribute, and it contains quotes on
     // every key. Unescaped, the first one ends the value and the rest of the
     // manifest becomes markup.
-    const html = registerPage(null);
+    const html = registerPage(null, TOKEN);
     expect(html).toContain("&quot;default_permissions&quot;");
     expect(html).not.toContain('value="{"');
   });
@@ -155,7 +176,7 @@ describe("the page that posts the manifest", () => {
   it("waits for a click rather than submitting itself", () => {
     // The next screen creates a GitHub App under whoever is signed in. That is
     // not something to do to somebody who followed a link.
-    const html = registerPage(null);
+    const html = registerPage(null, TOKEN);
     expect(html).toContain("<button type=\"submit\">");
     expect(html).not.toMatch(/\.submit\(\)|onload=/);
   });

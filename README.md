@@ -77,8 +77,8 @@ there is a flow that fills it in — the same shape Atlantis and Sourcegraph
 settled on, for the same reason:
 
 ```bash
-GITHUB_APP_SETUP_TOKEN=$(openssl rand -hex 32)   # then start the app
-open "$APP_PUBLIC_URL/setup/github/register?token=$GITHUB_APP_SETUP_TOKEN"
+INITIATIVE_APP_SETUP_TOKEN=$(openssl rand -hex 32)   # then start the app
+open "$APP_PUBLIC_URL/setup/github/register?token=$INITIATIVE_APP_SETUP_TOKEN"
 ```
 
 It posts a filled-in manifest to GitHub, you confirm the name and permissions,
@@ -93,7 +93,7 @@ instead would be more convenient and would cost the two things
 [`config.ts`](src/config.ts) promises: credentials read once at boot, and a
 running deployment whose identity cannot be changed by reaching a URL.
 
-**Then remove `GITHUB_APP_SETUP_TOKEN`.** Without it the two routes answer `404`
+**Then remove `INITIATIVE_APP_SETUP_TOKEN`.** Without it the two routes answer `404`
 rather than `403` — indistinguishable from a deployment that never had the
 feature, because a route that answers differently once a feature is configured
 tells an unauthenticated caller which deployments to come back to. The second
@@ -241,22 +241,31 @@ one scope, and lives about a minute. The scope is checked per route — a token
 minted to fetch a source is not usable to run an action
 ([`src/server.ts`](src/server.ts)).
 
-**This app only reads.** It contributed automation nodes once — two triggers and
-an action that opened issues — and both halves are gone. The action went because
-the nodes did; the nodes went because the events behind them could not arrive.
+**Every read runs on the caller's own GitHub credential.** Not the
+organization's installation — a member sees exactly what they can see at GitHub
+and nothing more. The app stops deciding who may read a private repository and
+lets the repository's own permissions decide, because it is not in a position to
+know: a context token names a guild and an install and nothing about what this
+person may reach.
 
-That is worth writing down rather than quietly deleting, because the code was
-fine and the manifest validated. An app emits through `emitEvent`, the platform
-accepts it, checks it against the app's pinned definition and hands it to the
-dispatcher — and the vocabulary a webhook subscription may name is *derived from
-Initiative's own content tables* (`{resource}.{action}`), with anything else
-refused at registration. So nothing can subscribe to `app.<id>.<event>`, the
-dispatcher matches no subscription, and the emit returns success having
-delivered to nobody. No error anywhere.
+The price is that connecting is not optional. A member who has not gets
+`CONNECTION_REQUIRED` from every tile, the platform caches per member rather
+than once per guild, and Dependabot alerts show only to people with security
+access. All three are the principle working rather than failing — a dashboard
+that answered before anyone connected was showing private repository state to
+whoever opened it.
 
-The permission came down with it: `issues` went from `write` to `read`.
-Narrowing is the one direction that is free — GitHub asks nobody to re-approve a
-permission an app stopped wanting.
+**Reads and writes are different doors.** A source is answered on a context
+token Initiative minted for a dashboard, and lives under `/data/`. A write is
+answered on a delegation token an automation signed, and lives under
+`/v1/operations`. Neither route can reach the other's work, which is what keeps
+"whoever can render a widget" and "whoever can act on the repository" separate
+questions.
+
+**The write set is closed.** A caller picks from operations this app wrote; it
+never describes a request the app then performs. That is the difference between
+an integration and a proxy, and it is the whole reason the surface can be
+exposed at all.
 
 **Reconcile, do not trust a signal.** Which guilds have this app comes from
 asking Initiative ([`src/sync.ts`](src/sync.ts)), on a poll as well as on the
@@ -265,17 +274,23 @@ nothing retries it — so an install configured during a deploy would otherwise
 stay unconfigured until somebody touched it again.
 
 **A vendor event has no guild in it.** A GitHub delivery names a repository and
-that is all. Turning it back into somewhere to emit is the app's own job, and
-the reverse lookup is the whole trigger side working
-([`src/github/webhooks.ts`](src/github/webhooks.ts)).
+that is all. Turning it back into the guilds entitled to hear about it is the
+app's own job, and that reverse lookup is the whole of the producer side working
+([`src/github/webhooks.ts`](src/github/webhooks.ts)). It is also why an app
+event names no initiative: there is nothing in a delivery that could say which
+one, so an event is guild-wide and a consumer narrows itself by a payload field.
 
-**Not every delivery is an event.** A GitHub App is also told about its own
+**Not every delivery is news.** A GitHub App is also told about its own
 installation — an organization adding it, removing it, or changing which
-repositories it may see. None of that is something to emit into a guild: no
-subscriber asked to hear that somebody clicked a button, and the manifest
-declares no event that could carry it. What it changes is whether this app can
-answer at all, so it re-runs the sync for the installs it affects. News about
-the repository and news about the relationship are different things.
+repositories it may see. Nobody subscribes to that: no consumer asked to hear
+that somebody clicked a button. What it changes is whether this app can answer
+at all, so it re-runs the sync for the installs it affects and tells no one.
+News about the repository and news about the relationship are different things.
+
+**A subscriber is not a dependency.** Nothing on the data path touches the
+producer surface, so a guild with no automation service gets exactly the same
+dashboard. A subscriber that stops answering is logged and dropped; GitHub still
+gets its `200`, and no widget notices.
 
 ## Layout
 
@@ -387,6 +402,42 @@ affects and tells nobody else.
 republished to whoever asked to hear it. That is the producer surface below,
 and it is not the same thing as the widgets: a guild with no automation service
 gets its dashboard either way, because the data path never touches any of this.
+
+### Acting at GitHub on an automation's behalf
+
+The app holds the credential, so the app does the writing. An automation service
+that held GitHub tokens would be a second place they can leak from and a second
+thing to reason about when revoking; keeping them here means an organization's
+own installation grant is the whole of what any automation can do at GitHub —
+listed in its settings, scoped to the repositories it picked, revoked by the
+button that already lives there.
+
+| Route | Who calls it | What it does |
+| --- | --- | --- |
+| `GET /v1/operations` | anyone | The closed set of things this app will do. Public, like the manifest. |
+| `POST /v1/operations` | a delegate | Runs one, and reports whose credential it ran on. |
+
+Seven operations: open an issue, comment, close, reopen, label, request a
+review, and move a card on a Projects v2 board.
+
+**Who the write is attributed to** is the part worth reading. A delegation token
+names the member it acts for by a pairwise subject — opaque, and meaningless in
+this app's namespace. Initiative resolves it to one of *this app's own*
+connection refs, the same handle a context token hands over on the read path, so
+the app runs the write on that member's own GitHub credential while learning no
+more about them than it ever did. The comment says who wrote it and GitHub's
+audit log names a person.
+
+When there is no such member, an operation that permits it acts as the app
+instead — and the response always says which happened, because an app acting as
+itself has done something different from what was asked. An operation whose
+whole meaning is *who did it* refuses instead: `request-review` runs as the
+member or not at all, because a review request from "Initiative for GitHub" is
+not a request from a colleague.
+
+`move-project-item` is the odd one out three times over — GraphQL only,
+organization-scoped, and addressed by node id. It is also the only reason this
+app asks for a permission that reaches past a repository.
 
 ### Telling an automation service what happened
 

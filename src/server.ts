@@ -20,11 +20,13 @@
  *   installing this app, removing it, or changing which repositories it may see
  *   arrives here, and re-runs the sync for the installs it affects; repository
  *   activity arrives here too and is republished to whoever asked for it.
- * - **`/v1/events*`** — a *delegate* calling in, proving itself with a token it
- *   signed and a key the deployment publishes. This is the only surface here
- *   that Initiative is not a party to: an automation service asks to be told
- *   when something happens at GitHub, and this app tells it. Nothing about the
- *   dashboard depends on any of it.
+ * - **`/v1/events*`, `/v1/operations`** — a *delegate* calling in, proving
+ *   itself with a token it signed and a key the deployment publishes. The only
+ *   surfaces here Initiative is not a party to: an automation service asks to
+ *   be told when something happens at GitHub, and asks this app to act at
+ *   GitHub on its behalf — because this app is the one holding the credential,
+ *   and that is the containment rather than an accident of layering. Nothing
+ *   about the dashboard depends on either.
  *
  * Calls in the other direction — pulling installs, emitting events — go through
  * `initiative.ts`, and everything about which installs exist comes from
@@ -43,6 +45,7 @@ import {
   answerChallenge,
   bearerToken,
   delegateHeader,
+  parseInvoke,
   verifyContextToken,
   verifyDelegationToken,
   type ContextClaims,
@@ -59,6 +62,7 @@ import {
   CONNECT_PATH,
   EVENTS_PATH,
   INSTALL_PATH,
+  OPERATIONS_PATH,
   REGISTERED_PATH,
   REGISTER_PATH,
   SETUP_PATH,
@@ -71,7 +75,9 @@ import {
   subscribe,
   unsubscribe,
 } from "./events.js";
+import { invoke } from "./operations.js";
 import { EVENT_TYPES } from "./github/events.js";
+import { OPERATIONS } from "./github/operations.js";
 import {
   dependabotAlerts,
   issueThroughput,
@@ -106,6 +112,26 @@ import { forgetInstall, startSync, syncInstall } from "./sync.js";
  * set can verify the other's tokens.
  */
 const jwks = new JwksCache();
+
+/**
+ * Whether `value` is a GitHub account login and nothing else.
+ *
+ * GitHub's own rule: letters, digits and hyphens, at most 39 characters. Worth
+ * checking because the value becomes a path segment in the URL an operator's
+ * browser is redirected to, and worth writing out because that is the sort of
+ * check a pattern is trusted for and quietly gets wrong.
+ */
+function isOrganizationLogin(value: string): boolean {
+  if (!value || value.length > 39) return false;
+  for (const character of value) {
+    const alphanumeric =
+      (character >= "a" && character <= "z") ||
+      (character >= "A" && character <= "Z") ||
+      (character >= "0" && character <= "9");
+    if (!alphanumeric && character !== "-") return false;
+  }
+  return true;
+}
 
 /** A header as one value; `node:http` gives an array for a repeated one. */
 function header(req: IncomingMessage, name: string): string | undefined {
@@ -413,7 +439,7 @@ export const server = createServer(async (req, res) => {
     }
 
     // --- registering this deployment's own GitHub App ----------------------
-    // Two routes that exist only while `GITHUB_APP_SETUP_TOKEN` is set. They
+    // Two routes that exist only while `INITIATIVE_APP_SETUP_TOKEN` is set. They
     // create a GitHub App and show its secrets, which is a thing to be able to
     // do once and then not be able to do — so "off" is `404`, indistinguishable
     // from a deployment that never had the feature.
@@ -421,16 +447,19 @@ export const server = createServer(async (req, res) => {
       if (!setupEnabled()) return send(res, 404, { error: "no such route" });
 
       if (path === REGISTER_PATH) {
-        if (!authorized(url.searchParams.get("token"))) {
-          return send(res, 404, { error: "no such route" });
-        }
+        // The token comes back rather than a yes, because the state minted for
+        // the round trip is signed with it — so removing one token ends the
+        // flows it opened without touching anybody else's.
+        const token = authorized(url.searchParams.get("token"));
+        if (!token) return send(res, 404, { error: "no such route" });
         const org = url.searchParams.get("org");
         // An organization login is a path segment on GitHub's own URL, and this
-        // one arrived in a query string.
-        if (org !== null && !/^[A-Za-z0-9-]{1,39}$/.test(org)) {
+        // one arrived in a query string. Read character by character rather than
+        // matched: the value decides what URL an operator's browser is sent to.
+        if (org !== null && !isOrganizationLogin(org)) {
           return send(res, 400, { error: "that is not an organization login" });
         }
-        return sendPage(res, registerPage(org), { secret: true });
+        return sendPage(res, registerPage(org, token), { secret: true });
       }
 
       // GitHub returns the operator here with a code and the state this app
@@ -506,6 +535,40 @@ export const server = createServer(async (req, res) => {
       const removed = await unsubscribe(claims.signer.publicId, claims.guildId, id);
       if (!removed) return send(res, 404, { error: "no such subscription" });
       return send(res, 204, null);
+    }
+
+    // --- being asked to act at GitHub --------------------------------------
+    // The only surface here that writes. `GET` is the closed set of things this
+    // app will do, public like the manifest; `POST` runs one, and takes the
+    // same delegation token the subscriptions do.
+    if (path === OPERATIONS_PATH && (req.method === "GET" || req.method === "POST")) {
+      if (req.method === "GET") {
+        return send(res, 200, {
+          public_id: manifest.service.public_id,
+          operations: OPERATIONS,
+        });
+      }
+
+      const claims = await delegate(req, res);
+      if (!claims) return;
+
+      let body: unknown;
+      try {
+        body = JSON.parse((await readBody(req)).toString("utf-8"));
+      } catch {
+        return send(res, 400, { error: "body is not json" });
+      }
+      // The kit refuses an id this app does not declare, so nothing past here
+      // can name an operation that was not written for it.
+      const parsed = parseInvoke(body, OPERATIONS);
+      if (!parsed.ok) return send(res, 400, { error: parsed.error });
+      if (parsed.request.guild_id !== claims.guildId) {
+        return send(res, 403, { error: "that token is for another guild" });
+      }
+
+      const outcome = await invoke(claims, parsed.request);
+      if ("error" in outcome) return send(res, outcome.status, { error: outcome.error });
+      return send(res, 200, outcome);
     }
 
     // --- the vendor calling in ---------------------------------------------

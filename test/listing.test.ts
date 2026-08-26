@@ -96,17 +96,24 @@ describe("the companion dashboard", () => {
     expect(shown).toEqual(new Set((manifest.widgets ?? []).map((widget) => widget.id)));
   });
 
-  it("puts both scopes on one dashboard", () => {
-    // Deliberate: two tiles answer for the whole guild from its shared access,
-    // and one answers for whoever is looking. A member who never connects a
-    // personal account still gets a working dashboard with one tile asking.
+  it("answers every tile for whoever is looking", () => {
+    // This dashboard used to mix two scopes: two tiles answered for the whole
+    // guild from its shared access and one answered for the caller. It does not
+    // any more, and the change is the point rather than a simplification — a
+    // tile drawn from a guild's shared access shows the state of a private
+    // repository to members who may have no access to it.
+    //
+    // So a member who has connected no GitHub account now gets a dashboard of
+    // tiles all asking them to, and a member who has gets exactly what they can
+    // see at GitHub.
     const sourceScope = (sourceId: string) =>
       manifest.data_sources?.find((source) => source.id === sourceId)?.requires?.all_of;
-    const scopes = dashboardWidgets().map((widget) =>
-      sourceScope(widget.binding.source_id)?.includes("account") ? "member" : "guild"
-    );
-    expect(scopes).toContain("guild");
-    expect(scopes).toContain("member");
+    for (const widget of dashboardWidgets()) {
+      expect(
+        sourceScope(widget.binding.source_id),
+        `${widget.binding.source_id} is answered from something other than the caller`
+      ).toContain("account");
+    }
   });
 
   it("lays its widgets out inside the grid", () => {

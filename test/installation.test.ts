@@ -112,12 +112,15 @@ describe("finding the guild's access", () => {
     expect(reportStatus).toHaveBeenCalledWith(500, { state: "ok" });
   });
 
-  it("says so when nobody has installed the app on that repository", async () => {
-    // The form is finished and the app is not installed where it points. That
-    // is a different problem with a different owner — somebody at GitHub, not
-    // the admin who just filled the form in — so it gets its own reason rather
-    // than reading as "not configured".
-    configCall.mockResolvedValue(installConfig());
+  it("says so when nothing can be resolved without an installation", async () => {
+    // A form naming an account and no repositories, with nothing installed on
+    // that account: neither side has a list, so no tile can answer. A different
+    // problem with a different owner — somebody at GitHub, not the admin who
+    // just filled the form in — so it gets its own reason rather than reading
+    // as "not configured".
+    configCall.mockResolvedValue(
+      installConfig({ connections: { workspace: { owner: "acme", repos: "" } } })
+    );
     installationForOwner.mockResolvedValue(null);
 
     await expect(syncInstall(500)).resolves.toBe(false);
@@ -126,6 +129,20 @@ describe("finding the guild's access", () => {
       state: "invalid",
       detail: "github_app_not_installed",
     });
+  });
+
+  it("calls an install usable when the guild named its repositories", async () => {
+    // The change least privilege bought. Reads run on each member's own GitHub
+    // credential, so those tiles answer with or without an installation — and
+    // telling an admin their working dashboard is invalid would be false.
+    //
+    // What is still missing is the webhook, which is why the poll keeps
+    // looking rather than treating this as settled.
+    configCall.mockResolvedValue(installConfig());
+    installationForOwner.mockResolvedValue(null);
+
+    await expect(syncInstall(500)).resolves.toBe(true);
+    expect(reportStatus).toHaveBeenCalledWith(500, { state: "ok" });
   });
 
   it("records the absence, so a source answers rather than guessing", async () => {
@@ -147,12 +164,34 @@ describe("finding the guild's access", () => {
   it("asks again on every sync, because an org can narrow what it granted", async () => {
     // Removing one repository from an installation is invisible from every
     // other angle: the installation still exists, the token still mints, and
-    // the calls quietly come back empty.
-    configCall.mockResolvedValue(installConfig());
+    // the calls quietly come back empty. Checked on an install that named no
+    // repositories, since that is the one whose answer depends on the grant.
+    configCall.mockResolvedValue(
+      installConfig({ connections: { workspace: { owner: "acme", repos: "" } } })
+    );
     installationForOwner.mockResolvedValueOnce(4242).mockResolvedValueOnce(null);
 
     await expect(syncInstall(500)).resolves.toBe(true);
     await expect(syncInstall(500)).resolves.toBe(false);
+  });
+
+  it("records the installation going away even where nothing stops working", async () => {
+    // The dashboard carries on — but the webhook does not, and the row is what
+    // routes a delivery back to a guild. Writing the absence down is how the
+    // next delivery for that installation finds nobody rather than finding a
+    // guild that has not been in it for a week.
+    configCall.mockResolvedValue(installConfig());
+    installationForOwner.mockResolvedValueOnce(4242).mockResolvedValueOnce(null);
+
+    await syncInstall(500);
+    await syncInstall(500);
+
+    expect(rememberWorkspace).toHaveBeenLastCalledWith(
+      11,
+      500,
+      { owner: "acme", repos: ["widgets"] },
+      null
+    );
   });
 
   it("does not go looking when there is no repository yet", async () => {

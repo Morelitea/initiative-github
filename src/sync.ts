@@ -79,12 +79,6 @@ function readWorkspace(installConfig: InstallConfig): Workspace | null {
     .map((name) => (name.includes("/") ? name.slice(name.lastIndexOf("/") + 1) : name))
     .filter(Boolean);
 
-  // Written by a version of this app that took exactly one repository. An
-  // install that has not been reconfigured since still has its value here, and
-  // reading it is the difference between upgrading and breaking.
-  const legacy = typeof values.repo === "string" ? values.repo.trim() : "";
-  if (!repos.length && legacy && !legacy.includes("/")) repos.push(legacy);
-
   return { owner, repos };
 }
 
@@ -119,10 +113,18 @@ export async function syncInstall(guildId: number): Promise<boolean> {
   const installationId = await installationForOwner(workspace.owner);
   await rememberWorkspace(installId, guildId, workspace, installationId);
 
-  if (installationId === null) {
-    // The form is filled in and the app is not installed on that account. That
-    // is somebody else's move to make — an organization owner, at GitHub — so
-    // it is reported as a distinct reason rather than as "not configured".
+  if (installationId === null && !workspace.repos.length) {
+    // The form names an account and no repositories, and nothing has installed
+    // the app on that account — so there is no list to resolve against from
+    // either side and no tile can answer. Reported as its own reason rather
+    // than as "not configured", because the move is somebody else's: an
+    // organization owner, at GitHub.
+    //
+    // An install that *did* name its repositories is not reported here at all.
+    // Reads run on each member's own credential, so those tiles answer with or
+    // without an installation, and calling the install invalid would be telling
+    // an admin their working dashboard is broken. What is still missing in that
+    // case is the webhook — which is why the poll keeps looking.
     await initiative.reportStatus(guildId, {
       state: "invalid",
       detail: "github_app_not_installed",

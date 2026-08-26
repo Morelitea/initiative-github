@@ -40,7 +40,7 @@ export const WEBHOOK_PATH = "/webhooks/github";
 /**
  * Where an operator creates this deployment's own GitHub App in one click.
  *
- * Off unless `GITHUB_APP_SETUP_TOKEN` is set, and 404 rather than 403 when it
+ * Off unless `INITIATIVE_APP_SETUP_TOKEN` is set, and 404 rather than 403 when it
  * is not — a route that answers differently depending on whether a feature is
  * configured tells an unauthenticated caller which deployments to come back to.
  */
@@ -69,4 +69,4 @@ export const REGISTERED_PATH = "/setup/github/registered";
  * to be identical across every app is exactly the part a subscriber has to
  * guess, and a path an app chose for itself is a path somebody has to look up.
  */
-export { EVENTS_PATH, SUBSCRIPTIONS_PATH } from "initiative-app-kit";
+export { EVENTS_PATH, OPERATIONS_PATH, SUBSCRIPTIONS_PATH } from "initiative-app-kit";

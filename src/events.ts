@@ -95,7 +95,7 @@ async function matching(
 }
 
 /** One producer for the process, holding no state of its own. */
-export const producer = new EventProducer({
+const producer = new EventProducer({
   publicId: PUBLIC_ID,
   store: { matching },
 });
@@ -113,7 +113,14 @@ export async function publish(event: AppEvent): Promise<DeliveryOutcome[]> {
   }
 }
 
-/** Whether this app is installed in that guild, and which install. */
+/**
+ * Whether this app is installed in that guild, and which install.
+ *
+ * Asked by both delegate surfaces — subscribing, and being asked to act — and
+ * it is the same question either way: a guild that does not have this app has
+ * nothing here for anyone. Not a permission check; the platform made that
+ * decision when the guild installed the app.
+ */
 export async function installFor(guildId: number): Promise<number | null> {
   const found = await pool.query<{ app_install_id: string }>(
     "SELECT app_install_id FROM workspaces WHERE guild_id = $1 LIMIT 1",

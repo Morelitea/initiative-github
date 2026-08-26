@@ -21,76 +21,55 @@
  * things `config.ts` promises: that credentials are read once at boot, and that
  * a running deployment's identity cannot be changed by reaching a URL.
  *
- * **Off unless switched on.** `GITHUB_APP_SETUP_TOKEN` gates both routes, and
- * without it they do not exist — 404, not 403, because a route that answers
+ * **Off unless switched on.** `INITIATIVE_APP_SETUP_TOKEN` gates both routes,
+ * and without it they do not exist — 404, not 403, because a route that answers
  * differently when a feature is configured tells an unauthenticated caller
  * which deployments are worth returning to. An operator sets it for the length
  * of the setup and removes it, which is the whole life of this file.
+ *
+ * The gate itself is the kit's ({@link SetupGate}) rather than this app's,
+ * because nothing about it is GitHub-shaped: an app with a per-deployment
+ * vendor registration needs the same switch and the same signed return leg
+ * whether the vendor is GitHub, Shopify or Stripe. What stays here is the part
+ * that is GitHub's — the manifest posted, the code exchanged, the credentials
+ * shown.
  */
 
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { SetupGate } from "initiative-app-kit";
 
 import { config } from "../config.js";
 import { escapeHtml, pageHtml } from "../page.js";
 import { REGISTERED_PATH } from "../routes.js";
 import { githubAppManifest } from "./registration.js";
 
-/** The whole flow is worth a few minutes; GitHub allows the code an hour. */
-const STATE_TTL_SECONDS = 900;
+/**
+ * The switch, built once from configuration.
+ *
+ * Holds whatever tokens the operator set — more than one is allowed, so a
+ * second operator can be let in or a token replaced without ending a flow
+ * already in progress.
+ */
+const gate = new SetupGate({ tokens: config.setupTokens });
 
 /** Whether the operator has switched this on at all. */
 export function setupEnabled(): boolean {
-  return config.github.setupToken !== null;
-}
-
-/** Constant-time, because this is the only thing standing in front of both routes. */
-function matches(a: string, b: string): boolean {
-  const left = Buffer.from(a);
-  const right = Buffer.from(b);
-  // `timingSafeEqual` raises on a length mismatch rather than returning false,
-  // and the length of a secret is not worth leaking through an exception.
-  if (left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
-}
-
-/** Whether a caller presented the setup token. */
-export function authorized(offered: string | null): boolean {
-  const token = config.github.setupToken;
-  if (!token || !offered) return false;
-  return matches(offered, token);
+  return gate.enabled;
 }
 
 /**
- * A `state` the second route can trust without a database.
+ * Which held token a caller presented, or null.
  *
- * GitHub returns the operator to `redirect_url` with a code and this state, and
- * **not** with the setup token — so the state has to carry the authority
- * itself. Signed with the setup token and stamped with an expiry, it is
- * verifiable on any replica: the browser leaves from one pod and comes back to
- * whichever the load balancer picks, and a row written for a flow that runs
- * once per deployment would be a table for nothing.
+ * The token comes back rather than a boolean because the state minted for the
+ * trip is signed with it: that is what makes removing one token end exactly the
+ * flows it opened and no others.
  */
-export function mintState(now: number = Date.now()): string {
-  const token = config.github.setupToken;
-  if (!token) throw new Error("setup is not enabled");
-  const expiry = Math.floor(now / 1000) + STATE_TTL_SECONDS;
-  const nonce = randomBytes(16).toString("base64url");
-  const body = `${expiry}.${nonce}`;
-  return `${body}.${createHmac("sha256", token).update(body).digest("base64url")}`;
+export function authorized(offered: string | null): string | null {
+  return gate.authorize(offered);
 }
 
-/** Whether this app minted that state, and recently. */
+/** Whether this deployment minted that state, under a token it still holds. */
 export function verifyState(state: string | null, now: number = Date.now()): boolean {
-  const token = config.github.setupToken;
-  if (!token || !state) return false;
-  const parts = state.split(".");
-  if (parts.length !== 3) return false;
-  const [expiry, nonce, signature] = parts;
-  if (!/^\d+$/.test(expiry) || Number(expiry) * 1000 < now) return false;
-  const expected = createHmac("sha256", token)
-    .update(`${expiry}.${nonce}`)
-    .digest("base64url");
-  return matches(signature, expected);
+  return gate.verifyState(state, now);
 }
 
 /** Where GitHub takes a manifest, for a personal account or an organization. */
@@ -108,7 +87,11 @@ function creationUrl(org: string | null): string {
  * GitHub App under whoever is signed in, and that is not something to do to
  * somebody who followed a link.
  */
-export function registerPage(org: string | null, now: number = Date.now()): string {
+export function registerPage(
+  org: string | null,
+  token: string,
+  now: number = Date.now()
+): string {
   const manifest = githubAppManifest(config.publicUrl);
   const where = org ? `the ${escapeHtml(org)} organization` : "your personal account";
   return pageHtml(
@@ -122,7 +105,7 @@ export function registerPage(org: string | null, now: number = Date.now()): stri
      <form method="post" action="${escapeHtml(creationUrl(org))}">
        <input type="hidden" name="manifest"
               value="${escapeHtml(JSON.stringify(manifest))}">
-       <input type="hidden" name="state" value="${escapeHtml(mintState(now))}">
+       <input type="hidden" name="state" value="${escapeHtml(gate.mintState(token, now))}">
        <button type="submit">Create it on GitHub</button>
      </form>
      <p>It will ask you to confirm the name and the permissions first.</p>`
@@ -207,7 +190,7 @@ export function credentialsPage(credentials: Credentials): string {
       not show the private key again either.</p>
      <pre>${escapeHtml(env)}</pre>
      <p>Put those wherever this deployment reads its environment, restart it,
-      and remove <code>GITHUB_APP_SETUP_TOKEN</code> — it is needed once and it
+      and remove <code>INITIATIVE_APP_SETUP_TOKEN</code> — it is needed once and it
       is the only thing guarding this page.</p>
      ${
        installUrl

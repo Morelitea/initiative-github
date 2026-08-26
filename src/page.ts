@@ -27,11 +27,33 @@ code{font-size:13px}
 </head><body><h1>${title}</h1>${body}</body></html>`;
 }
 
-/** Anything interpolated into a page that did not come from this repository. */
+/** What each character escapes to. `&` first is not enough on its own — see below. */
+const ESCAPES: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#39;",
+};
+
+/**
+ * Anything interpolated into a page that did not come from this repository.
+ *
+ * One pass, building the result character by character, which is the property
+ * that matters: chained replacements are four passes over a string that each
+ * one has already changed, so `&` has to be first or `<` becomes `&amp;lt;` —
+ * correct here by ordering rather than by construction, and one reordering away
+ * from being wrong. A single pass cannot re-escape its own output.
+ *
+ * `'` is escaped too. It was not, and everything in this app interpolates into
+ * element text where it does not matter — but "does not matter given where this
+ * is used today" is a property of the call sites, not of the function, and the
+ * function is the thing named `escapeHtml`.
+ */
 export function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  let out = "";
+  for (const character of value) {
+    out += ESCAPES[character] ?? character;
+  }
+  return out;
 }

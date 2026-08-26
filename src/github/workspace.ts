@@ -59,26 +59,15 @@ export async function rememberWorkspace(
   installationId: number | null
 ): Promise<void> {
   await pool.query(
-    `INSERT INTO workspaces (app_install_id, guild_id, owner, repo, repos, installation_id)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO workspaces (app_install_id, guild_id, owner, repos, installation_id)
+     VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (app_install_id) DO UPDATE
         SET guild_id = EXCLUDED.guild_id,
             owner = EXCLUDED.owner,
-            repo = EXCLUDED.repo,
             repos = EXCLUDED.repos,
             installation_id = EXCLUDED.installation_id,
             updated_at = now()`,
-    [
-      appInstallId,
-      guildId,
-      workspace.owner,
-      // `repo` predates the list and is `NOT NULL`. Kept written rather than
-      // dropped, so a rollback to the previous version finds the column it
-      // expects rather than a row it cannot read.
-      workspace.repos[0] ?? "",
-      workspace.repos,
-      installationId,
-    ]
+    [appInstallId, guildId, workspace.owner, workspace.repos, installationId]
   );
 }
 
@@ -88,19 +77,19 @@ export async function workspaceFor(
 ): Promise<StoredWorkspace | null> {
   const found = await pool.query<{
     owner: string;
-    repo: string;
     repos: string[] | null;
     installation_id: string | null;
   }>(
-    "SELECT owner, repo, repos, installation_id FROM workspaces WHERE app_install_id = $1",
+    "SELECT owner, repos, installation_id FROM workspaces WHERE app_install_id = $1",
     [appInstallId]
   );
   const row = found.rows[0];
   if (!row) return null;
   return {
     owner: row.owner,
-    // A row written by the version before the list has only the single column.
-    repos: row.repos ?? (row.repo ? [row.repo] : []),
+    // Null and empty mean the same thing: every repository the installation
+    // covers. Nothing writes null, but the column allows one.
+    repos: row.repos ?? [],
     // `pg` hands back BIGINT as a string, since not every value fits a JS
     // number. An installation id comfortably does, so it is narrowed once here.
     installationId: row.installation_id === null ? null : Number(row.installation_id),

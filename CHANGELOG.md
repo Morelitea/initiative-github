@@ -8,20 +8,44 @@ guild admin — and everything below follows from having one.
 
 ### Added
 
-- **A producer surface** (`src/events.ts`, `src/github/events.ts`), and with it
-  the `events` feature back in the manifest. This app publishes three types —
-  an issue opened, an issue closed, a review requested — directly to whoever
-  subscribed, on the shapes `initiative-app-kit` fixes rather than shapes this
-  app invented. Nothing about the dashboard depends on any of it: a guild with
-  no automation service gets the same widgets it always did.
+- **Writes at GitHub** (`src/operations.ts`, `src/github/operations.ts`). Seven
+  operations — open an issue, comment, close, reopen, label, request a review,
+  move a card on a Projects v2 board — exposed at `/v1/operations` and run for a
+  delegate that proves itself the same way a subscriber does.
 
-  The declaration was here before and went nowhere. It emitted through
-  Initiative, which accepted the event and handed it to a dispatcher that could
-  match no subscription to it — the vocabulary a subscription may name is
-  derived from Initiative's own content tables, so nothing can name
-  `app.<id>.<event>`. Every emit succeeded having reached no one, and nothing
-  at either end said so. What changed is not the declaration; it is where the
-  events go.
+  The app does the writing because the app holds the credential. An automation
+  service holding GitHub tokens would be a second place they can leak from and
+  a second thing to reason about when revoking; keeping them here means an
+  organization's own installation grant is the whole of what any automation can
+  do at GitHub.
+
+  **The set is closed.** A caller picks from operations written in this repo and
+  never describes a request the app performs — the difference between an
+  integration and a proxy.
+
+  **The write runs as the member wherever there is one.** A delegation token
+  names its member by a pairwise subject that means nothing in this app's
+  namespace; Initiative resolves it to one of the app's *own* connection refs —
+  the same handle a context token hands over on the read path — so the write
+  runs on that member's credential and the app learns no more about them than it
+  ever did. Where there is no such member an operation may act as the app
+  instead, and the response always says which happened. `request-review` refuses
+  rather than substituting: a review request from the app is not a request from
+  a colleague.
+- **A producer surface** (`src/events.ts`, `src/github/events.ts`), and with it
+  the `events` feature. This app publishes three types — an issue opened, an
+  issue closed, a review requested — **directly** to whoever subscribed, on the
+  shapes `initiative-app-kit` fixes rather than shapes this app invented.
+  Nothing about the dashboard depends on any of it: a guild with no automation
+  service gets exactly the same widgets.
+
+  Producing directly is the whole design and not an optimization. Posting the
+  event to Initiative to fan out cannot work — the vocabulary a webhook
+  subscription may name is derived from Initiative's own content tables, so
+  nothing can name `app.<id>.<event>` and the dispatcher matches nothing. An
+  app already holds its vendor's webhook connection and has already verified its
+  vendor's signature; routing the result through a third party adds a hop and a
+  place to be dropped.
 - Three routes for a subscriber: `GET /v1/events` for what this app produces,
   and `POST`/`GET`/`DELETE` under `/v1/events/subscriptions`. Authorized by a
   delegation token — an app the operator granted `delegation` to, proving
@@ -32,11 +56,10 @@ guild admin — and everything below follows from having one.
 - Two tables behind that: `event_subscriptions`, whose secret is sealed at rest
   like a member's credential, and `delegation_tokens`, whose primary key *is*
   the one-shot check.
-- `issues` and `pull_request` back on the GitHub App registration, derived from
-  the translator so an event handled in code cannot go missing from the form.
-  Adding them costs no organization a re-approval: both need permissions this
-  app already holds for its widgets, and subscribing to a webhook event is not
-  a permission change.
+- `issues` and `pull_request` on the GitHub App registration, derived from the
+  translator so an event handled in code cannot go missing from the form.
+  Neither costs a permission: a webhook event is not one, and both are covered
+  by the reads the widgets already need.
 - A GitHub App registration, generated from the code that uses it
   (`src/github/registration.ts`, `npm run github-app`). The permissions and the
   webhook events on it are the ones this app actually asks for and actually
@@ -59,7 +82,7 @@ guild admin — and everything below follows from having one.
   (`src/github/setup.ts`). It posts the generated manifest to GitHub and shows
   the four credentials once; nothing is stored, so `config.ts` keeps its promise
   that credentials are read at boot and a running deployment's identity cannot
-  be changed by reaching a URL. Off unless `GITHUB_APP_SETUP_TOKEN` is set, and
+  be changed by reaching a URL. Off unless `INITIATIVE_APP_SETUP_TOKEN` is set, and
   `404` rather than `403` when it is not — a route that answers differently once
   a feature is configured tells an unauthenticated caller which deployments to
   return to. The return leg cannot be guarded by the token, since GitHub sends
@@ -67,8 +90,8 @@ guild admin — and everything below follows from having one.
   ends every flow it authorized.
 - `installation` and `installation_repositories` deliveries re-sync the installs
   they affect, so an organization installing or removing the app is reflected in
-  Initiative within seconds rather than at the next poll. They emit nothing:
-  nobody subscribed to hear that somebody clicked a button.
+  Initiative within seconds rather than at the next poll. They are published to
+  nobody: no consumer asked to hear that somebody clicked a button.
 - **Dependabot alerts**, as a guild-scoped source and a fourth widget: open
   alerts by severity, worst first, answered from the installation. The tier
   matters more here than anywhere else — the people who most need to see how
@@ -95,34 +118,68 @@ guild admin — and everything below follows from having one.
 
 ### Removed
 
-- **The automation surface.** Two trigger nodes, a `create-issue` action, three
-  declared events, the `automations` and `events` features, and AUTOMATION.md.
-
-  Not because any of it was wrong. It validated, the code behind it worked, and
-  the trigger side had tests. It is gone because an app event has nowhere to
-  arrive: an emit is accepted, checked against the app's pinned definition and
-  handed to the dispatcher — and the vocabulary a webhook subscription may name
-  is derived from Initiative's own content tables (`{resource}.{action}`), with
-  anything else refused at registration. Nothing can subscribe to
-  `app.<id>.<event>`, so the dispatcher matches nothing and the emit returns
-  success having delivered to nobody. No error anywhere; just an event that
-  stops. Declaring a feature that goes nowhere is the same mistake as declaring
-  one with no block, one level further out.
-
-  Whether app-contributed nodes come back as a community surface or as something
-  hard-coded is a decision above this app. What it needs first is somewhere for
-  an event to land.
-- `issues` narrowed from `write` to `read`, since nothing writes any more.
-  Narrowing is the one direction that is free: GitHub asks nobody to re-approve
-  a permission an app stopped wanting.
-- The registration subscribes to **no** webhook events. Repository activity told
-  this app nothing its next source call would not. The installation lifecycle
-  still arrives — GitHub sends those to every app and says you cannot subscribe
-  to them — which is the only thing this app cannot work out for itself in time
-  to matter.
+- **The automation surface.** Two trigger nodes, a `create-issue` action, and
+  AUTOMATION.md. A node an app contributes is a thing that executes inside
+  somebody's deployment, and that stays first-party — an app declares what its
+  vendor did and stops there. `automations` is not a feature this app declares.
 
 ### Changed
 
+- **Every source runs on the caller's own GitHub credential.** Not the
+  organization's installation. A member sees exactly what they can see at
+  GitHub, and every source and widget now names `account` in `requires`.
+
+  Two of these were guild-scoped and it read as generous: nobody had to connect
+  an account to see how many issues were open. It is the wrong shape. That
+  number is the state of a private repository, and answering it from the
+  organization's grant shows it to every member of a guild including the ones
+  with no access to the repository at all. The app is not in a position to
+  judge — a context token names a guild and an install and nothing about what
+  this person may reach — so it stops judging and lets GitHub's own permissions
+  decide.
+
+  What it costs, stated rather than discovered: every member must connect before
+  any tile answers; the platform caches per member rather than once per guild,
+  so one upstream call becomes one per person; and Dependabot alerts show only
+  to members with security access on the repository. All three are the principle
+  working.
+- **Resolving which repository no longer asks GitHub, where the guild said.**
+  An install that named its repositories resolves from its own list — no
+  installation token, no page walk, and a working dashboard before an
+  organization owner has installed the app. Blank still means "everything the
+  organization granted", which only the installation can enumerate. An install
+  that named repositories is no longer reported `github_app_not_installed`,
+  because its tiles answer; what still waits on the installation is the webhook.
+- **`GITHUB_APP_SETUP_TOKEN` is now `INITIATIVE_APP_SETUP_TOKEN`**, and the gate
+  behind it moved to `initiative-app-kit`. Nothing about "an operator needs a
+  one-time, self-gated bootstrap page" is GitHub-shaped: any app with a
+  per-deployment vendor registration needs the same switch and the same signed
+  return leg, so an operator should learn one name rather than one per
+  integration.
+
+  It also holds **more than one** token now, comma or space separated. The state
+  that carries authority across the vendor's redirect is signed by whichever
+  token opened the flow, so letting a second operator in — or replacing a token
+  — ends exactly the flows that token authorized and leaves the rest running.
+- **Every regular expression is gone**, from this app and from the kit. Three of
+  them were wrong, in the way patterns are: the public-id check accepted `a..b`
+  because a character class cannot say a label is non-empty; the private-address
+  check saw `127.0.0.1` but not `0177.0.0.1` or `2130706433`; and the IPv6 check
+  matched text that `URL` had already normalized away, so `::ffff:127.0.0.1`
+  read as public. Addresses now go through `node:net` and byte comparison, and
+  identifier checks read a character at a time.
+
+  `escapeHtml` was four chained passes over a string each had already changed —
+  correct only because `&` happened to be first. It is one pass over a table.
+- **The permission list widened, deliberately and once.** `issues` and
+  `pull_requests` went to `write`, and `organization_projects: write` is new.
+  Widening is the one direction GitHub charges for — every organization that has
+  already installed the app keeps the old grant until somebody re-approves — so
+  it is worth doing in one go rather than in pieces, and worth doing before
+  anybody has installed it. `organization_projects` is the only permission here
+  that reaches past a repository, because a Projects v2 board does; there is no
+  repository-scoped equivalent to prefer instead, and `repository_projects` is
+  the older classic board rather than a narrower version of the same thing.
 - **An install covers repositories, not a repository.** The `workspace`
   connection now takes an account and an optional list, where blank means every
   repository the installation covers — the organization already chose when it
@@ -137,10 +194,11 @@ guild admin — and everything below follows from having one.
   `open-issues`, `label` on `issue-throughput`, a severity floor on
   `dependabot-alerts`. The platform caches per parameter set, so two teams' tiles
   are one source answered twice rather than one answer shared.
-- Every event and the `create-issue` action carry `repository`. Added now rather
-  than when the first automation needs it: outputs are part of the pinned
-  definition a guild installed, so widening them later is a version every guild
-  has to take.
+- Every published event carries `repository` and `owner`. An app event names no
+  initiative — there is nothing in a GitHub delivery that could say which one —
+  so a payload field is the only thing a consumer can narrow by, and these are
+  part of the pinned definition a guild installed: widening them later is a
+  version every guild has to take.
 - An installation is discovered from the **account** rather than from one
   repository — one grant covers every repository the organization chose, so
   asking per repository was one call per repository to learn the same id.
@@ -172,7 +230,8 @@ guild admin — and everything below follows from having one.
 - One webhook, on the registration, covering every organization that installs
   the app — instead of one added by hand to every repository a guild configured,
   which silently received nothing from the one somebody forgot.
-- Requires `initiative-app-kit` 0.4, for `appListing` and `dashboardListing`.
+- Requires `initiative-app-kit` 0.5, for the producer surface and delegation
+  verification.
 
 ### Fixed
 

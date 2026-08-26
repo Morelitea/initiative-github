@@ -16,7 +16,8 @@
     "github-app": "tsx scripts/build-github-app.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "catalog": "tsx scripts/build-listing.ts"
+    "catalog": "tsx scripts/build-listing.ts",
+    "env-contract": "tsx scripts/build-env-contract.ts"
   },
   "dependencies": {
     "@types/pg": "^8.21.0",

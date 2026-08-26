@@ -67,32 +67,35 @@ export const manifest: Manifest = {
   // Declared and cross-checked against the blocks below, in both directions.
   // A feature with no block would advertise something this app cannot do.
   //
-  // `events` is back, and what changed is not the declaration — it is where the
-  // events go. They were emitted through Initiative's dispatcher, which
-  // delivers to subscriptions naming the event type, and the vocabulary a
-  // subscription may name is derived from Initiative's own content tables: no
-  // subscription can name `app.<id>.<event>`, so every emit succeeded having
-  // reached no one. This app now produces directly, to subscribers that asked
-  // it, so the declaration describes something that happens.
+  // `events` is the contract, and it belongs here rather than only on the wire
+  // for that reason: this app holds GitHub's webhook connection, so it is the
+  // authority on what a GitHub event means here, and a consumer reads this list
+  // to know what it may ask for. Delivery itself does not go through Initiative
+  // — see `../events.ts`.
   //
-  // What the declaration is *for* is unchanged and is the reason it belongs
-  // here rather than only on the wire: it is the contract. This app holds
-  // GitHub's webhook connection, so it is the authority on what GitHub events
-  // mean here, and a consumer reads this list to know what it may ask for.
-  //
-  // `automations` is still absent, and for a different reason: a node an app
-  // contributes is a thing that executes, and what executes stays first-party.
+  // `automations` is not declared and will not be. A node an app contributes is
+  // a thing that executes inside somebody's deployment, and what executes stays
+  // first-party.
   features: ["data", "widgets", "events"],
 
   default_name: "GitHub",
 
   connections: [
     {
-      // The member's own GitHub account, for the two things that are about
-      // them specifically: which pull requests are waiting on their review,
-      // and opening an issue as themselves. Everything a whole guild sees the
-      // same answer to runs on the organization's own installation instead, so
-      // connecting this is optional and nobody is asked for it to read a number.
+      // The member's own GitHub account, and **everything here runs on it** —
+      // every widget, every source, and a write wherever there is a member to
+      // attribute it to.
+      //
+      // That is the whole permission model. A source cannot ask Initiative
+      // whether this person may see a private repository, because a context
+      // token names a guild and an install and nothing about what they may
+      // reach. GitHub can answer that, and does, if the call runs on their
+      // credential. So the app stops deciding and lets the repository's own
+      // permissions decide.
+      //
+      // The cost is that connecting is not optional: a member who has not gets
+      // `CONNECTION_REQUIRED` from every tile. That is the correct answer — the
+      // alternative is showing them the state of a repository they are not on.
       //
       // GitHub authorizes a *person*, so the app holds one credential per
       // person. Installing never waits for anybody to do this.
@@ -118,17 +121,19 @@ export const manifest: Manifest = {
       },
     },
     {
-      // The guild-wide half, and now the *only* thing an admin types: which
-      // repository this guild cares about. Not a credential — a setting — but
-      // it rides the same form machinery.
+      // The only thing an admin types: which repository this guild cares
+      // about. Not a credential — a setting — but it rides the same form
+      // machinery.
+      //
+      // It says *which* repository, and never who may see it. Naming one here
+      // grants nobody anything: the call still runs on the caller's own GitHub
+      // credential, so a member who is not on that repository gets GitHub's own
+      // answer about it, which is that there is no such repository.
       //
       // What used to sit beside it was a token an admin pasted so the whole
-      // guild could read the repository. A GitHub App does not need one: the
-      // organization installs the app, and the app asks GitHub which
-      // installation covers what was typed here. So the guild's access is the
-      // organization's own grant — visible in its settings, scoped to the
-      // repositories it chose, and revoked by a button that belongs to it —
-      // rather than one person's credential wearing the guild's name.
+      // guild could read the repository. That is gone twice over — a GitHub App
+      // needs no pasted credential, and the guild does not read on a shared one
+      // at all any more.
       id: "workspace",
       scope: "static",
       label: {
@@ -225,16 +230,15 @@ export const manifest: Manifest = {
           },
         },
       ],
-      // Guild-scoped, and this is the choice worth copying. How many issues
-      // are open is one answer for the whole guild, so it runs on the
-      // organization's installation and nobody has to connect a personal
-      // account to see it. Naming no per-member connection is also what lets
-      // the platform cache it once per guild instead of once per member.
+      // Per member, like every source here. How many issues are open is one
+      // answer for a whole guild and it is still not one every member is
+      // entitled to: it is the state of a private repository, and a member who
+      // is not on that repository at GitHub has no business reading it here.
       //
-      // The installation is not named here because it is not a connection: an
-      // admin does not supply it, so there is nothing for Initiative to hold or
-      // to ask for. `workspace` is what this source needs from a person.
-      requires: { all_of: ["workspace"] },
+      // Naming `account` is what makes that true rather than merely intended —
+      // the platform refuses the call before it reaches this app when the
+      // caller has not connected one, and the app then runs on their token.
+      requires: { all_of: ["workspace", "account"] },
     },
     {
       id: "review-queue",
@@ -262,10 +266,8 @@ export const manifest: Manifest = {
         },
       ],
       // Per member, and it could not be anything else: "waiting on me" has no
-      // meaning without a me. This is the one source that needs the member's
-      // own account, and the only reason this app asks for one.
-      // The one widget that does need a member, because the one source behind
-      // it does.
+      // meaning without a me. It was once the only source here that named an
+      // account; now it is unremarkable.
       requires: { all_of: ["workspace", "account"] },
     },
     {
@@ -308,10 +310,12 @@ export const manifest: Manifest = {
           },
         },
       ],
-      // Guild-scoped, and the tier matters more here than anywhere else: the
-      // people who most need to see how exposed a repository is are the ones
-      // least likely to have connected a personal GitHub account.
-      requires: { all_of: ["workspace"] },
+      // Per member, and the consequence is sharpest here: reading Dependabot
+      // alerts needs security access on the repository, so this answers for the
+      // people who hold it and refuses for everyone else. That is the point
+      // rather than a shortcoming — how exposed a repository is is not a fact
+      // to hand to whoever opens a dashboard.
+      requires: { all_of: ["workspace", "account"] },
     },
     {
       id: "issue-throughput",
@@ -345,10 +349,11 @@ export const manifest: Manifest = {
           label: { en: "Label", de: "Label", es: "Etiqueta", fr: "Étiquette" },
         },
       ],
-      // Guild-scoped for the same reason as the issue count, and it matters
-      // more here: this is the heaviest call, and it runs once per guild per
-      // five minutes rather than once per member.
-      requires: { all_of: ["workspace"] },
+      // Per member, and this is the one where the cost is felt: it is the
+      // heaviest call this app makes, and it now runs once per member per five
+      // minutes rather than once per guild. A longer TTL is the lever if that
+      // ever bites.
+      requires: { all_of: ["workspace", "account"] },
     },
   ],
 
@@ -390,12 +395,12 @@ export const manifest: Manifest = {
       // marketplace can show the widget before anything is connected.
       sample_data: { "open-issues": { total: 42, delta: -3 } },
       // The same terms as the source it draws, and that is the rule rather
-      // than a coincidence. A widget that names more than its sources do is
-      // refused with `CONNECTION_REQUIRED` before either is called — so a tile
-      // answered from the guild's own access, asking each member for a personal
-      // account, refuses for everyone who has not connected one and shows a
-      // number that never needed them.
-      requires: { all_of: ["workspace"] },
+      // than a coincidence: a widget naming more than its sources do is refused
+      // before either is called. What changed is which way the mismatch used to
+      // go — this tile named an account its source did not need, and refused
+      // for members who would have seen the right number without one. Now the
+      // source needs it too, and the two agree.
+      requires: { all_of: ["workspace", "account"] },
     },
     {
       id: "review-queue",
@@ -424,8 +429,6 @@ export const manifest: Manifest = {
           ],
         },
       },
-      // The one widget that does need a member, because the one source behind
-      // it does.
       requires: { all_of: ["workspace", "account"] },
     },
     {
@@ -457,7 +460,7 @@ export const manifest: Manifest = {
           url: "#",
         },
       },
-      requires: { all_of: ["workspace"] },
+      requires: { all_of: ["workspace", "account"] },
     },
     {
       id: "issue-throughput",
@@ -488,7 +491,7 @@ export const manifest: Manifest = {
           ],
         },
       },
-      requires: { all_of: ["workspace"] },
+      requires: { all_of: ["workspace", "account"] },
     },
   ],
 };

@@ -26,9 +26,14 @@
  *   memory it would be per-replica, which is not a one-shot rule at all.
  *
  * The schema is applied idempotently at boot rather than through a migration
- * tool. Two tables of this shape do not earn the dependency, and an app is
- * expected to be restartable — but the statements are additive on purpose, so a
- * new column is a new statement rather than an edit to an existing one.
+ * tool. Tables of this shape do not earn the dependency, and an app is expected
+ * to be restartable.
+ *
+ * Every statement is `IF NOT EXISTS`, so a replica that boots second does
+ * nothing and a replica that boots first does all of it. There is deliberately
+ * no column-by-column upgrade path: this app has never been deployed anywhere
+ * whose database would need one, and carrying an upgrade nobody is upgrading
+ * from means a schema that has to be read historically to be understood.
  */
 
 import { Pool } from "pg";
@@ -44,52 +49,47 @@ export const pool = new Pool({
 });
 
 const SCHEMA = [
-  `CREATE TABLE IF NOT EXISTS connections (
-     connection_ref TEXT PRIMARY KEY,
-     access_token   TEXT NOT NULL,
-     account_label  TEXT,
-     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-   )`,
   // A GitHub App's user token is short-lived and renewable, which an OAuth
-  // app's was not. Added as their own statements rather than written into the
-  // CREATE above — that is the rule this list keeps, so a deployment that
-  // already ran gets them too.
-  `ALTER TABLE connections ADD COLUMN IF NOT EXISTS refresh_token TEXT`,
-  `ALTER TABLE connections ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`,
-  `ALTER TABLE connections ADD COLUMN IF NOT EXISTS refresh_expires_at TIMESTAMPTZ`,
+  // app's was not — so what is kept is a rotating pair and the two moments it
+  // expires, rather than one durable secret.
+  `CREATE TABLE IF NOT EXISTS connections (
+     connection_ref     TEXT PRIMARY KEY,
+     access_token       TEXT NOT NULL,
+     refresh_token      TEXT,
+     expires_at         TIMESTAMPTZ,
+     refresh_expires_at TIMESTAMPTZ,
+     account_label      TEXT,
+     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+   )`,
+  // `code_verifier` is the PKCE half that stays on this side of the handshake
+  // by definition — only its hash is sent to GitHub — so an intercepted
+  // callback is worth nothing without the row.
   `CREATE TABLE IF NOT EXISTS oauth_states (
      state          TEXT PRIMARY KEY,
      connection_ref TEXT NOT NULL,
+     code_verifier  TEXT,
      expires_at     TIMESTAMPTZ NOT NULL
    )`,
-  // The PKCE verifier. It stays on this side of the handshake by definition —
-  // only its hash is sent to GitHub — so an intercepted callback is worth
-  // nothing without the row.
-  `ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS code_verifier TEXT`,
   // Expired states are swept on use rather than by a job: the table is small,
   // and a sweep that runs only when somebody connects cannot fall behind in a
   // way that matters.
   `CREATE INDEX IF NOT EXISTS oauth_states_expires_at ON oauth_states (expires_at)`,
+  // `guild_id` is what turns a GitHub delivery, which names a repository and
+  // nothing else, back into somewhere to publish. `installation_id` is which
+  // GitHub installation covers it — discovered rather than typed, and held so a
+  // restart does not have to ask GitHub before it can answer anything. `repos`
+  // is what a guild narrowed itself to, empty meaning every repository the
+  // installation covers; an array rather than a second table, because it is
+  // read whole, written whole, and bounded by what one organization granted.
   `CREATE TABLE IF NOT EXISTS workspaces (
-     app_install_id BIGINT PRIMARY KEY,
-     owner          TEXT NOT NULL,
-     repo           TEXT NOT NULL,
-     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+     app_install_id  BIGINT PRIMARY KEY,
+     guild_id        BIGINT,
+     owner           TEXT NOT NULL,
+     repos           TEXT[],
+     installation_id BIGINT,
+     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
    )`,
-  // The guild an install belongs to, so a GitHub delivery naming only a
-  // repository can be turned back into somewhere to emit. Added as its own
-  // statement rather than written into the CREATE above — that is the rule
-  // this list keeps, so a deployment that already ran gets it too.
-  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS guild_id BIGINT`,
-  // Which GitHub installation covers this install's repository. Discovered
-  // rather than typed, and held here so a restart does not have to ask GitHub
-  // again before it can answer anything.
-  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS installation_id BIGINT`,
-  // Which repositories a guild narrowed itself to, empty meaning every one the
-  // installation covers. An array rather than a second table: it is read whole,
-  // written whole, and bounded by what one organization granted.
-  `ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS repos TEXT[]`,
   // A delivery names the installation that produced it, which is the direction
   // this is read in — see `installsWatching`.
   `CREATE INDEX IF NOT EXISTS workspaces_installation

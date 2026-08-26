@@ -54,15 +54,12 @@ describe("the manifest", () => {
   });
 
   it("declares no feature it cannot deliver", () => {
-    // `events` was declared, validated, and went nowhere, because an emit
-    // through Initiative reached a dispatcher that could match no subscription
-    // to it. It is back because the events now go somewhere: this app produces
-    // directly to subscribers that asked it, so the declaration describes
-    // something that happens rather than something that is accepted.
+    // A feature with no block behind it advertises something the app cannot do,
+    // and the platform refuses it — in both directions.
     //
-    // `automations` stays gone, and for a different reason — a node an app
-    // contributes is a thing that executes, and what executes stays
-    // first-party.
+    // `automations` is absent on purpose rather than for want of a block: a
+    // node an app contributes is a thing that executes inside somebody's
+    // deployment, and what executes stays first-party.
     expect(manifest.features).toEqual(["data", "widgets", "events"]);
     expect(manifest.automation).toBeUndefined();
   });
@@ -103,21 +100,33 @@ describe("who a source is answered for", () => {
     manifest.data_sources?.find((source) => source.id === id);
   const namedBy = (id: string) => sourceById(id)?.requires?.all_of ?? [];
 
-  it("answers a question about the repository without asking anyone for an account", () => {
-    // The rule this file exists to hold. How many issues are open is one answer
-    // for every member, so asking each of them to hand over a personal GitHub
-    // account to see it would be asking for a credential to do a job that needs
-    // none. It is answered from the organization's installation — which is not
-    // a connection, so it is named by nothing here.
-    for (const id of ["open-issues", "issue-throughput"]) {
-      expect(namedBy(id)).toEqual(["workspace"]);
+  it("answers every question from the credential of whoever asked", () => {
+    // The rule this file exists to hold, and it is the reverse of what it used
+    // to hold. "How many issues are open" is one answer for every member and
+    // still not one every member is entitled to: it is the state of a private
+    // repository, and answering it from the organization's installation shows
+    // that state to members with no access to the repository at all.
+    //
+    // The app cannot make that judgement — a context token names a guild and an
+    // install and nothing about what this person may see. GitHub can, and does,
+    // if the call runs on their credential. So every source names one.
+    for (const source of manifest.data_sources ?? []) {
+      expect(
+        namedBy(source.id),
+        `${source.id} is answered from something other than the caller`
+      ).toContain("account");
     }
   });
 
-  it("answers a question about a person from that person's own account", () => {
-    // "Waiting on my review" resolves against whoever's credential it runs on,
-    // so the caller's is the only one that answers the question asked.
-    expect(namedBy("review-queue")).toContain("account");
+  it("costs every member a connection, which is the price of that", () => {
+    // Stated as a test because it is the thing somebody will later want to
+    // "fix" by making a tile work without one. A member who has connected no
+    // GitHub account gets `CONNECTION_REQUIRED` from every tile, and that is
+    // correct: the alternative is showing them a private repository's state.
+    expect((manifest.widgets ?? []).length).toBeGreaterThan(0);
+    for (const widget of manifest.widgets ?? []) {
+      expect(widget.requires?.all_of, `${widget.id}`).toContain("account");
+    }
   });
 
   it("names the repository setting on every source", () => {
@@ -145,12 +154,12 @@ describe("who a source is answered for", () => {
     }
   });
 
-  it("reads and never writes", () => {
-    // Nothing in this app mutates anything at GitHub any more, and the
-    // permission list is where that is enforced rather than stated. It was
-    // `issues: write` while an automation action opened issues; narrowing it
-    // back is the one direction that costs nothing, since GitHub asks nobody to
-    // re-approve a permission an app stopped wanting.
+  it("keeps every source on the read path", () => {
+    // This app writes now, and the separation is what keeps that honest: a
+    // source is answered on a context token Initiative minted for a dashboard,
+    // and a write is answered on a delegation token an automation signed. A
+    // source that mutated anything would be a write reachable by whoever can
+    // render a widget.
     for (const source of manifest.data_sources ?? []) {
       expect(source.path.startsWith("/data/")).toBe(true);
     }
@@ -191,18 +200,28 @@ describe("the choices this app makes", () => {
     }
   });
 
-  it("says what it will use the member's credential for, and asks to read", () => {
+  it("says what it will use the member's credential for, writes included", () => {
     const account = manifest.connections?.find((c) => c.id === "account");
+    const scopes = account?.access_hint?.scopes ?? [];
     // Shown beside the form, so a member sees what they are authorizing before
-    // they do it. Every one of these is a read: the app that wrote at GitHub
-    // was the one contributing an automation action, and it does not any more.
-    for (const scope of account?.access_hint?.scopes ?? []) {
-      expect(scope.endsWith(":read"), `${scope} is not a read`).toBe(true);
-    }
-    expect(account?.access_hint?.scopes).toContain("issues:read");
+    // they do it — and it has to include the writes, because a member's own
+    // credential is what an operation runs on wherever there is one. Hiding
+    // that behind a list of reads would be asking for one thing and doing
+    // another.
+    expect(scopes).toContain("issues:write");
+    expect(scopes).toContain("pull_requests:write");
+    // Still a ceiling rather than a grant: a GitHub App's user token carries
+    // the installation's permissions narrowed to what that member already
+    // reaches, so a member who cannot write to the repository still cannot.
+    //
     // Permissions, not scopes. `repo` is an OAuth app's vocabulary and grants
     // everything that person can reach in every repository they can reach.
-    expect(account?.access_hint?.scopes).not.toContain("repo");
+    expect(scopes).not.toContain("repo");
+    for (const scope of scopes) {
+      expect(scope, `${scope} is not a permission:level pair`).toMatch(
+        /^[a-z_]+:(read|write)$/
+      );
+    }
   });
 
   it("mounts no embedded surface", () => {

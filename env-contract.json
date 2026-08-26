@@ -1,0 +1,22 @@
+{
+  "service": "initiative-github",
+  "public_id": "morelitea.github",
+  "required": [
+    "INITIATIVE_APP_SECRET",
+    "INITIATIVE_BASE_URL",
+    "APP_PUBLIC_URL",
+    "DATABASE_URL",
+    "APP_ENCRYPTION_KEY",
+    "GITHUB_CLIENT_ID",
+    "GITHUB_CLIENT_SECRET",
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_WEBHOOK_SECRET"
+  ],
+  "optional": [
+    "PORT",
+    "INITIATIVE_APP_SETUP_TOKEN",
+    "GITHUB_API_BASE",
+    "GITHUB_WEB_BASE",
+    "SYNC_INTERVAL_SECONDS"
+  ]
+}

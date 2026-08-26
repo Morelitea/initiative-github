@@ -90,6 +90,40 @@ describe("when nobody said which", () => {
   });
 });
 
+describe("what it asks GitHub, and when", () => {
+  it("asks nothing when the guild named its repositories", async () => {
+    // Reads run on the caller's own credential, so "what may this app see" is a
+    // question nobody asked on this path — and answering it costs a token mint
+    // and a page walk. A guild that named its repositories needs neither.
+    const fetching = githubGrants(["widgets", "gadgets"]);
+    await expect(resolveRepository(workspace(["gadgets"]))).resolves.toEqual({
+      owner: "acme",
+      repo: "gadgets",
+    });
+    expect(fetching).not.toHaveBeenCalled();
+  });
+
+  it("resolves before an organization has installed the app", async () => {
+    // The consequence worth having: a guild whose admin filled the form in gets
+    // its dashboard without waiting on an organization owner. What still waits
+    // on the installation is the webhook, which is a different surface.
+    const fetching = githubGrants(["widgets"]);
+    await expect(
+      resolveRepository({ owner: "acme", repos: ["gadgets"], installationId: null })
+    ).resolves.toEqual({ owner: "acme", repo: "gadgets" });
+    expect(fetching).not.toHaveBeenCalled();
+  });
+
+  it("still asks when the guild named none, because only GitHub knows", async () => {
+    const fetching = githubGrants(["widgets"]);
+    await expect(resolveRepository(workspace([]))).resolves.toEqual({
+      owner: "acme",
+      repo: "widgets",
+    });
+    expect(fetching).toHaveBeenCalled();
+  });
+});
+
 describe("when a dashboard said which", () => {
   it("takes it", async () => {
     githubGrants(["widgets", "gadgets"]);

@@ -29,6 +29,8 @@
  * @see https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app
  */
 
+import { stripTrailingSlashes } from "initiative-app-kit";
+
 import {
   CALLBACK_PATH,
   REGISTERED_PATH,
@@ -43,40 +45,45 @@ import { SUBSCRIBED_EVENTS } from "./events.js";
  * Read this list against what the code does, because a reviewer at an
  * organization will:
  *
- *   * `issues: read` — how many are open, and a fortnight of opens against
- *     closes. It was `write` while this app contributed an automation action
- *     that opened issues; that went, so this came down with it. Narrowing is
- *     the one direction that is free: GitHub asks nobody to re-approve a
- *     permission an app stopped wanting. It also covers the `issues`
- *     deliveries this app republishes, which need reading and nothing more.
- *   * `pull_requests: read` — "which pull requests are waiting on my review",
- *     and the `pull_request` deliveries this app republishes.
+ *   * `issues: write` — reading is how many are open and a fortnight of opens
+ *     against closes; writing is opening one, commenting, closing, reopening
+ *     and labelling. Labels ride this permission rather than one of their own,
+ *     which is worth knowing before looking for a `labels` key that does not
+ *     exist. The `issues` deliveries this app republishes need only the read.
+ *   * `pull_requests: write` — reading is "which pull requests are waiting on
+ *     my review"; writing is requesting one. Commenting on a pull request does
+ *     *not* need this: pull requests and issues share a comments endpoint and a
+ *     number space, so a comment is an issues write wherever it lands.
  *   * `vulnerability_alerts: read` — open Dependabot alerts, by severity. Note
  *     the key: the permission is called "Dependabot alerts" everywhere a person
  *     reads it and `vulnerability_alerts` everywhere a machine does, and a key
  *     GitHub does not recognize is not an error — it is a permission that
  *     silently was not asked for.
+ *   * `organization_projects: write` — moving a card on a Projects v2 board.
+ *     **The one permission here that reaches past a repository**, because a
+ *     board does: Projects v2 belongs to the organization, has no REST surface,
+ *     and has no repository-scoped equivalent. `repository_projects` is the
+ *     classic repo board and is a different, older thing. An organization that
+ *     does not want this should say so — the operation is the only thing that
+ *     uses it, and everything else here keeps working without it.
  *   * `metadata: read` — mandatory for every GitHub App, and granted implicitly
  *     by the others. Stated so the list is the whole truth.
- *
- * Every one of them is repository-scoped. Nothing here reads an organization's
- * members, its teams, or its settings, and `test/github-app.test.ts` refuses a
- * permission whose name says otherwise.
  *
  * Widening this is not free and not silent: GitHub asks every organization that
  * has already installed the app to approve the new permission, and the app
  * keeps the old grant until they do — so a permission added later arrives
- * broken for everybody who installed before it. That asymmetry is a real
- * argument for asking early, and it is not the one this list follows: a
- * permission with nothing reading it is one an organization grants for no
- * feature, and a reviewer cannot tell the difference between "not used yet" and
- * "used for something not described". Each of these arrived with the code that
- * reads it.
+ * broken for everybody who installed before it. Which is the argument for
+ * asking now rather than in pieces, and against asking for anything speculative:
+ * a permission with nothing behind it is one an organization grants for no
+ * feature, and a reviewer cannot tell "not used yet" from "used for something
+ * not described". Each of these arrived with the code that uses it, and
+ * `test/github-app.test.ts` is what keeps that true.
  */
 export const PERMISSIONS: Readonly<Record<string, string>> = {
-  issues: "read",
-  pull_requests: "read",
+  issues: "write",
+  pull_requests: "write",
   vulnerability_alerts: "read",
+  organization_projects: "write",
   metadata: "read",
 };
 
@@ -90,11 +97,11 @@ export const PERMISSIONS: Readonly<Record<string, string>> = {
  *
  * Two things worth knowing about changing it:
  *
- *   * **It costs no organization a re-approval.** Both deliveries need
- *     permissions this app already holds for its widgets, and subscribing to a
- *     webhook event is not a permission change. Widening {@link PERMISSIONS}
- *     would be the opposite — every existing installation keeps the old grant
- *     until somebody approves the new one.
+ *   * **Adding one is cheap; adding a permission is not.** A webhook event is
+ *     not a permission, so a delivery covered by a permission this app already
+ *     holds costs no organization a re-approval. Widening {@link PERMISSIONS}
+ *     is the opposite — every existing installation keeps the old grant until
+ *     somebody approves the new one.
  *   * **The installation lifecycle is not here, and must not be.** GitHub's own
  *     words: "All GitHub Apps receive this event by default. You cannot
  *     manually subscribe to this event." Naming it would be asking for
@@ -164,7 +171,7 @@ export function githubAppManifest(
     public?: boolean;
   } = {}
 ): GithubAppManifest {
-  const base = publicUrl.replace(/\/+$/, "");
+  const base = stripTrailingSlashes(publicUrl);
   return {
     name: options.name ?? "Initiative for GitHub",
     // Deliberately not `base`. See HOMEPAGE: this is the one field a reader

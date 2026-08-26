@@ -25,6 +25,7 @@ import { describe, expect, it } from "vitest";
 import { config } from "../src/config.js";
 import { appJwt } from "../src/github/app.js";
 import { SUBSCRIBED_EVENTS } from "../src/github/events.js";
+import { OPERATION_IDS, OPERATIONS } from "../src/github/operations.js";
 import {
   HOMEPAGE,
   PERMISSIONS,
@@ -165,42 +166,75 @@ describe("asking for no more than it uses", () => {
   it("asks for these permissions and no others", () => {
     // Written out rather than derived, because this is the list an organization
     // reviews, and a test that computed it from the code would agree with any
-    // change the code made. Note `vulnerability_alerts` rather than
-    // `dependabot_alerts`: the permission has a name for people and a key for
-    // machines, and GitHub does not complain about the wrong one — it just
-    // grants nothing.
+    // change the code made. Two keys are worth reading twice:
+    //
+    //   * `vulnerability_alerts`, not `dependabot_alerts` — the permission has
+    //     a name for people and a key for machines, and GitHub does not
+    //     complain about the wrong one, it just grants nothing.
+    //   * `organization_projects`, not `repository_projects` — Projects v2 is
+    //     organization-scoped and the repository key is the older, classic
+    //     board. Same trap, one letter further apart.
     expect(PERMISSIONS).toEqual({
-      issues: "read",
-      pull_requests: "read",
+      issues: "write",
+      pull_requests: "write",
       vulnerability_alerts: "read",
+      organization_projects: "write",
       metadata: "read",
     });
     expect(registration.default_permissions).toEqual(PERMISSIONS);
   });
 
-  it("has something reading every permission it asks for", () => {
-    // The rule the list above follows. A permission with no feature behind it
-    // is one an organization grants for nothing, and a reviewer cannot tell
-    // "not used yet" from "used for something not described".
-    const sources = (manifest.data_sources ?? []).map((source) => source.id);
-    const readers: Record<string, string> = {
-      issues: "open-issues",
-      pull_requests: "review-queue",
-      vulnerability_alerts: "dependabot-alerts",
+  it("has something behind every permission it asks for", () => {
+    // The rule the list follows. A permission with no feature behind it is one
+    // an organization grants for nothing, and a reviewer cannot tell "not used
+    // yet" from "used for something not described".
+    const declared = new Set([
+      ...(manifest.data_sources ?? []).map((source) => source.id),
+      ...OPERATIONS.map((operation) => operation.id),
+    ]);
+    const uses: Record<string, string[]> = {
+      issues: ["open-issues", "issue-throughput", OPERATION_IDS.openIssue],
+      pull_requests: ["review-queue", OPERATION_IDS.requestReview],
+      vulnerability_alerts: ["dependabot-alerts"],
+      organization_projects: [OPERATION_IDS.moveProjectItem],
     };
     for (const permission of Object.keys(PERMISSIONS)) {
       // Granted implicitly by the rest and required of every GitHub App.
       if (permission === "metadata") continue;
-      expect(readers[permission], `nothing declared reads ${permission}`).toBeDefined();
-      expect(sources).toContain(readers[permission]);
+      expect(uses[permission], `nothing declared uses ${permission}`).toBeDefined();
+      for (const user of uses[permission]) expect(declared).toContain(user);
     }
   });
 
-  it("asks for nothing about the organization or its people", () => {
+  it("asks to write only where an operation writes", () => {
+    // A `write` an organization grants and nothing exercises is the worst kind
+    // of over-permission: invisible in the app's behaviour and permanent in the
+    // grant. So every one has to be named by something in OPERATIONS.
+    const writing = Object.entries(PERMISSIONS)
+      .filter(([, level]) => level === "write")
+      .map(([permission]) => permission);
+    expect(writing.length).toBeGreaterThan(0);
+    expect(OPERATIONS.length).toBeGreaterThan(0);
+    expect(writing.sort()).toEqual([
+      "issues",
+      "organization_projects",
+      "pull_requests",
+    ]);
+  });
+
+  it("reaches past a repository in exactly one place, and names it", () => {
     // A GitHub App can ask for members, teams, billing and administration. This
-    // one reads a repository and opens issues in it.
+    // one asks for none of that. The single organization-scoped permission is
+    // `organization_projects`, and it is org-scoped because a Projects v2 board
+    // is — there is no repository-scoped equivalent to prefer instead.
+    const organizationWide = Object.keys(PERMISSIONS).filter((permission) =>
+      /^(members|organization|administration|team)/.test(permission)
+    );
+    expect(organizationWide).toEqual(["organization_projects"]);
+    // And nothing about people, which is the part that has no repository in it
+    // at all.
     for (const permission of Object.keys(PERMISSIONS)) {
-      expect(permission).not.toMatch(/^(members|organization|administration)/);
+      expect(permission).not.toMatch(/^(members|administration|team)/);
     }
   });
 
@@ -224,20 +258,17 @@ describe("subscribing to what it republishes, and nothing else", () => {
     expect(registration.default_events.length).toBeGreaterThan(0);
   });
 
-  it("costs no organization a re-approval to have added them", () => {
-    // The reason these could come back at all. Subscribing to a webhook event
-    // is not a permission change, and both deliveries need permissions this
-    // app already holds for its widgets — so nothing is asked of an
-    // organization that installed the app before this existed. Widening a
-    // permission would be the opposite: every existing installation keeps the
-    // old grant until somebody approves the new one.
+  it("subscribes to nothing it is not already permitted to read", () => {
+    // A webhook event is not a permission of its own — it is delivered under
+    // the permission that covers the resource. So a subscription this app is
+    // not permitted for is one GitHub silently never sends.
     const needed: Record<string, string> = {
       issues: "issues",
       pull_request: "pull_requests",
     };
     for (const event of registration.default_events) {
       expect(needed[event], `nothing maps ${event} to a permission`).toBeDefined();
-      expect(PERMISSIONS[needed[event]]).toBe("read");
+      expect(["read", "write"]).toContain(PERMISSIONS[needed[event]]);
     }
   });
 

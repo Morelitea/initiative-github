@@ -331,6 +331,11 @@ export async function installationToken(
  * Narrowest first: what the caller asked for, then the guild's own list if it
  * names exactly one, then the installation's if *it* covers exactly one.
  * Anything else is ambiguous and says so rather than picking one.
+ *
+ * This decides *which* repository is asked about and never whether the caller
+ * may see it. That is the credential's job, and on the read path the credential
+ * is the member's own — so a member who cannot reach the repository this picks
+ * gets GitHub's own answer about it, which is that there is no such repository.
  */
 export type RepositoryChoice =
   | { owner: string; repo: string }
@@ -341,13 +346,24 @@ export async function resolveRepository(
   wanted?: string | null
 ): Promise<RepositoryChoice> {
   if (!workspace) return { unavailable: "not-configured" };
-  if (workspace.installationId === null) return { unavailable: "not-installed" };
 
-  const granted = await installationRepositories(workspace.installationId);
-  if (!granted) return { unavailable: "not-installed" };
-
-  // What a guild narrowed itself to, or everything the organization granted.
-  const allowed = workspace.repos.length ? workspace.repos : granted;
+  // Which repositories are in play is the guild's own answer where it gave one,
+  // and only then the organization's.
+  //
+  // That order matters more than it looks. Reads run on the caller's own GitHub
+  // credential, so asking the installation "what may this app see" answers a
+  // question nobody asked on this path — and it costs a token mint and a page
+  // walk to do it. A guild that named its repositories needs neither, and gets
+  // its dashboard whether or not an organization owner has installed the app
+  // yet. Blank still means "everything the organization granted", which is a
+  // list only the installation can enumerate.
+  let allowed = workspace.repos;
+  if (!allowed.length) {
+    if (workspace.installationId === null) return { unavailable: "not-installed" };
+    const granted = await installationRepositories(workspace.installationId);
+    if (!granted) return { unavailable: "not-installed" };
+    allowed = granted;
+  }
   const asked = wanted?.trim();
 
   if (asked) {
