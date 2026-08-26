@@ -1,30 +1,24 @@
 # initiative-github
 
-The reference app for [Initiative](https://github.com/Morelitea/initiative) —
-GitHub issues, reviews and dependency alerts, as dashboard widgets.
+Brings a repository's issues, reviews and dependency alerts into
+[Initiative](https://github.com/Morelitea/initiative) as dashboard widgets, and
+lets an automation act on that repository as the person whose automation it is.
 
-It is a real app, and it is the one to clone when starting your own. There is
-deliberately no template repo: a template is a copy nobody runs, and the copy
-nobody runs is the one that quietly stops matching the protocol. This has to
-keep working, so it cannot drift.
+[Setting it up](#setting-it-up-beside-a-self-hosted-initiative) is eight steps.
 
-**To start an app: clone this, replace the vendor half, keep the boundary.**
-
-## What it demonstrates
-
-It exercises the widest slice of the protocol on purpose:
+## What it does
 
 | | |
 |---|---|
-| **A real GitHub App** | Not an OAuth app: a party at GitHub in its own right, with a private key, permissions an organization approves, installation tokens, and one webhook rather than one per repository. Registered separately from the Initiative listing — see [Two registrations](#two-registrations). |
-| **Per-member connections** | GitHub authorizes a *person*, so each member connects their own account and the app holds one credential per person. Installing never waits for anyone to do it. |
-| **Guild-scoped access, without a guild credential** | Which repository the guild cares about is the only thing an admin types. The access is the *installation* the organization granted, found from that repository — so nobody pastes a token. |
+| **A GitHub App** | A party at GitHub in its own right: an identity it signs with, permissions an organization approves when it installs, and one webhook covering every organization that ever does — rather than one added by hand per repository. Registered separately from the Initiative listing; see [Two registrations](#two-registrations). |
+| **Everything runs as you** | Every widget and every write runs on the caller's own GitHub credential. You see exactly what you can see at GitHub, and nobody is shown the state of a repository they are not on. |
+| **Per-member connections** | GitHub authorizes a *person*, so each member connects their own account and the app holds one credential per person, sealed at rest. Installing never waits for anyone to do it. |
+| **One setting, and it is not a credential** | Which repository the guild cares about is the only thing an admin types. Nobody pastes a token. |
+| **Four widgets** | Open issues, pull requests waiting on your review, Dependabot alerts by severity, and a fortnight of opens against closes. Each is a sandboxed browser module handed its data, returning a scene. |
+| **Seven writes** | Open an issue, comment, close, reopen, label, request a review, move a Projects v2 card — each as the member whose automation asked for it, or not at all. |
+| **Three events** | An issue opened, an issue closed, a review requested, published to whoever subscribed. |
 | **Marketplace listings** | Two: the app itself, and a companion dashboard shipping a ready-made arrangement of its widgets. Built from the manifest, so neither can describe an app that no longer exists. |
-| **Two tiers of scope** | Every source is answered at the narrowest level that answers it: the repository's numbers from the guild's own access, one person's review queue from their own account. |
-| **Data sources** | Answered per caller, from that member's own credential, returning only what the widget draws. |
-| **Widgets** | A sandboxed browser module handed its sources' data, returning a scene. |
-| **Events** | Namespaced under this app's own service id. |
-| **One credential of its own, and it is the right one** | The private key its registration is signed with. It names the app rather than a person, reaches nothing until an organization installs it, and stops reaching when they remove it. Every *write* still runs as the member who authorized it. |
+| **One credential of its own** | The private key its registration is signed with. It names the app rather than a person, reaches nothing until an organization installs it, and stops reaching when they remove it. |
 
 ## Two registrations
 
@@ -563,15 +557,7 @@ with, an organization installs it and chooses which repositories it may see, and
 members separately authorize it to act as themselves. You register one per
 deployment, because GitHub matches every URL on it against a live host.
 
-Print the exact fields for your address:
-
-```bash
-git clone https://github.com/Morelitea/initiative-github
-cd initiative-github && npm install
-APP_PUBLIC_URL=https://github-app.example.com npm run github-app
-```
-
-Then open **<https://github.com/settings/apps/new>** and fill it in. For an
+Open **<https://github.com/settings/apps/new>** and fill it in. For an
 organization use `https://github.com/organizations/YOUR-ORG/settings/apps/new`
 instead.
 
@@ -811,19 +797,6 @@ exactly what you can see at GitHub.
 | Redirect mismatch at GitHub | `APP_PUBLIC_URL` and the Callback URL on the form disagree. They must match exactly, scheme and port included. |
 | GitHub's *Recent Deliveries* shows red | `401` is the webhook secret differing between the form and the container. A timeout is the proxy: the Webhook URL does not reach port 8080. |
 
-## What is deliberately simple here
-
-The issue counts come back as a single number because that is what the widget
-draws. Sending the vendor's whole payload would put data nobody renders into a
-cache and into a browser.
-
-Installation tokens are held in memory and nowhere else. One lasts an hour and
-can always be minted again from the private key, so writing one down would add a
-durable copy of a credential in exchange for nothing.
-
-The schema is applied as idempotent DDL at boot rather than through a migration
-tool. Three tables of this shape do not earn the dependency — but the statements
-are additive on purpose, so a new column is a new statement rather than an edit.
 
 ## License
 
