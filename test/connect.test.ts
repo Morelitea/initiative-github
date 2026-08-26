@@ -3,7 +3,7 @@
  *
  * The app stored the credential correctly and told Initiative nothing, which is
  * a failure with no symptom on this side: the token is real, the widget works
- * when you call the source directly, and every member is told to connect
+ * when you call the endpoint directly, and every member is told to connect
  * forever. It shipped because the flow had no test that looked at both ends.
  *
  * The platform decides whether a per-member connection is satisfied from what

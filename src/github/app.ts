@@ -318,8 +318,8 @@ export async function installationToken(
 /**
  * Which repository a call is about, checked against what was actually granted.
  *
- * Lives here rather than beside the sources because both a read and a write
- * need it and they hold different credentials: a source reads with the
+ * Lives here rather than beside the reads because both directions need it and
+ * they hold different credentials: a read runs on the
  * installation's token, the `create-issue` action writes with a member's. The
  * question "may this install touch that repository?" is the same either way,
  * and it is answered from the organization's grant rather than from anything a

@@ -18,10 +18,16 @@ ghcr.io/morelitea/initiative-github:latest
 | **Four widgets** | Open issues · pull requests waiting on your review · Dependabot alerts by severity · a fortnight of opens against closes. |
 | **A ready-made dashboard** | A second listing, *GitHub overview*, arranging all four so there is something to look at without assembling it. |
 | **Seven writes** | Open an issue, comment, close, reopen, label, request a review, move a Projects v2 card — each performed as the member whose automation asked for it. |
-| **Three events** | An issue opened, an issue closed, a review requested. |
+| **Three announcements** | An issue opened, an issue closed, a review requested. |
 
-The widgets need nothing but this app. The writes and events exist for an
-automation service to use, and a guild without one gets the same dashboard.
+All fourteen are **endpoints**: one list this app declares, one address they are
+called at, and the id says which one you want. A widget filling a tile and an
+automation asking the app to act reach the same surface, and what separates them
+is who they prove themselves as.
+
+The widgets need nothing but this app. The writes and the announcements exist
+for an automation service to use, and a guild without one gets the same
+dashboard.
 
 ## It is installed twice
 

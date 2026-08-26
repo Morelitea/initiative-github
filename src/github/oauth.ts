@@ -264,7 +264,7 @@ export async function completeOAuth(params: URLSearchParams): Promise<string> {
   }
 
   // Holding the credential is not the same as being connected, and this is the
-  // half that was missing. Initiative decides whether a source may run from its
+  // half that was missing. Initiative decides whether an endpoint may run from its
   // OWN record of the connection, not from anything this app knows: a member
   // connection is satisfied when the app writes back a managed value, and one
   // that declares fields nobody has written is never satisfied at all. So a

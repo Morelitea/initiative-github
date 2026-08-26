@@ -12,3 +12,14 @@
 
 /** `<publisher>.<slug>`. Immutable once anything has installed this app. */
 export const PUBLIC_ID = "morelitea.github";
+
+/**
+ * One endpoint id, namespaced the way the platform enforces.
+ *
+ * Every id this app publishes goes through here — reads, writes and emissions
+ * alike — because they share one namespace and a caller resolves an id without
+ * being told which kind it is first.
+ */
+export function declare(name: string): string {
+  return `app.${PUBLIC_ID}.${name}`;
+}

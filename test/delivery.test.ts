@@ -30,7 +30,7 @@ vi.mock("../src/sync.js", () => ({ syncInstall }));
 
 import { close, migrate, pool } from "../src/db.js";
 import { handleDelivery } from "../src/github/webhooks.js";
-import { EVENT_TYPES } from "../src/github/events.js";
+import { EMITTED } from "../src/github/emissions.js";
 import { seal } from "../src/secrets.js";
 import {
   installsAwaiting,
@@ -40,7 +40,7 @@ import {
 
 beforeEach(async () => {
   await migrate();
-  await pool.query("TRUNCATE workspaces, event_subscriptions");
+  await pool.query("TRUNCATE workspaces, subscriptions");
   syncInstall.mockClear();
 });
 
@@ -217,9 +217,9 @@ describe("republishing what a repository did", () => {
   });
 
   /** One subscriber, wanting everything, at an address the producer will post to. */
-  async function subscriber(guildId: number, types = [...EVENT_TYPES]) {
+  async function subscriber(guildId: number, types = [...EMITTED]) {
     await pool.query(
-      `INSERT INTO event_subscriptions (guild_id, subscriber, target_url, secret, event_types)
+      `INSERT INTO subscriptions (guild_id, subscriber, target_url, secret, endpoints)
        VALUES ($1, 'morelitea.auto', 'https://auto.example.com/in', $2, $3)`,
       [guildId, seal("subscriber-secret"), types]
     );

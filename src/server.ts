@@ -20,7 +20,7 @@
  *   installing this app, removing it, or changing which repositories it may see
  *   arrives here, and re-runs the sync for the installs it affects; repository
  *   activity arrives here too and is republished to whoever asked for it.
- * - **`/v1/events*`, `/v1/operations`** — a *delegate* calling in, proving
+ * - **`/v1/endpoints*`** — a *delegate* calling in, proving
  *   itself with a token it signed and a key the deployment publishes. The only
  *   surfaces here Initiative is not a party to: an automation service asks to
  *   be told when something happens at GitHub, and asks this app to act at
@@ -61,9 +61,8 @@ import { page } from "./page.js";
 import {
   CALLBACK_PATH,
   CONNECT_PATH,
-  EVENTS_PATH,
+  ENDPOINTS_PATH,
   INSTALL_PATH,
-  OPERATIONS_PATH,
   REGISTERED_PATH,
   REGISTER_PATH,
   SETUP_PATH,
@@ -75,16 +74,15 @@ import {
   spendToken,
   subscribe,
   unsubscribe,
-} from "./events.js";
-import { invoke } from "./operations.js";
-import { EVENT_TYPES } from "./github/events.js";
-import { OPERATIONS } from "./github/operations.js";
+} from "./subscriptions.js";
+import type { Caller } from "./caller.js";
 import {
-  dependabotAlerts,
-  issueThroughput,
-  openIssues,
-  reviewQueue,
-} from "./github/queries.js";
+  ENDPOINTS,
+  callerFromContext,
+  callerFromDelegate,
+  failed,
+  invoke,
+} from "./endpoints.js";
 import { installUrl } from "./github/app.js";
 import { beginInstall, beginOAuth, completeOAuth } from "./github/oauth.js";
 import {
@@ -244,7 +242,7 @@ function sendPage(
 async function context(
   req: IncomingMessage,
   res: ServerResponse,
-  expected: { scope: ContextClaims["scope"]; sourceId?: string }
+  expected: { scope: ContextClaims["scope"]; endpointId?: string }
 ): Promise<ContextClaims | null> {
   const token = bearerToken(req.headers);
   if (!token) {
@@ -257,14 +255,16 @@ async function context(
       baseUrl: config.initiativeBaseUrl,
       jwks,
     });
-    // The scope is pinned per call, so a token minted to fetch a source is not
-    // usable to run an action. Checking it is the app's job.
+    // The scope is pinned per call, so a token minted to reach an endpoint is
+    // not usable for the lifecycle signal. Checking it is the app's job.
     if (claims.scope !== expected.scope) {
       send(res, 403, { error: "token is not for this scope" });
       return null;
     }
-    if (expected.sourceId && claims.source_id !== expected.sourceId) {
-      send(res, 403, { error: "token is not for this source" });
+    // And the id is pinned within the scope: a token minted to read the issue
+    // count cannot be spent closing an issue.
+    if (expected.endpointId && claims.endpoint_id !== expected.endpointId) {
+      send(res, 403, { error: "token is not for this endpoint" });
       return null;
     }
     return claims;
@@ -366,37 +366,6 @@ export const server = createServer(async (req, res) => {
       return send(res, 200, {
         signature: answerChallenge(config.appSecret, body.challenge),
       });
-    }
-
-    // --- data sources ------------------------------------------------------
-    if (req.method === "GET" && path === "/data/open-issues") {
-      const claims = await context(req, res, { scope: "data", sourceId: "open-issues" });
-      if (!claims) return;
-      return send(res, 200, await openIssues(claims, url.searchParams));
-    }
-
-    if (req.method === "GET" && path === "/data/review-queue") {
-      const claims = await context(req, res, { scope: "data", sourceId: "review-queue" });
-      if (!claims) return;
-      return send(res, 200, await reviewQueue(claims, url.searchParams));
-    }
-
-    if (req.method === "GET" && path === "/data/dependabot-alerts") {
-      const claims = await context(req, res, {
-        scope: "data",
-        sourceId: "dependabot-alerts",
-      });
-      if (!claims) return;
-      return send(res, 200, await dependabotAlerts(claims, url.searchParams));
-    }
-
-    if (req.method === "GET" && path === "/data/issue-throughput") {
-      const claims = await context(req, res, {
-        scope: "data",
-        sourceId: "issue-throughput",
-      });
-      if (!claims) return;
-      return send(res, 200, await issueThroughput(claims, url.searchParams));
     }
 
     // --- lifecycle ---------------------------------------------------------
@@ -531,16 +500,68 @@ export const server = createServer(async (req, res) => {
       return sendPage(res, credentialsPage(credentials), { secret: true });
     }
 
-    // --- what this app produces, and who has asked for it ------------------
-    // Unauthenticated, and it is the same list the manifest declares. A
-    // subscriber connecting directly needs to know what it may ask for, and
+    // --- everything this app answers ---------------------------------------
+    // `GET` is unauthenticated, and it is the same list the manifest declares.
+    // A caller connecting directly needs to know what it may ask for, and
     // making it prove itself to read a public vocabulary would be a credential
     // spent on nothing.
-    if (req.method === "GET" && path === EVENTS_PATH) {
-      return send(res, 200, {
-        public_id: manifest.service.public_id,
-        event_types: EVENT_TYPES,
-      });
+    //
+    // `POST` is the one call surface, and it takes **either** token. A widget
+    // arrives on a context token Initiative minted; an automation service
+    // arrives on a delegation token it signed itself. Both reduce to a caller
+    // and one of this app's connection refs, so nothing past this point knows
+    // or cares which one it was — the endpoint's own direction decides what
+    // happens, not the route somebody found.
+    if (path === ENDPOINTS_PATH && (req.method === "GET" || req.method === "POST")) {
+      if (req.method === "GET") {
+        return send(res, 200, {
+          public_id: manifest.service.public_id,
+          endpoints: ENDPOINTS,
+        });
+      }
+
+      let body: unknown;
+      try {
+        body = JSON.parse((await readBody(req)).toString("utf-8"));
+      } catch {
+        return send(res, 400, { error: "body is not json" });
+      }
+      // The kit refuses an id this app does not declare, and refuses an `emit`
+      // outright — those travel the other way and are subscribed to, not called
+      // — so nothing past here can name something that was not written for it.
+      const parsed = parseInvoke(body, ENDPOINTS);
+      if (!parsed.ok) return send(res, 400, { error: parsed.error });
+
+      // Which kind of caller this is, decided by whether one named itself. A
+      // delegate must, because the name selects the key set its signature is
+      // checked against; Initiative never does.
+      let caller: Caller;
+      if (delegateHeader(req.headers)) {
+        const claims = await delegate(req, res);
+        if (!claims) return;
+        if (parsed.request.guild_id !== claims.guildId) {
+          return send(res, 403, { error: "that token is for another guild" });
+        }
+        const resolved = await callerFromDelegate(claims);
+        if (failed(resolved)) {
+          return send(res, resolved.status, { error: resolved.error });
+        }
+        caller = resolved;
+      } else {
+        const claims = await context(req, res, {
+          scope: "endpoint",
+          endpointId: parsed.request.endpoint,
+        });
+        if (!claims) return;
+        if (parsed.request.guild_id !== claims.guild_id) {
+          return send(res, 403, { error: "that token is for another guild" });
+        }
+        caller = callerFromContext(claims);
+      }
+
+      const outcome = await invoke(caller, parsed.request);
+      if ("error" in outcome) return send(res, outcome.status, { error: outcome.error });
+      return send(res, 200, outcome);
     }
 
     // Everything below is a delegate acting for one guild. The token names the
@@ -580,40 +601,6 @@ export const server = createServer(async (req, res) => {
       const removed = await unsubscribe(claims.signer.publicId, claims.guildId, id);
       if (!removed) return send(res, 404, { error: "no such subscription" });
       return send(res, 204, null);
-    }
-
-    // --- being asked to act at GitHub --------------------------------------
-    // The only surface here that writes. `GET` is the closed set of things this
-    // app will do, public like the manifest; `POST` runs one, and takes the
-    // same delegation token the subscriptions do.
-    if (path === OPERATIONS_PATH && (req.method === "GET" || req.method === "POST")) {
-      if (req.method === "GET") {
-        return send(res, 200, {
-          public_id: manifest.service.public_id,
-          operations: OPERATIONS,
-        });
-      }
-
-      const claims = await delegate(req, res);
-      if (!claims) return;
-
-      let body: unknown;
-      try {
-        body = JSON.parse((await readBody(req)).toString("utf-8"));
-      } catch {
-        return send(res, 400, { error: "body is not json" });
-      }
-      // The kit refuses an id this app does not declare, so nothing past here
-      // can name an operation that was not written for it.
-      const parsed = parseInvoke(body, OPERATIONS);
-      if (!parsed.ok) return send(res, 400, { error: parsed.error });
-      if (parsed.request.guild_id !== claims.guildId) {
-        return send(res, 403, { error: "that token is for another guild" });
-      }
-
-      const outcome = await invoke(claims, parsed.request);
-      if ("error" in outcome) return send(res, outcome.status, { error: outcome.error });
-      return send(res, 200, outcome);
     }
 
     // --- the vendor calling in ---------------------------------------------

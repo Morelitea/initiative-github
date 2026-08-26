@@ -58,15 +58,16 @@ export const REGISTER_PATH = "/setup/github/register";
 export const REGISTERED_PATH = "/setup/github/registered";
 
 /**
- * What this app produces, for a subscriber that wants to know before asking.
+ * The one surface every caller uses, and where a subscriber registers for the
+ * things that travel the other way.
  *
- * Unauthenticated, because it is the same list the manifest declares and the
- * manifest is public by design. Re-served here so a subscriber connecting
- * *directly* to the app needs one fetch rather than a trip through the
- * platform's catalog to find out what it can ask for.
+ * `ENDPOINTS_PATH` answers unauthenticated on `GET` — it is the same list the
+ * manifest declares and the manifest is public by design — so a caller
+ * connecting *directly* to the app needs one fetch rather than a trip through
+ * the platform's catalog to find out what it can ask for.
  *
- * Both of these come from the kit rather than being spelled out here: what has
- * to be identical across every app is exactly the part a subscriber has to
- * guess, and a path an app chose for itself is a path somebody has to look up.
+ * Both come from the kit rather than being spelled out here: what has to be
+ * identical across every app is exactly the part a caller has to guess, and a
+ * path an app chose for itself is a path somebody has to look up.
  */
-export { EVENTS_PATH, OPERATIONS_PATH, SUBSCRIPTIONS_PATH } from "initiative-app-kit";
+export { ENDPOINTS_PATH, SUBSCRIPTIONS_PATH } from "initiative-app-kit";

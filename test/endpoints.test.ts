@@ -6,10 +6,10 @@
  * that is a URL and GitHub's problem. These pin the two properties that would
  * be silently wrong rather than loudly broken:
  *
- *   * **The set is closed.** A caller picks from operations written here and
+ *   * **The set is closed.** A caller picks from endpoints written here and
  *     cannot describe a request the app performs. That is the difference
  *     between an integration and a proxy.
- *   * **The actor is whoever the operation says, and is always reported.** A
+ *   * **The actor is whoever the endpoint says, and is always reported.** A
  *     write that ran as the app when the caller expected a person is a
  *     different act, and an app that does not say so is lying by omission.
  *
@@ -23,18 +23,17 @@ import { parseInvoke } from "initiative-app-kit";
 
 import { close, migrate, pool } from "../src/db.js";
 import {
-  OPERATION_IDS,
-  OPERATIONS,
   chooseActor,
   failed,
   run,
   type Actor,
-} from "../src/github/operations.js";
+} from "../src/github/writes.js";
 import { rememberWorkspace, workspaceFor } from "../src/github/workspace.js";
+import { WRITE_ENDPOINTS, WRITE_IDS } from "../src/manifest.config.js";
 
 const MEMBER: Actor = { kind: "member", token: "member-token" };
-// No operation declares this kind any more. Kept so `run` is exercised with an
-// actor it did not choose for itself — it takes whatever it is handed, and the
+// No endpoint declares this kind, and it is here so `run` is exercised with an
+// actor it did not choose for itself: it takes whatever it is handed, and the
 // choosing is `chooseActor`'s job and tested there.
 const APP: Actor = { kind: "installation", token: "installation-token" };
 
@@ -42,7 +41,7 @@ const APP: Actor = { kind: "installation", token: "installation-token" };
  * Every request that went out, so a test can assert on the call not the mock.
  *
  * The installation plumbing is filtered out — minting a token and listing what
- * the organization granted happen on the way to every operation, and are the
+ * the organization granted happen on the way to every endpoint, and are the
  * read path's business rather than this one's.
  */
 const sent: Array<{ url: string; method: string; body: unknown; auth: string }> = [];
@@ -54,7 +53,7 @@ function github(answer: (url: string) => { status: number; body?: unknown }) {
     const address = String(url);
     const headers = (init?.headers ?? {}) as Record<string, string>;
 
-    // Every operation resolves which repository it is about the same way a read
+    // Every write resolves which repository it is about the same way a read
     // does, which means minting an installation token and asking GitHub what
     // the organization actually granted. Answered here so each test can be
     // about its own call.
@@ -89,7 +88,7 @@ async function installed() {
 
 beforeEach(async () => {
   await migrate();
-  await pool.query("TRUNCATE workspaces, event_subscriptions, delegation_tokens");
+  await pool.query("TRUNCATE workspaces, subscriptions, delegation_tokens");
   sent.length = 0;
 });
 
@@ -106,30 +105,30 @@ describe("the closed set", () => {
     // Two apps offering `open-issue` would be two different things under one
     // name, and a caller resolving the wrong one would do the wrong thing
     // successfully — which is worse than an error.
-    for (const operation of OPERATIONS) {
+    for (const operation of WRITE_ENDPOINTS) {
       expect(operation.id.startsWith("app.morelitea.github.")).toBe(true);
     }
-    expect(new Set(OPERATIONS.map((o) => o.id)).size).toBe(OPERATIONS.length);
+    expect(new Set(WRITE_ENDPOINTS.map((o) => o.id)).size).toBe(WRITE_ENDPOINTS.length);
   });
 
   it("refuses anything not on it, before any credential is chosen", () => {
-    expect(parseInvoke({ operation: "app.morelitea.github.rm-rf", guild_id: 1 }, OPERATIONS).ok)
+    expect(parseInvoke({ operation: "app.morelitea.github.rm-rf", guild_id: 1 }, WRITE_ENDPOINTS).ok)
       .toBe(false);
     // Including a real GitHub capability this app deliberately does not offer.
-    expect(parseInvoke({ operation: "app.morelitea.github.delete-repo", guild_id: 1 }, OPERATIONS).ok)
+    expect(parseInvoke({ operation: "app.morelitea.github.delete-repo", guild_id: 1 }, WRITE_ENDPOINTS).ok)
       .toBe(false);
   });
 
-  it("names every operation in OPERATION_IDS, and no orphans either way", () => {
+  it("names every operation in WRITE_IDS, and no orphans either way", () => {
     // The dispatch switches on these, so an id in one and not the other is
-    // either an operation nothing runs or a branch nothing can reach.
-    expect(OPERATIONS.map((o) => o.id).sort()).toEqual(Object.values(OPERATION_IDS).sort());
+    // either an endpoint nothing runs or a branch nothing can reach.
+    expect(WRITE_ENDPOINTS.map((o) => o.id).sort()).toEqual(Object.values(WRITE_IDS).sort());
   });
 });
 
 describe("who the write runs as", () => {
-  const openIssue = OPERATIONS.find((o) => o.id === OPERATION_IDS.openIssue)!;
-  const project = OPERATIONS.find((o) => o.id === OPERATION_IDS.moveProjectItem)!;
+  const openIssue = WRITE_ENDPOINTS.find((o) => o.id === WRITE_IDS.openIssue)!;
+  const project = WRITE_ENDPOINTS.find((o) => o.id === WRITE_IDS.moveProjectItem)!;
 
   it("declares no operation that runs as anything but the member", async () => {
     // The rule, asserted on the declarations rather than on one code path. A
@@ -137,7 +136,7 @@ describe("who the write runs as", () => {
     // organization granted, which is not the same set as what the person whose
     // automation fired it may touch — an escalation with a scheduler in front
     // of it.
-    for (const operation of OPERATIONS) {
+    for (const operation of WRITE_ENDPOINTS) {
       expect(operation.actors, operation.id).toEqual(["member"]);
     }
   });
@@ -166,9 +165,9 @@ describe("who the write runs as", () => {
   });
 
   it("holds for the organization-scoped one too", async () => {
-    // A Projects v2 board belongs to the organization, which used to be the
-    // argument for running this as the app. It is the argument against: a board
-    // a member cannot see is one they should not be moving cards on.
+    // A Projects v2 board belongs to the organization, which is the argument
+    // for running this as the member: a board a member cannot see is one they
+    // should not be moving cards on.
     const actor = await chooseActor(project, { member: async () => "member-token" });
     expect(failed(actor) === false && actor).toMatchObject({ kind: "member" });
   });
@@ -184,7 +183,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github(() => ({ status: 201, body: { number: 42, html_url: "https://gh/42", id: 9 } }));
 
-    const result = await run(OPERATION_IDS.openIssue, MEMBER, workspace, {
+    const result = await run(WRITE_IDS.openIssue, MEMBER, workspace, {
       title: "It broke",
       body: "here is how",
       labels: ["bug"],
@@ -207,12 +206,12 @@ describe("what it does at GitHub", () => {
 
   it("comments on issues and pull requests through one endpoint", async () => {
     // They share a number space and a comments endpoint, which is why this is
-    // one operation rather than two that differ by a URL segment — and why a
+    // one endpoint rather than two that differ by a URL segment — and why a
     // comment needs no `pull_requests` permission.
     const workspace = await installed();
     github(() => ({ status: 201, body: { id: 5, html_url: "https://gh/c/5" } }));
 
-    const result = await run(OPERATION_IDS.comment, APP, workspace, {
+    const result = await run(WRITE_IDS.comment, APP, workspace, {
       number: 812,
       body: "on it",
     });
@@ -228,7 +227,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github(() => ({ status: 200, body: { number: 42, state: "closed" } }));
 
-    await run(OPERATION_IDS.closeIssue, MEMBER, workspace, {
+    await run(WRITE_IDS.closeIssue, MEMBER, workspace, {
       number: 42,
       reason: "not_planned",
     });
@@ -239,14 +238,14 @@ describe("what it does at GitHub", () => {
 
     // And refuses a reason GitHub does not know rather than passing it on.
     sent.length = 0;
-    await run(OPERATION_IDS.closeIssue, MEMBER, workspace, { number: 42, reason: "vibes" });
+    await run(WRITE_IDS.closeIssue, MEMBER, workspace, { number: 42, reason: "vibes" });
     expect(sent[0].body).toEqual({ state: "closed" });
   });
 
   it("reopens through the same field, which is why it is one endpoint", async () => {
     const workspace = await installed();
     github(() => ({ status: 200, body: { number: 42, state: "open" } }));
-    await run(OPERATION_IDS.reopenIssue, MEMBER, workspace, { number: 42 });
+    await run(WRITE_IDS.reopenIssue, MEMBER, workspace, { number: 42 });
     expect(sent[0].body).toEqual({ state: "open" });
   });
 
@@ -257,7 +256,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github(() => ({ status: 200, body: [] }));
 
-    await run(OPERATION_IDS.label, MEMBER, workspace, {
+    await run(WRITE_IDS.label, MEMBER, workspace, {
       number: 42,
       remove: ["triage"],
       add: ["bug"],
@@ -274,7 +273,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github((url) => (url.includes("/labels/") ? { status: 404, body: {} } : { status: 200, body: [] }));
 
-    const result = await run(OPERATION_IDS.label, MEMBER, workspace, {
+    const result = await run(WRITE_IDS.label, MEMBER, workspace, {
       number: 42,
       remove: ["gone"],
       add: ["bug"],
@@ -286,7 +285,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github(() => ({ status: 201, body: { number: 812 } }));
 
-    await run(OPERATION_IDS.requestReview, MEMBER, workspace, {
+    await run(WRITE_IDS.requestReview, MEMBER, workspace, {
       number: 812,
       reviewers: "alice",
     });
@@ -308,7 +307,7 @@ describe("what it does at GitHub", () => {
       body: { data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "PVTI_x" } } } },
     }));
 
-    const result = await run(OPERATION_IDS.moveProjectItem, APP, workspace, {
+    const result = await run(WRITE_IDS.moveProjectItem, APP, workspace, {
       project_id: "PVT_1",
       item_id: "PVTI_x",
       field_id: "PVTSSF_1",
@@ -334,7 +333,7 @@ describe("what it does at GitHub", () => {
     const workspace = await installed();
     github(() => ({ status: 200, body: { errors: [{ message: "not accessible" }] } }));
 
-    const result = await run(OPERATION_IDS.moveProjectItem, APP, workspace, {
+    const result = await run(WRITE_IDS.moveProjectItem, APP, workspace, {
       project_id: "PVT_1",
       item_id: "PVTI_x",
       field_id: "PVTSSF_1",
@@ -348,7 +347,7 @@ describe("what it does at GitHub", () => {
 describe("what it refuses", () => {
   it("a call naming no repository when the install covers several", async () => {
     await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets", "gadgets"] }, 9011);
-    const result = await run(OPERATION_IDS.openIssue, MEMBER, await workspaceFor(11), {
+    const result = await run(WRITE_IDS.openIssue, MEMBER, await workspaceFor(11), {
       title: "which one?",
     });
     expect(failed(result)).toBe(true);
@@ -360,12 +359,12 @@ describe("what it refuses", () => {
     github(() => ({ status: 200, body: {} }));
 
     for (const [operation, params] of [
-      [OPERATION_IDS.openIssue, {}],
-      [OPERATION_IDS.comment, { number: 1 }],
-      [OPERATION_IDS.comment, { body: "hi" }],
-      [OPERATION_IDS.label, { number: 1 }],
-      [OPERATION_IDS.requestReview, { number: 1 }],
-      [OPERATION_IDS.moveProjectItem, { project_id: "PVT_1" }],
+      [WRITE_IDS.openIssue, {}],
+      [WRITE_IDS.comment, { number: 1 }],
+      [WRITE_IDS.comment, { body: "hi" }],
+      [WRITE_IDS.label, { number: 1 }],
+      [WRITE_IDS.requestReview, { number: 1 }],
+      [WRITE_IDS.moveProjectItem, { project_id: "PVT_1" }],
     ] as const) {
       const result = await run(operation, MEMBER, workspace, params);
       expect(failed(result), `${operation} accepted ${JSON.stringify(params)}`).toBe(true);
@@ -384,7 +383,7 @@ describe("what it refuses", () => {
       body: { message: "Resource not accessible by integration", secret: "leak" },
     }));
 
-    const result = await run(OPERATION_IDS.openIssue, MEMBER, workspace, { title: "x" });
+    const result = await run(WRITE_IDS.openIssue, MEMBER, workspace, { title: "x" });
     expect(failed(result)).toBe(true);
     expect(failed(result) && result.error).toBe("Resource not accessible by integration");
     expect(JSON.stringify(result)).not.toContain("leak");
@@ -395,7 +394,7 @@ describe("what it refuses", () => {
     github(() => {
       throw new Error("econnrefused");
     });
-    const result = await run(OPERATION_IDS.openIssue, MEMBER, workspace, { title: "x" });
+    const result = await run(WRITE_IDS.openIssue, MEMBER, workspace, { title: "x" });
     expect(failed(result) && result.status).toBe(502);
   });
 });

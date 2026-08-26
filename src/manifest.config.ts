@@ -6,9 +6,9 @@
  * deployment does. `npm run manifest` writes it.
  *
  * The whole surface is here: the connections a person fills in or authorizes,
- * the sources the platform fetches, the widgets drawn from them, and the events
- * this app publishes. Nothing here is an address — every route is a path, and
- * the operator's registration says where the app lives.
+ * the endpoints anything may call, and the widgets drawn from them. Nothing
+ * here is an address — a route is a path and an endpoint is an id, and the
+ * operator's registration says where the app lives.
  *
  * **No embedded page.** This app deliberately mounts no surface of its own:
  * everything it offers lands inside Initiative's own — dashboard widgets, and
@@ -17,12 +17,173 @@
  * is better as parts.
  */
 
-import type { Manifest } from "initiative-app-kit";
+import type { Endpoint, EndpointParam, Manifest } from "initiative-app-kit";
 
-import { EVENT_TYPES } from "./github/events.js";
+import { EMIT_ENDPOINTS } from "./github/emissions.js";
 import { PERMISSIONS } from "./github/registration.js";
-import { PUBLIC_ID } from "./public-id.js";
+import { PUBLIC_ID, declare } from "./public-id.js";
 import { CONNECT_PATH } from "./routes.js";
+
+/**
+ * The reads this app answers, named so a widget and an automation can bind the
+ * same id.
+ *
+ * Namespaced like everything else here: one id space across reads, writes and
+ * emissions means a caller resolves an id without being told which kind it is.
+ */
+export const READ_IDS = {
+  openIssues: declare("open-issues"),
+  reviewQueue: declare("review-queue"),
+  dependabotAlerts: declare("dependabot-alerts"),
+  issueThroughput: declare("issue-throughput"),
+} as const;
+
+/** Every write id the caller may name, in one place. */
+export const WRITE_IDS = {
+  openIssue: declare("open-issue"),
+  comment: declare("comment"),
+  closeIssue: declare("close-issue"),
+  reopenIssue: declare("reopen-issue"),
+  label: declare("label"),
+  requestReview: declare("request-review"),
+  moveProjectItem: declare("move-project-item"),
+} as const;
+
+/**
+ * One parameter, in the four languages this app's settings are written in.
+ *
+ * Typed and labelled rather than named, because these are what a person filling
+ * in an automation step is shown. A bare list of keys is enough for a machine
+ * and leaves whoever is wiring it up guessing at `option_id`.
+ */
+function param(
+  key: string,
+  type: EndpointParam["type"],
+  en: string,
+  de: string,
+  es: string,
+  fr: string
+): EndpointParam {
+  return { key, type, label: { en, de, es, fr } };
+}
+
+/** Which repository, on every write that acts inside one. */
+const REPO = param("repo", "string", "Repository", "Repository", "Repositorio", "Dépôt");
+
+/** Which issue or pull request. They share a number space at GitHub. */
+const NUMBER = param("number", "int", "Number", "Nummer", "Número", "Numéro");
+
+/**
+ * What this app will do at GitHub, and whose credential each runs on.
+ *
+ * **Every one of them runs as the member**, and nothing here runs as the app.
+ * That is the same rule the read path follows and it is the same reason: a
+ * write the app performed on its own credential is a write inside whatever the
+ * organization granted, which is not the same set as what the person whose
+ * automation fired it may touch. An automation that could reach further than
+ * its owner is an escalation with a scheduler in front of it.
+ *
+ * So `actors` is uniform now, and it stays a list rather than collapsing to a
+ * single value because the shape is the kit's and other apps have other
+ * answers — an app whose vendor has no per-person identity at all can only ever
+ * act as itself.
+ *
+ * The cost is that an endpoint refuses outright when the member behind a
+ * delegated call cannot be resolved. That is deliberate. Substituting the app
+ * would look like success and would be a different act performed by a different
+ * party, which is the sort of difference nobody notices until they are reading
+ * an audit log wondering who closed something.
+ */
+export const WRITE_ENDPOINTS: readonly Endpoint[] = [
+  {
+    id: WRITE_IDS.openIssue,
+    direction: "write",
+    actors: ["member"],
+    requires: { all_of: ["workspace", "account"] },
+    params: [
+      REPO,
+      param("title", "string", "Title", "Titel", "Título", "Titre"),
+      param("body", "string", "Body", "Text", "Cuerpo", "Corps"),
+      param("labels", "string", "Labels", "Labels", "Etiquetas", "Étiquettes"),
+      param("assignees", "string", "Assignees", "Zuständige", "Asignados", "Assignés"),
+    ],
+  },
+  {
+    id: WRITE_IDS.comment,
+    direction: "write",
+    actors: ["member"],
+    requires: { all_of: ["workspace", "account"] },
+    // Issues and pull requests share a number space and a comments endpoint, so
+    // this is one write rather than two that differ by a URL segment.
+    params: [REPO, NUMBER, param("body", "string", "Body", "Text", "Cuerpo", "Corps")],
+  },
+  {
+    id: WRITE_IDS.closeIssue,
+    direction: "write",
+    actors: ["member"],
+    requires: { all_of: ["workspace", "account"] },
+    params: [
+      REPO,
+      NUMBER,
+      {
+        key: "reason",
+        type: "select",
+        options: ["completed", "not_planned"],
+        label: { en: "Reason", de: "Grund", es: "Motivo", fr: "Raison" },
+      },
+    ],
+  },
+  {
+    id: WRITE_IDS.reopenIssue,
+    direction: "write",
+    actors: ["member"],
+    requires: { all_of: ["workspace", "account"] },
+    params: [REPO, NUMBER],
+  },
+  {
+    id: WRITE_IDS.label,
+    direction: "write",
+    actors: ["member"],
+    requires: { all_of: ["workspace", "account"] },
+    params: [
+      REPO,
+      NUMBER,
+      param("add", "string", "Labels to add", "Hinzuzufügende Labels", "Etiquetas a añadir", "Étiquettes à ajouter"),
+      param("remove", "string", "Labels to remove", "Zu entfernende Labels", "Etiquetas a quitar", "Étiquettes à retirer"),
+    ],
+  },
+  {
+    id: WRITE_IDS.requestReview,
+    direction: "write",
+    actors: ["member"],
+    requires: { all_of: ["workspace", "account"] },
+    params: [
+      REPO,
+      NUMBER,
+      param("reviewers", "string", "Reviewers", "Reviewer", "Revisores", "Relecteurs"),
+      param("team_reviewers", "string", "Team reviewers", "Team-Reviewer", "Equipos revisores", "Équipes relectrices"),
+    ],
+  },
+  {
+    // Projects v2 is organization-scoped, which is the argument for running
+    // this one as the member rather than as the app: a board a member cannot
+    // see is one they should not be moving cards on, and their own token is
+    // what says which boards those are.
+    id: WRITE_IDS.moveProjectItem,
+    direction: "write",
+    actors: ["member"],
+    // No `workspace`: a Projects v2 board belongs to the organization rather
+    // than to a repository, so the guild's repository setting says nothing
+    // about which board this is. The ids name it outright.
+    requires: { all_of: ["account"] },
+    params: [
+      param("project_id", "string", "Project", "Projekt", "Proyecto", "Projet"),
+      param("item_id", "string", "Card", "Karte", "Tarjeta", "Carte"),
+      param("field_id", "string", "Field", "Feld", "Campo", "Champ"),
+      param("option_id", "string", "Value", "Wert", "Valor", "Valeur"),
+    ],
+  },
+];
 
 /**
  * Namespaces everything this app publishes.
@@ -68,26 +229,21 @@ export const manifest: Manifest = {
   // Declared and cross-checked against the blocks below, in both directions.
   // A feature with no block would advertise something this app cannot do.
   //
-  // `events` is the contract, and it belongs here rather than only on the wire
-  // for that reason: this app holds GitHub's webhook connection, so it is the
-  // authority on what a GitHub event means here, and a consumer reads this list
-  // to know what it may ask for. Delivery itself does not go through Initiative
-  // — see `../events.ts`.
-  //
-  // `automations` is not declared and will not be. A node an app contributes is
-  // a thing that executes inside somebody's deployment, and what executes stays
-  // first-party.
-  features: ["data", "widgets", "events"],
+  // `endpoints` is the whole callable surface — what this app answers, what it
+  // does, and what it announces — and it belongs here rather than only on the
+  // wire because this app holds GitHub's webhook connection and is therefore
+  // the authority on what any of it means. A consumer reads this list to know
+  // what it may ask for.
+  features: ["endpoints", "widgets"],
 
   default_name: "GitHub",
 
   connections: [
     {
       // The member's own GitHub account, and **everything here runs on it** —
-      // every widget, every source, and a write wherever there is a member to
-      // attribute it to.
+      // every widget, every read, and every write.
       //
-      // That is the whole permission model. A source cannot ask Initiative
+      // That is the whole permission model. An endpoint cannot ask Initiative
       // whether this person may see a private repository, because a context
       // token names a guild and an install and nothing about what they may
       // reach. GitHub can answer that, and does, if the call runs on their
@@ -154,11 +310,6 @@ export const manifest: Manifest = {
       // grants nobody anything: the call still runs on the caller's own GitHub
       // credential, so a member who is not on that repository gets GitHub's own
       // answer about it, which is that there is no such repository.
-      //
-      // What used to sit beside it was a token an admin pasted so the whole
-      // guild could read the repository. That is gone twice over — a GitHub App
-      // needs no pasted credential, and the guild does not read on a shared one
-      // at all any more.
       id: "workspace",
       scope: "static",
       label: {
@@ -202,18 +353,22 @@ export const manifest: Manifest = {
     },
   ],
 
-  data_sources: [
+  endpoints: [
     {
-      id: "open-issues",
-      path: "/data/open-issues",
+      id: READ_IDS.openIssues,
+      direction: "read",
+      // Every read runs on the caller's own GitHub credential, so there is one
+      // actor and no fallback. An installation-wide answer would be the state
+      // of a private repository handed to whoever opened a dashboard.
+      actors: ["member"],
       visibility: "member",
       // A minute. Long enough that a dashboard of these is not a request storm,
       // short enough that the number means something.
       cache_ttl_seconds: 60,
-      params_schema: [
+      params: [
         {
           // Which repository this tile is about, and the whole of how one
-          // widget serves several teams. A source cannot be told which
+          // endpoint serves several teams. A read cannot be told which
           // initiative is asking — a context token names a guild and an install
           // and nothing finer — so the *dashboard* says, through a fixed value
           // on its binding. A dashboard belongs to exactly one initiative, so
@@ -255,7 +410,7 @@ export const manifest: Manifest = {
           },
         },
       ],
-      // Per member, like every source here. How many issues are open is one
+      // Per member, like every read here. How many issues are open is one
       // answer for a whole guild and it is still not one every member is
       // entitled to: it is the state of a private repository, and a member who
       // is not on that repository at GitHub has no business reading it here.
@@ -266,14 +421,15 @@ export const manifest: Manifest = {
       requires: { all_of: ["workspace", "account"] },
     },
     {
-      id: "review-queue",
-      path: "/data/review-queue",
+      id: READ_IDS.reviewQueue,
+      direction: "read",
+      actors: ["member"],
       visibility: "member",
       cache_ttl_seconds: 60,
-      params_schema: [
+      params: [
         {
           // Which repository this tile is about, and the whole of how one
-          // widget serves several teams. A source cannot be told which
+          // endpoint serves several teams. A read cannot be told which
           // initiative is asking — a context token names a guild and an install
           // and nothing finer — so the *dashboard* says, through a fixed value
           // on its binding. A dashboard belongs to exactly one initiative, so
@@ -291,21 +447,21 @@ export const manifest: Manifest = {
         },
       ],
       // Per member, and it could not be anything else: "waiting on me" has no
-      // meaning without a me. It was once the only source here that named an
-      // account; now it is unremarkable.
+      // meaning without a me.
       requires: { all_of: ["workspace", "account"] },
     },
     {
-      id: "dependabot-alerts",
-      path: "/data/dependabot-alerts",
+      id: READ_IDS.dependabotAlerts,
+      direction: "read",
+      actors: ["member"],
       visibility: "member",
       // Five minutes. An advisory is published, not typed, so this changes on
       // GitHub's schedule rather than a member's.
       cache_ttl_seconds: 300,
-      params_schema: [
+      params: [
         {
           // Which repository this tile is about, and the whole of how one
-          // widget serves several teams. A source cannot be told which
+          // endpoint serves several teams. A read cannot be told which
           // initiative is asking — a context token names a guild and an install
           // and nothing finer — so the *dashboard* says, through a fixed value
           // on its binding. A dashboard belongs to exactly one initiative, so
@@ -343,16 +499,17 @@ export const manifest: Manifest = {
       requires: { all_of: ["workspace", "account"] },
     },
     {
-      id: "issue-throughput",
-      path: "/data/issue-throughput",
+      id: READ_IDS.issueThroughput,
+      direction: "read",
+      actors: ["member"],
       visibility: "member",
       // Five minutes: a fortnight of daily counts does not change by the second,
       // and this is the most expensive call this app makes.
       cache_ttl_seconds: 300,
-      params_schema: [
+      params: [
         {
           // Which repository this tile is about, and the whole of how one
-          // widget serves several teams. A source cannot be told which
+          // endpoint serves several teams. A read cannot be told which
           // initiative is asking — a context token names a guild and an install
           // and nothing finer — so the *dashboard* says, through a fixed value
           // on its binding. A dashboard belongs to exactly one initiative, so
@@ -375,23 +532,18 @@ export const manifest: Manifest = {
         },
       ],
       // Per member, and this is the one where the cost is felt: it is the
-      // heaviest call this app makes, and it now runs once per member per five
-      // minutes, where it used to be once per guild. A longer TTL is the lever
-      // if that
-      // ever bites.
+      // heaviest call this app makes, and it runs once per member per five
+      // minutes. A longer TTL is the lever if that ever bites.
       requires: { all_of: ["workspace", "account"] },
     },
-  ],
 
-  // What this app publishes when something happens at GitHub, and the whole of
-  // what a subscriber may ask for. Built from the translator so the list cannot
-  // name a type nothing produces — see `github/events.ts` for the table all
-  // three readings come from.
-  //
-  // Note what is not describable here: which initiative an event belongs to. An
-  // app has none to name, so an event is guild-wide and a consumer narrows
-  // itself by a payload field instead. That is what `repository` is for.
-  events: [...EVENT_TYPES],
+    // What this app will do at GitHub on somebody's behalf, and what it will
+    // announce when GitHub tells it something happened. Both come from the
+    // modules that implement them, so a declaration cannot name a write with no
+    // handler or an emission nothing translates.
+    ...WRITE_ENDPOINTS,
+    ...EMIT_ENDPOINTS,
+  ],
 
   // Three shapes a widget takes — one number, a list, and a series — and four
   // widgets, because the fourth is not here to demonstrate a shape. It reuses
@@ -415,17 +567,14 @@ export const manifest: Manifest = {
           fr: "Combien de tickets sont ouverts, et la tendance.",
         },
       },
-      sources: ["open-issues"],
+      endpoints: [READ_IDS.openIssues],
       module_source: METRIC_WIDGET(),
       // Rows for a preview that renders with no network call at all, so the
       // marketplace can show the widget before anything is connected.
-      sample_data: { "open-issues": { total: 42, delta: -3 } },
-      // The same terms as the source it draws, and that is the rule rather
-      // than a coincidence: a widget naming more than its sources do is refused
-      // before either is called. What changed is which way the mismatch used to
-      // go — this tile named an account its source did not need, and refused
-      // for members who would have seen the right number without one. Now the
-      // source needs it too, and the two agree.
+      sample_data: { [READ_IDS.openIssues]: { total: 42, delta: -3 } },
+      // The same terms as the endpoint it draws, and that is the rule rather
+      // than a coincidence: a widget naming more than its endpoints do is
+      // refused before either is called.
       requires: { all_of: ["workspace", "account"] },
     },
     {
@@ -444,10 +593,10 @@ export const manifest: Manifest = {
           fr: "Pull requests qui ont demandé votre revue.",
         },
       },
-      sources: ["review-queue"],
+      endpoints: [READ_IDS.reviewQueue],
       module_source: LIST_WIDGET(),
       sample_data: {
-        "review-queue": {
+        [READ_IDS.reviewQueue]: {
           total: 2,
           items: [
             { number: 812, title: "Cache the issue counts", url: "#" },
@@ -473,10 +622,10 @@ export const manifest: Manifest = {
           fr: "Alertes de dépendances ouvertes, les pires d'abord.",
         },
       },
-      sources: ["dependabot-alerts"],
+      endpoints: [READ_IDS.dependabotAlerts],
       module_source: ALERTS_WIDGET(),
       sample_data: {
-        "dependabot-alerts": {
+        [READ_IDS.dependabotAlerts]: {
           total: 7,
           severities: [
             { severity: "critical", count: 1 },
@@ -504,10 +653,10 @@ export const manifest: Manifest = {
           fr: "Deux semaines d'ouvertures contre fermetures.",
         },
       },
-      sources: ["issue-throughput"],
+      endpoints: [READ_IDS.issueThroughput],
       module_source: SERIES_WIDGET(),
       sample_data: {
-        "issue-throughput": {
+        [READ_IDS.issueThroughput]: {
           points: [
             { day: "Mon", opened: 4, closed: 6 },
             { day: "Tue", opened: 2, closed: 3 },
@@ -526,7 +675,7 @@ export const manifest: Manifest = {
  * The widgets' browser-side modules, as source.
  *
  * They run in the platform's sandbox with no network, no DOM and no globals —
- * each is handed the data its `sources` declared and returns a scene to draw.
+ * each is handed the data its `endpoints` returned and returns a scene to draw.
  * Kept as strings here because that is what a manifest carries; a larger app
  * would build these from their own files with the bundler of its choice.
  */

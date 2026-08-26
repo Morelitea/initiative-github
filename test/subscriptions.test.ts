@@ -25,8 +25,8 @@ import {
   spendToken,
   subscribe,
   unsubscribe,
-} from "../src/events.js";
-import { EVENT_TYPES } from "../src/github/events.js";
+} from "../src/subscriptions.js";
+import { EMITTED } from "../src/github/emissions.js";
 import { rememberWorkspace } from "../src/github/workspace.js";
 
 const AUTO = "morelitea.auto";
@@ -41,13 +41,13 @@ async function installed(guildId: number, appInstallId: number) {
 const request = (overrides: Record<string, unknown> = {}) => ({
   guild_id: 500,
   target_url: TARGET,
-  event_types: [EVENT_TYPES[0]],
+  endpoints: [EMITTED[0]],
   ...overrides,
 });
 
 beforeEach(async () => {
   await migrate();
-  await pool.query("TRUNCATE workspaces, event_subscriptions, delegation_tokens");
+  await pool.query("TRUNCATE workspaces, subscriptions, delegation_tokens");
 });
 
 afterAll(async () => {
@@ -64,7 +64,7 @@ describe("accepting a subscription", () => {
     expect(result.view).toMatchObject({
       guild_id: 500,
       target_url: TARGET,
-      event_types: [EVENT_TYPES[0]],
+      endpoints: [EMITTED[0]],
     });
     expect(result.secret).toMatch(/^[0-9a-f]{64}$/);
     // Reading it back never returns it — a subscriber that loses it
@@ -74,7 +74,7 @@ describe("accepting a subscription", () => {
       "id",
       "guild_id",
       "target_url",
-      "event_types",
+      "endpoints",
     ]);
   });
 
@@ -93,7 +93,7 @@ describe("accepting a subscription", () => {
     await installed(500, 11);
     const result = await subscribe(AUTO, 500, request());
     const stored = await pool.query<{ secret: string }>(
-      "SELECT secret FROM event_subscriptions"
+      "SELECT secret FROM subscriptions"
     );
     expect(result.ok && stored.rows[0].secret).not.toBe(result.ok && result.secret);
     expect(stored.rows[0].secret).not.toContain(result.ok ? result.secret : "");
@@ -104,11 +104,11 @@ describe("accepting a subscription", () => {
     // and a subscriber re-running its own setup would accumulate them.
     await installed(500, 11);
     const first = await subscribe(AUTO, 500, request());
-    const second = await subscribe(AUTO, 500, request({ event_types: [...EVENT_TYPES] }));
+    const second = await subscribe(AUTO, 500, request({ endpoints: [...EMITTED] }));
 
     expect(await listSubscriptions(AUTO, 500)).toHaveLength(1);
     expect(first.ok && second.ok && second.view.id).toBe(first.ok ? first.view.id : -1);
-    expect(second.ok && second.view.event_types).toEqual([...EVENT_TYPES]);
+    expect(second.ok && second.view.endpoints).toEqual([...EMITTED]);
     // And rotates the secret, which is the only way a subscriber that lost one
     // can recover.
     expect(first.ok && second.ok && second.secret).not.toBe(first.ok ? first.secret : "");
@@ -126,9 +126,9 @@ describe("accepting a subscription", () => {
     const result = await subscribe(
       AUTO,
       500,
-      request({ event_types: [EVENT_TYPES[0], EVENT_TYPES[0]] })
+      request({ endpoints: [EMITTED[0], EMITTED[0]] })
     );
-    expect(result.ok && result.view.event_types).toEqual([EVENT_TYPES[0]]);
+    expect(result.ok && result.view.endpoints).toEqual([EMITTED[0]]);
   });
 });
 
@@ -163,7 +163,7 @@ describe("what it refuses", () => {
     const result = await subscribe(
       AUTO,
       500,
-      request({ event_types: ["app.morelitea.github.issue-teleported"] })
+      request({ endpoints: ["app.morelitea.github.issue-teleported"] })
     );
     expect(result.ok).toBe(false);
     expect(!result.ok && result.status).toBe(400);
@@ -185,7 +185,7 @@ describe("what it refuses", () => {
 
   it("a body that is not a subscription at all", async () => {
     await installed(500, 11);
-    for (const body of [null, "a string", {}, request({ event_types: [] })]) {
+    for (const body of [null, "a string", {}, request({ endpoints: [] })]) {
       expect((await subscribe(AUTO, 500, body)).ok).toBe(false);
     }
   });
@@ -201,7 +201,7 @@ describe("whose subscription it is", () => {
     expect(await listSubscriptions(OTHER, 500)).toHaveLength(1);
     // Two rows, same address, same guild, different delegates — so one is not
     // a replacement of the other.
-    const all = await pool.query("SELECT 1 FROM event_subscriptions");
+    const all = await pool.query("SELECT 1 FROM subscriptions");
     expect(all.rowCount).toBe(2);
   });
 

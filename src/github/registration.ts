@@ -37,7 +37,7 @@ import {
   SETUP_PATH,
   WEBHOOK_PATH,
 } from "../routes.js";
-import { SUBSCRIBED_EVENTS } from "./events.js";
+import { SUBSCRIBED_EVENTS } from "./emissions.js";
 
 /**
  * What this app asks an organization for, and nothing beyond it.
@@ -64,7 +64,7 @@ import { SUBSCRIBED_EVENTS } from "./events.js";
  *     board does: Projects v2 belongs to the organization, has no REST surface,
  *     and has no repository-scoped equivalent. `repository_projects` is the
  *     classic repo board and is a different, older thing. An organization that
- *     does not want this should say so — the operation is the only thing that
+ *     does not want this should say so — the write is the only thing that
  *     uses it, and everything else here keeps working without it.
  *   * `metadata: read` — mandatory for every GitHub App, and granted implicitly
  *     by the others. Stated so the list is the whole truth.

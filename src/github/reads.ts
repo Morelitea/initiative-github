@@ -1,17 +1,11 @@
 /**
- * What this app answers when Initiative asks for a data source.
+ * What this app answers when somebody reads one of its endpoints.
  *
- * **Every source runs on the caller's own GitHub credential.** Not the
+ * **Every read runs on the caller's own GitHub credential.** Not the
  * organization's installation grant — the credential behind the handle the
- * context token carries, so a member sees exactly what they can see at GitHub
- * and nothing they cannot.
- *
- * These used to be split. "How many issues are open" is one answer for a whole
- * guild, so it ran on the installation and nobody had to connect an account to
- * see a number. That reads as generous and is the wrong shape: it shows the
- * state of a private repository to every member of a guild, including the ones
- * with no access to it at all. A member who is not on that repository at GitHub
- * has no business seeing its issue count, and an app that decides otherwise has
+ * caller arrived with, so a member sees exactly what they can see at GitHub and
+ * nothing they cannot. A member who is not on a private repository has no
+ * business seeing its issue count, and an app that answered anyway would have
  * quietly overruled the repository's own permissions.
  *
  * What it costs is real and worth stating. Every member must connect before any
@@ -21,22 +15,24 @@
  * shows to the few who hold it. All three are the principle working rather than
  * failing.
  *
- * **Return only what the widget draws.** A source's response is handed to a
+ * **Return only what the widget draws.** A read's response is handed to a
  * sandboxed widget module and cached. Sending the vendor's whole payload would
  * put data nobody renders into a cache and into a browser.
+ *
+ * Unavailability travels in the body rather than as a status, because a widget
+ * draws "connect your account" and draws nothing at all from a 4xx.
  */
 
-import type { ContextClaims } from "initiative-app-kit";
-
+import type { Caller } from "../caller.js";
 import { config } from "../config.js";
 import { resolveRepository } from "./app.js";
 import { credentialFor } from "./oauth.js";
 import { workspaceFor } from "./workspace.js";
 
-/** What a per-member source returns when that member has not connected. */
+/** What a read returns when the member has not connected. */
 const NOT_CONNECTED = { unavailable: "not-connected" } as const;
 
-/** What any source returns when the guild's own setup is incomplete. */
+/** What a read returns when the guild's own setup is incomplete. */
 const NOT_CONFIGURED = { unavailable: "not-configured" } as const;
 
 interface Access {
@@ -49,9 +45,8 @@ interface Access {
  * Which repository this call is about, and whose credential reads it.
  *
  * The repository half is {@link resolveRepository}. The credential half is the
- * **caller's own**, every time, which is the rule this whole file now follows:
- * a source shows a member what that member can see at GitHub, and nothing they
- * cannot.
+ * **caller's own**, every time: a read shows a member what that member can see
+ * at GitHub, and nothing they cannot.
  *
  * The credential is resolved before the repository, deliberately. A member who
  * has connected nothing gets `not-connected` — an answer about them, with a
@@ -59,14 +54,14 @@ interface Access {
  * they can do nothing about and that would tell them the repository's name.
  */
 async function access(
-  claims: ContextClaims,
+  caller: Caller,
   params?: URLSearchParams
 ): Promise<Access | { unavailable: string }> {
-  const account = await credentialFor(claims.connection_refs?.account);
+  const account = await credentialFor(caller.connectionRef ?? undefined);
   if (!account) return NOT_CONNECTED;
 
   const choice = await resolveRepository(
-    await workspaceFor(claims.app_install_id),
+    await workspaceFor(caller.appInstallId),
     params?.get("repo")
   );
   if ("unavailable" in choice) return choice;
@@ -75,10 +70,10 @@ async function access(
 }
 
 export async function openIssues(
-  claims: ContextClaims,
+  caller: Caller,
   params: URLSearchParams
 ): Promise<Record<string, unknown>> {
-  const where = await access(claims, params);
+  const where = await access(caller, params);
   if ("unavailable" in where) return where;
   const { token, owner, repo } = where;
 
@@ -116,13 +111,13 @@ export async function openIssues(
 }
 
 export async function reviewQueue(
-  claims: ContextClaims,
+  caller: Caller,
   params: URLSearchParams
 ): Promise<Record<string, unknown>> {
   // `review-requested:@me` resolves against whoever's credential this is —
   // which is the caller's, the same credential every other source here now
   // runs on. This was once the only one of which that was true.
-  const where = await access(claims, params);
+  const where = await access(caller, params);
   if ("unavailable" in where) return where;
   const { token, owner, repo } = where;
 
@@ -159,13 +154,13 @@ export async function reviewQueue(
 const SEVERITIES = ["critical", "high", "medium", "low"] as const;
 
 export async function dependabotAlerts(
-  claims: ContextClaims,
+  caller: Caller,
   params: URLSearchParams
 ): Promise<Record<string, unknown>> {
   // Guild-scoped: how exposed the repository is right now is one answer for
   // everybody, and the people who most need to see it are the ones least likely
   // to have connected a personal GitHub account.
-  const where = await access(claims, params);
+  const where = await access(caller, params);
   if ("unavailable" in where) return where;
   const { token, owner, repo } = where;
 
@@ -227,12 +222,12 @@ export async function dependabotAlerts(
 }
 
 export async function issueThroughput(
-  claims: ContextClaims,
+  caller: Caller,
   params: URLSearchParams
 ): Promise<Record<string, unknown>> {
   // The heaviest call this app makes, and the one where answering per member
   // costs most: a fortnight of daily counts, once per member per TTL.
-  const where = await access(claims, params);
+  const where = await access(caller, params);
   if ("unavailable" in where) return where;
   const { token, owner, repo } = where;
 

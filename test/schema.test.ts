@@ -70,9 +70,9 @@ describe("applying it", () => {
     expect(found.rows.map((row) => row.tablename).sort()).toEqual([
       "connections",
       "delegation_tokens",
-      "event_subscriptions",
       "oauth_states",
       "schema_version",
+      "subscriptions",
       "workspaces",
     ]);
   });

@@ -16,13 +16,14 @@
  * in this table fails on the first boot rather than drifting quietly.
  *
  * That matters outside this repository. A deployment has to supply every
- * required name, and the chart that does is checked against this contract. The
- * check used to read `config.ts` and pull names out with a pattern, which
- * worked until a value was read through a helper instead of a literal call —
- * `GITHUB_APP_PRIVATE_KEY`, through `privateKey()` — and then reported a clean
- * bill for a chart that was missing a setting the container dies without. A
- * pattern over source code cannot see an indirection; a table can be published,
- * and `npm run env-contract` publishes this one.
+ * required name, and the chart that does is checked against this contract —
+ * published by `npm run env-contract`, read rather than inferred.
+ *
+ * Published rather than scanned for, because a scan cannot see an indirection.
+ * `GITHUB_APP_PRIVATE_KEY` is read through `privateKey()` rather than a literal
+ * call, so a pattern over the source finds nothing and reports a clean bill for
+ * a chart missing a setting the container dies without. A table has no such
+ * blind spot.
  */
 export const SETTINGS = {
   required: [

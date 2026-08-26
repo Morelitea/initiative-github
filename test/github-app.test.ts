@@ -24,14 +24,13 @@ import { describe, expect, it } from "vitest";
 
 import { config } from "../src/config.js";
 import { appJwt } from "../src/github/app.js";
-import { SUBSCRIBED_EVENTS } from "../src/github/events.js";
-import { OPERATION_IDS, OPERATIONS } from "../src/github/operations.js";
+import { SUBSCRIBED_EVENTS } from "../src/github/emissions.js";
 import {
   HOMEPAGE,
   PERMISSIONS,
   githubAppManifest,
 } from "../src/github/registration.js";
-import { manifest } from "../src/manifest.config.js";
+import { READ_IDS, WRITE_ENDPOINTS, WRITE_IDS, manifest } from "../src/manifest.config.js";
 import {
   CALLBACK_PATH,
   CONNECT_PATH,
@@ -188,15 +187,12 @@ describe("asking for no more than it uses", () => {
     // The rule the list follows. A permission with no feature behind it is one
     // an organization grants for nothing, and a reviewer cannot tell "not used
     // yet" from "used for something not described".
-    const declared = new Set([
-      ...(manifest.data_sources ?? []).map((source) => source.id),
-      ...OPERATIONS.map((operation) => operation.id),
-    ]);
+    const declared = new Set((manifest.endpoints ?? []).map((endpoint) => endpoint.id));
     const uses: Record<string, string[]> = {
-      issues: ["open-issues", "issue-throughput", OPERATION_IDS.openIssue],
-      pull_requests: ["review-queue", OPERATION_IDS.requestReview],
-      vulnerability_alerts: ["dependabot-alerts"],
-      organization_projects: [OPERATION_IDS.moveProjectItem],
+      issues: [READ_IDS.openIssues, READ_IDS.issueThroughput, WRITE_IDS.openIssue],
+      pull_requests: [READ_IDS.reviewQueue, WRITE_IDS.requestReview],
+      vulnerability_alerts: [READ_IDS.dependabotAlerts],
+      organization_projects: [WRITE_IDS.moveProjectItem],
     };
     for (const permission of Object.keys(PERMISSIONS)) {
       // Granted implicitly by the rest and required of every GitHub App.
@@ -209,12 +205,12 @@ describe("asking for no more than it uses", () => {
   it("asks to write only where an operation writes", () => {
     // A `write` an organization grants and nothing exercises is the worst kind
     // of over-permission: invisible in the app's behaviour and permanent in the
-    // grant. So every one has to be named by something in OPERATIONS.
+    // grant. So every one has to be named by something in WRITE_ENDPOINTS.
     const writing = Object.entries(PERMISSIONS)
       .filter(([, level]) => level === "write")
       .map(([permission]) => permission);
     expect(writing.length).toBeGreaterThan(0);
-    expect(OPERATIONS.length).toBeGreaterThan(0);
+    expect(WRITE_ENDPOINTS.length).toBeGreaterThan(0);
     expect(writing.sort()).toEqual([
       "issues",
       "organization_projects",

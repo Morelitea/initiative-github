@@ -12,15 +12,8 @@
  *   * **Repository activity.** An issue opened, a review requested. This *is*
  *     news, and it goes to whoever asked to hear it.
  *
- * The second job was here before, was removed, and is back on a different
- * route. It used to emit through Initiative, which accepted the event, checked
- * it against this app's pinned definition, and handed it to a dispatcher that
- * could match no subscription to it — because the vocabulary a subscription may
- * name is derived from Initiative's own content tables, so nothing can name
- * `app.<id>.<event>`. Every emit succeeded having reached nobody, and nothing
- * at either end said so.
- *
- * Now it goes straight to the subscriber. This app already holds GitHub's
+ * The second goes straight to the subscriber, with Initiative not in the path
+ * at all. This app already holds GitHub's
  * webhook connection and has already verified GitHub's signature; posting the
  * result through a third party to reach a consumer that could be handed it adds
  * a hop and a place to be dropped. What that costs is that this app has to be a
@@ -46,10 +39,10 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { config } from "../config.js";
-import { publish } from "../events.js";
+import { publish } from "../subscriptions.js";
 import { syncInstall } from "../sync.js";
 import { forgetInstallation, forgetRepositories } from "./app.js";
-import { translate } from "./events.js";
+import { translate } from "./emissions.js";
 import {
   installsAwaiting,
   installsForInstallation,
@@ -217,7 +210,7 @@ async function publishActivity(
     const outcomes = await publish({
       guildId: install.guildId,
       appInstallId: install.appInstallId,
-      eventType: translated.eventType,
+      endpoint: translated.endpoint,
       payload: translated.payload,
       deliveryKey: deliveryId,
     });
@@ -226,7 +219,7 @@ async function publishActivity(
       // Logged and dropped. A subscriber that is down is not GitHub's problem,
       // and asking GitHub to retry would re-run every other subscriber too.
       console.warn(
-        `subscription ${failed.subscriptionId} did not take ${translated.eventType}: ` +
+        `subscription ${failed.subscriptionId} did not take ${translated.endpoint}: ` +
           `${failed.error ?? failed.status}`
       );
     }

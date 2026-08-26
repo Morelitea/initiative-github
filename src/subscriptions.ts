@@ -1,6 +1,5 @@
 /**
- * The producer surface: who has asked to hear about this repository, and how
- * they are told.
+ * Who has asked to hear about this repository, and how they are told.
  *
  * This is the half of the app an automation service talks to, and the thing
  * worth noticing about it is how little of it is about automation. This app
@@ -10,11 +9,11 @@
  * *tell me when an issue opens, at this address, and sign it with this*.
  *
  * The shapes are the kit's, not this app's, and deliberately so. A subscriber
- * that can read one app's events can read every app's, because the envelope,
+ * that can read one app's emissions can read every app's, because the envelope,
  * the signing and the paths come from `initiative-app-kit` rather than from
  * whoever wrote the app. What is local here is the storage and the two
  * questions only this app can answer: does that guild have this app, and is
- * that a type this app produces.
+ * that an endpoint this app emits.
  *
  * ## Who is allowed to ask
  *
@@ -35,18 +34,18 @@
  */
 
 import {
-  EventProducer,
+  Emitter,
   mintSubscriptionSecret,
   parseSubscribe,
-  type AppEvent,
   type DeliveryOutcome,
-  type EventSubscription,
+  type Emission,
+  type Subscription,
 } from "initiative-app-kit";
 
 import { PUBLIC_ID } from "./public-id.js";
 import { pool } from "./db.js";
 import { open, seal } from "./secrets.js";
-import { EVENT_TYPES } from "./github/events.js";
+import { ENDPOINTS } from "./endpoints.js";
 
 interface Row {
   id: string;
@@ -54,7 +53,7 @@ interface Row {
   subscriber: string;
   target_url: string;
   secret: string;
-  event_types: string[];
+  endpoints: string[];
 }
 
 /**
@@ -63,7 +62,7 @@ interface Row {
  * here — and the id has to be a number, because a receiver written against
  * Initiative's envelope refuses one that is not.
  */
-function toSubscription(row: Row): EventSubscription {
+function toSubscription(row: Row): Subscription {
   return {
     id: Number(row.id),
     guildId: Number(row.guild_id),
@@ -73,20 +72,17 @@ function toSubscription(row: Row): EventSubscription {
     // forged delivery indistinguishable from a real one, so a stray `SELECT`
     // should not hand it over.
     secret: open(row.secret) ?? "",
-    eventTypes: row.event_types,
+    endpoints: row.endpoints,
   };
 }
 
-/** Subscriptions in this guild that named this type. The producer's one read. */
-async function matching(
-  guildId: number,
-  eventType: string
-): Promise<EventSubscription[]> {
+/** Subscriptions in this guild that named this endpoint. The emitter's one read. */
+async function matching(guildId: number, endpoint: string): Promise<Subscription[]> {
   const found = await pool.query<Row>(
-    `SELECT id, guild_id, subscriber, target_url, secret, event_types
-       FROM event_subscriptions
-      WHERE guild_id = $1 AND $2 = ANY(event_types)`,
-    [guildId, eventType]
+    `SELECT id, guild_id, subscriber, target_url, secret, endpoints
+       FROM subscriptions
+      WHERE guild_id = $1 AND $2 = ANY(endpoints)`,
+    [guildId, endpoint]
   );
   // A row whose secret will not open under the current key cannot produce a
   // delivery anybody could verify, so it is left out rather than sent
@@ -94,21 +90,18 @@ async function matching(
   return found.rows.map(toSubscription).filter((sub) => sub.secret !== "");
 }
 
-/** One producer for the process, holding no state of its own. */
-const producer = new EventProducer({
-  publicId: PUBLIC_ID,
-  store: { matching },
-});
+/** One emitter for the process, holding no state of its own. */
+const emitter = new Emitter({ publicId: PUBLIC_ID, store: { matching } });
 
-/** Deliver one event to whoever asked for it. Never throws. */
-export async function publish(event: AppEvent): Promise<DeliveryOutcome[]> {
+/** Deliver one emission to whoever asked for it. Never throws. */
+export async function publish(emission: Emission): Promise<DeliveryOutcome[]> {
   try {
-    return await producer.publish(event);
+    return await emitter.publish(emission);
   } catch (error) {
     // A publish that fails is not a delivery GitHub should retry: the delivery
     // arrived and was understood, and re-sending it would re-run the lookup
     // that just failed. It is logged and dropped.
-    console.error(`could not publish ${event.eventType}`, error);
+    console.error(`could not publish ${emission.endpoint}`, error);
     return [];
   }
 }
@@ -135,15 +128,15 @@ export interface SubscriptionView {
   id: number;
   guild_id: number;
   target_url: string;
-  event_types: string[];
+  endpoints: string[];
 }
 
-function view(subscription: EventSubscription): SubscriptionView {
+function view(subscription: Subscription): SubscriptionView {
   return {
     id: subscription.id,
     guild_id: subscription.guildId,
     target_url: subscription.targetUrl,
-    event_types: subscription.eventTypes,
+    endpoints: subscription.endpoints,
   };
 }
 
@@ -157,20 +150,23 @@ export type SubscribeResult =
  *
  * Idempotent on `(guild, subscriber, address)`, which is what lets a subscriber
  * re-run its own setup without accumulating duplicates — and a duplicate here
- * would not be harmless, it would be two deliveries of every event.
+ * would not be harmless, it would be two deliveries of everything.
  *
  * Replacing **rotates the secret**, and the new one is returned. That is the
  * only way a subscriber that lost its secret can recover, since it is stored
  * sealed and never handed out twice; the cost is that a delivery already in
  * flight under the old one fails its check, which a subscriber sees as one
- * dropped event and this app sees as a non-2xx.
+ * dropped delivery and this app sees as a non-2xx.
  */
 export async function subscribe(
   subscriber: string,
   guildId: number,
   body: unknown
 ): Promise<SubscribeResult> {
-  const parsed = parseSubscribe(body, EVENT_TYPES);
+  // The whole endpoint list, not a filtered one: the kit takes only the `emit`
+  // entries from it, so a subscription to something that answers instead is
+  // refused with a sentence naming the id rather than silently stored.
+  const parsed = parseSubscribe(body, ENDPOINTS);
   if (!parsed.ok) return { ok: false, status: 400, error: parsed.error };
 
   // The token names one guild; the body naming another would be a subscription
@@ -187,14 +183,14 @@ export async function subscribe(
 
   const secret = mintSubscriptionSecret();
   const stored = await pool.query<Row>(
-    `INSERT INTO event_subscriptions (guild_id, subscriber, target_url, secret, event_types)
+    `INSERT INTO subscriptions (guild_id, subscriber, target_url, secret, endpoints)
      VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (guild_id, subscriber, target_url) DO UPDATE
         SET secret = EXCLUDED.secret,
-            event_types = EXCLUDED.event_types,
+            endpoints = EXCLUDED.endpoints,
             updated_at = now()
-     RETURNING id, guild_id, subscriber, target_url, secret, event_types`,
-    [guildId, subscriber, parsed.request.target_url, seal(secret), parsed.request.event_types]
+     RETURNING id, guild_id, subscriber, target_url, secret, endpoints`,
+    [guildId, subscriber, parsed.request.target_url, seal(secret), parsed.request.endpoints]
   );
 
   return { ok: true, view: view(toSubscription(stored.rows[0])), secret };
@@ -206,8 +202,8 @@ export async function listSubscriptions(
   guildId: number
 ): Promise<SubscriptionView[]> {
   const found = await pool.query<Row>(
-    `SELECT id, guild_id, subscriber, target_url, secret, event_types
-       FROM event_subscriptions
+    `SELECT id, guild_id, subscriber, target_url, secret, endpoints
+       FROM subscriptions
       WHERE guild_id = $1 AND subscriber = $2
       ORDER BY id`,
     [guildId, subscriber]
@@ -229,7 +225,7 @@ export async function unsubscribe(
   id: number
 ): Promise<boolean> {
   const result = await pool.query(
-    "DELETE FROM event_subscriptions WHERE id = $1 AND guild_id = $2 AND subscriber = $3",
+    "DELETE FROM subscriptions WHERE id = $1 AND guild_id = $2 AND subscriber = $3",
     [id, guildId, subscriber]
   );
   return (result.rowCount ?? 0) > 0;

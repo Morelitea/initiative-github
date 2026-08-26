@@ -3,7 +3,7 @@
  *
  * One table, read three ways, so the three cannot disagree:
  *
- *   * {@link EVENT_TYPES} is what the manifest declares — the vocabulary a
+ *   * {@link EMIT_ENDPOINTS} is what the manifest declares — the vocabulary a
  *     subscriber may name, and the contract this app is authoritative about
  *     because it is the one holding GitHub's webhook connection.
  *   * {@link SUBSCRIBED_EVENTS} is what the GitHub App registration asks
@@ -32,12 +32,9 @@
  * thing there is to narrow by.
  */
 
-import { PUBLIC_ID } from "../public-id.js";
+import type { Endpoint } from "initiative-app-kit";
 
-/** `app.<public id>.<name>`, which is the namespacing the platform enforces. */
-function declare(name: string): string {
-  return `app.${PUBLIC_ID}.${name}`;
-}
+import { declare } from "../public-id.js";
 
 /**
  * The delivery-and-action pairs this app publishes, and what each becomes.
@@ -58,10 +55,22 @@ const PUBLISHED: Record<string, Record<string, string>> = {
   },
 };
 
-/** Every type this app declares, for the manifest. */
-export const EVENT_TYPES: readonly string[] = Object.values(PUBLISHED)
+/** Every id this table produces, sorted so the manifest is stable. */
+export const EMITTED: readonly string[] = Object.values(PUBLISHED)
   .flatMap((actions) => Object.values(actions))
   .sort();
+
+/**
+ * The same list as manifest endpoints.
+ *
+ * An emission carries no parameters and names no connection: nobody calls it,
+ * so there is nothing for a caller to send and nothing to be satisfied before
+ * they do. The id and the direction are the whole declaration.
+ */
+export const EMIT_ENDPOINTS: readonly Endpoint[] = EMITTED.map((id) => ({
+  id,
+  direction: "emit" as const,
+}));
 
 /**
  * Which deliveries the GitHub App registration asks for.
@@ -76,8 +85,8 @@ export const SUBSCRIBED_EVENTS: readonly string[] = Object.keys(PUBLISHED).sort(
 
 /** One delivery, as something this app publishes. */
 export interface TranslatedEvent {
-  /** One of {@link EVENT_TYPES}. */
-  eventType: string;
+  /** One of {@link EMITTED}. */
+  endpoint: string;
   /** Which repository it happened in, for finding the installs that watch it. */
   repo: string;
   payload: Record<string, unknown>;
@@ -117,8 +126,8 @@ export function translate(
   if (!actions) return null;
 
   const action = text(payload, "action");
-  const eventType = action ? actions[action] : undefined;
-  if (!eventType) return null;
+  const endpoint = action ? actions[action] : undefined;
+  if (!endpoint) return null;
 
   // A delivery with no repository cannot be routed to an install, since which
   // installs care is answered by repository. There is no useful fallback.
@@ -156,5 +165,5 @@ export function translate(
       : [];
   }
 
-  return { eventType, repo, payload: base };
+  return { endpoint, repo, payload: base };
 }

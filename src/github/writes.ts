@@ -10,9 +10,9 @@
  * organization's settings, scoped to the repositories it picked, and revoked by
  * the button that already lives there.
  *
- * So a caller sends an operation id and parameters. It never sees a token,
+ * So a caller sends an endpoint id and parameters. It never sees a token,
  * never learns which account acted, and cannot reach anything not in
- * {@link OPERATIONS}.
+ * {@link WRITE_ENDPOINTS}.
  *
  * ## Who the write is attributed to
  *
@@ -32,100 +32,19 @@
  *
  * ## Why the set is closed
  *
- * A caller picks from operations written here; it never describes a request
+ * A caller picks from endpoints written here; it never describes a request
  * this app then performs. That is the difference between an integration and a
  * proxy, and it is the whole reason this surface can be exposed at all.
  */
 
-import type { ActorKind, OperationDeclaration } from "initiative-app-kit";
+import type { ActorKind, Endpoint } from "initiative-app-kit";
 
 import { isDigits } from "initiative-app-kit";
 
 import { config } from "../config.js";
-import { PUBLIC_ID } from "../public-id.js";
+import { WRITE_IDS } from "../manifest.config.js";
 import { resolveRepository } from "./app.js";
 import type { StoredWorkspace } from "./workspace.js";
-
-/** `app.<public id>.<name>`, namespaced exactly as an event type is. */
-function declare(name: string): string {
-  return `app.${PUBLIC_ID}.${name}`;
-}
-
-/** Every operation ids the caller may name, in one place. */
-export const OPERATION_IDS = {
-  openIssue: declare("open-issue"),
-  comment: declare("comment"),
-  closeIssue: declare("close-issue"),
-  reopenIssue: declare("reopen-issue"),
-  label: declare("label"),
-  requestReview: declare("request-review"),
-  moveProjectItem: declare("move-project-item"),
-} as const;
-
-/**
- * What this app will do at GitHub, and whose credential each runs on.
- *
- * **Every one of them runs as the member**, and nothing here runs as the app.
- * That is the same rule the read path follows and it is the same reason: a
- * write the app performed on its own credential is a write inside whatever the
- * organization granted, which is not the same set as what the person whose
- * automation fired it may touch. An automation that could reach further than
- * its owner is an escalation with a scheduler in front of it.
- *
- * So `actors` is uniform now, and it stays a list rather than collapsing to a
- * single value because the shape is the kit's and other apps have other
- * answers — an app whose vendor has no per-person identity at all can only ever
- * act as itself.
- *
- * The cost is that an operation refuses outright when the member behind a
- * delegated call cannot be resolved. That is deliberate. Substituting the app
- * would look like success and would be a different act performed by a different
- * party, which is the sort of difference nobody notices until they are reading
- * an audit log wondering who closed something.
- */
-export const OPERATIONS: readonly OperationDeclaration[] = [
-  {
-    id: OPERATION_IDS.openIssue,
-    actors: ["member"],
-    params: ["repo", "title", "body", "labels", "assignees"],
-  },
-  {
-    id: OPERATION_IDS.comment,
-    actors: ["member"],
-    // Issues and pull requests share a number space and a comments endpoint, so
-    // this is one operation rather than two that differ by a URL segment.
-    params: ["repo", "number", "body"],
-  },
-  {
-    id: OPERATION_IDS.closeIssue,
-    actors: ["member"],
-    params: ["repo", "number", "reason"],
-  },
-  {
-    id: OPERATION_IDS.reopenIssue,
-    actors: ["member"],
-    params: ["repo", "number"],
-  },
-  {
-    id: OPERATION_IDS.label,
-    actors: ["member"],
-    params: ["repo", "number", "add", "remove"],
-  },
-  {
-    id: OPERATION_IDS.requestReview,
-    actors: ["member"],
-    params: ["repo", "number", "reviewers", "team_reviewers"],
-  },
-  {
-    // Projects v2 is organization-scoped, which used to be the argument for
-    // running this one as the app. It is the argument against: a board a member
-    // cannot see is one they should not be moving cards on, and their own token
-    // is what says which boards those are.
-    id: OPERATION_IDS.moveProjectItem,
-    actors: ["member"],
-    params: ["project_id", "item_id", "field_id", "option_id"],
-  },
-];
 
 /** What this app could not do, in words a caller can act on. */
 export interface OperationFailure {
@@ -168,18 +87,18 @@ export interface Actor {
 }
 
 /**
- * Choose the credential to run on, given what the operation permits.
+ * Choose the credential to run on, given what the endpoint permits.
  *
  * The order is the declaration's order, which is why `actors` is a list rather
- * than a set: an operation states its preference, and this takes the first one
+ * than a set: an endpoint states its preference, and this takes the first one
  * it can actually satisfy. A kind with no supplier is one this app cannot
  * offer, which reads the same as one that produced no credential.
  */
 export async function chooseActor(
-  operation: OperationDeclaration,
+  endpoint: Endpoint,
   available: Partial<Record<ActorKind, () => Promise<string | null>>>
 ): Promise<Actor | OperationFailure> {
-  for (const kind of operation.actors) {
+  for (const kind of endpoint.actors ?? []) {
     const token = await available[kind]?.();
     if (token) return { kind, token };
   }
@@ -187,7 +106,7 @@ export async function chooseActor(
   // account. Nothing else can stand in for them.
   return fail(
     409,
-    "this operation runs as the member, and no connected GitHub account could " +
+    "this endpoint runs as the member, and no connected GitHub account could " +
       "be resolved for them"
   );
 }
@@ -318,7 +237,7 @@ async function where(
 }
 
 /**
- * Run one operation.
+ * Run one endpoint.
  *
  * The dispatch is a closed switch over {@link OPERATION_IDS} and the default
  * leg is unreachable by construction — the kit refuses an id this app does not
@@ -332,7 +251,7 @@ export async function run(
 ): Promise<OperationResult> {
   // Projects are organization-scoped and name no repository, so this one is
   // settled before the repository is resolved.
-  if (operationId === OPERATION_IDS.moveProjectItem) {
+  if (operationId === WRITE_IDS.moveProjectItem) {
     return moveProjectItem(actor, params);
   }
 
@@ -342,7 +261,7 @@ export async function run(
   const base = `/repos/${owner}/${repo}`;
 
   switch (operationId) {
-    case OPERATION_IDS.openIssue: {
+    case WRITE_IDS.openIssue: {
       const title = text(params, "title");
       if (!title) return fail(400, "title is required");
       const answer = await call(actor, "POST", `${base}/issues`, {
@@ -357,23 +276,23 @@ export async function run(
       return { actor: actor.kind, result: identifiers(answer, ["number", "html_url", "id"]) };
     }
 
-    case OPERATION_IDS.comment: {
+    case WRITE_IDS.comment: {
       const number = count(params, "number");
       const body = text(params, "body");
       if (number === undefined) return fail(400, "number is required");
       if (!body) return fail(400, "body is required");
       // Issues and pull requests share this endpoint, which is why one
-      // operation covers both.
+      // endpoint covers both.
       const answer = await call(actor, "POST", `${base}/issues/${number}/comments`, { body });
       if (failed(answer)) return answer;
       return { actor: actor.kind, result: identifiers(answer, ["id", "html_url"]) };
     }
 
-    case OPERATION_IDS.closeIssue:
-    case OPERATION_IDS.reopenIssue: {
+    case WRITE_IDS.closeIssue:
+    case WRITE_IDS.reopenIssue: {
       const number = count(params, "number");
       if (number === undefined) return fail(400, "number is required");
-      const closing = operationId === OPERATION_IDS.closeIssue;
+      const closing = operationId === WRITE_IDS.closeIssue;
       const reason = text(params, "reason");
       const answer = await call(actor, "PATCH", `${base}/issues/${number}`, {
         state: closing ? "closed" : "open",
@@ -390,7 +309,7 @@ export async function run(
       };
     }
 
-    case OPERATION_IDS.label: {
+    case WRITE_IDS.label: {
       const number = count(params, "number");
       if (number === undefined) return fail(400, "number is required");
       const add = list(params, "add");
@@ -408,7 +327,7 @@ export async function run(
           `${base}/issues/${number}/labels/${encodeURIComponent(name)}`
         );
         // A label that was not there is the state being asked for, not a
-        // failure — this operation is idempotent by design, because an
+        // failure — this endpoint is idempotent by design, because an
         // automation re-running should not start erroring.
         if (failed(answer) && answer.status !== 404) return answer;
       }
@@ -421,7 +340,7 @@ export async function run(
       return { actor: actor.kind, result: { number } };
     }
 
-    case OPERATION_IDS.requestReview: {
+    case WRITE_IDS.requestReview: {
       const number = count(params, "number");
       if (number === undefined) return fail(400, "number is required");
       const reviewers = list(params, "reviewers");
@@ -438,7 +357,7 @@ export async function run(
     }
 
     default:
-      // Unreachable: the kit refuses an operation this app does not declare
+      // Unreachable: the kit refuses an id this app does not declare
       // before the request reaches here. Answered rather than thrown, because
       // an unreachable branch that throws is a 500 the day it turns out to be
       // reachable.
@@ -456,7 +375,7 @@ export async function run(
  *   * **Organization-scoped.** A board belongs to the organization rather than
  *     to a repository, so it names no repository and runs on the organization's
  *     own grant. That is also the one permission this app asks for that reaches
- *     past a repository, and the reason it is worth an operation of its own
+ *     past a repository, and the reason it is worth an endpoint of its own
  *     rather than being folded into a general "update".
  *   * **Ids, not names.** A caller supplies the project, item, field and option
  *     by node id. Resolving a column called "In review" to an option id is a

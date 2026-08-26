@@ -18,9 +18,9 @@
  *   on the lifecycle signal, plus the GitHub installation this app found for it.
  *   Cheap to refetch but not free, and losing it makes every source answer
  *   "not configured" until something re-pulls.
- * - **`event_subscriptions`** — who has asked to be told when something happens
- *   at GitHub. Nothing can rebuild these: the subscriber holds a secret this
- *   app minted and will never mint again, so losing the row means silently
+ * - **`subscriptions`** — who has asked to be told when something happens at
+ *   GitHub. Nothing can rebuild these: the subscriber holds a secret this app
+ *   minted and will never mint again, so losing the row means silently
  *   delivering nothing to somebody who believes they are subscribed.
  * - **`delegation_tokens`** — the ids of one-shot tokens already spent. In
  *   memory it would be per-replica, which is not a one-shot rule at all.
@@ -119,25 +119,24 @@ const SCHEMA = [
   // and not a uuid on purpose: it travels in the envelope as `subscription_id`,
   // and a receiver written against Initiative's own envelope refuses one that
   // is not an integer.
-  `CREATE TABLE IF NOT EXISTS event_subscriptions (
-     id          BIGSERIAL PRIMARY KEY,
-     guild_id    BIGINT NOT NULL,
-     subscriber  TEXT NOT NULL,
-     target_url  TEXT NOT NULL,
-     secret      TEXT NOT NULL,
-     event_types TEXT[] NOT NULL,
-     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  `CREATE TABLE IF NOT EXISTS subscriptions (
+     id         BIGSERIAL PRIMARY KEY,
+     guild_id   BIGINT NOT NULL,
+     subscriber TEXT NOT NULL,
+     target_url TEXT NOT NULL,
+     secret     TEXT NOT NULL,
+     endpoints  TEXT[] NOT NULL,
+     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
    )`,
-  // The producer's only read: which subscriptions in this guild named this
-  // type. Filtered in the database rather than in the app, because it is an
+  // The emitter's only read: which subscriptions in this guild named this
+  // endpoint. Filtered in the database rather than in the app, because it is an
   // index lookup here and a scan there.
-  `CREATE INDEX IF NOT EXISTS event_subscriptions_guild
-     ON event_subscriptions (guild_id)`,
+  `CREATE INDEX IF NOT EXISTS subscriptions_guild ON subscriptions (guild_id)`,
   // What makes re-subscribing a replacement instead of a duplicate — and a
-  // duplicate here is not harmless, it is two deliveries of every event.
-  `CREATE UNIQUE INDEX IF NOT EXISTS event_subscriptions_target
-     ON event_subscriptions (guild_id, subscriber, target_url)`,
+  // duplicate here is not harmless, it is two deliveries of every emission.
+  `CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_target
+     ON subscriptions (guild_id, subscriber, target_url)`,
   // Spent one-shot tokens. The primary key is the check: two requests racing
   // collide here rather than both being let through.
   `CREATE TABLE IF NOT EXISTS delegation_tokens (
@@ -181,9 +180,9 @@ export class SchemaMismatchError extends Error {}
  * Refused rather than repaired, because repair is not available. Every statement
  * below is `IF NOT EXISTS`, so re-running them against a database missing a
  * column does exactly nothing — the table already exists. An app that carried on
- * would serve every route and fail on whichever query first touched the column,
- * which is how this used to be found: a runtime `column … does not exist`, hours
- * later, from a query with nothing to do with the change.
+ * would serve every route and fail on whichever query first touched the column
+ * — a runtime `column … does not exist`, hours later, from a query with nothing
+ * to do with the change.
  *
  * And never dropped automatically. The tables hold members' GitHub credentials
  * and the secrets subscribers verify deliveries with — none of it rebuildable,

@@ -78,11 +78,17 @@ describe("the companion dashboard", () => {
     }
   });
 
-  it("binds only to sources this app declares", () => {
-    const declared = new Set((manifest.data_sources ?? []).map((source) => source.id));
+  it("binds only to read endpoints this app declares", () => {
+    // A tile is filled by something that answers, so a binding to a write or an
+    // emission is a tile nothing draws.
+    const readable = new Set(
+      (manifest.endpoints ?? [])
+        .filter((endpoint) => endpoint.direction === "read")
+        .map((endpoint) => endpoint.id)
+    );
     for (const widget of dashboardWidgets()) {
       expect(widget.binding.app_uid).toBe(LISTING_UID);
-      expect(declared).toContain(widget.binding.source_id);
+      expect(readable).toContain(widget.binding.endpoint_id);
     }
   });
 
@@ -97,21 +103,17 @@ describe("the companion dashboard", () => {
   });
 
   it("answers every tile for whoever is looking", () => {
-    // This dashboard used to mix two scopes: two tiles answered for the whole
-    // guild from its shared access and one answered for the caller. It does not
-    // any more, and the change is the point rather than a simplification — a
-    // tile drawn from a guild's shared access shows the state of a private
-    // repository to members who may have no access to it.
-    //
-    // So a member who has connected no GitHub account now gets a dashboard of
-    // tiles all asking them to, and a member who has gets exactly what they can
-    // see at GitHub.
-    const sourceScope = (sourceId: string) =>
-      manifest.data_sources?.find((source) => source.id === sourceId)?.requires?.all_of;
+    // A tile drawn from a guild's shared access would show the state of a
+    // private repository to members who may have no access to it. So every one
+    // of them runs on the caller's own credential: a member who has connected
+    // no GitHub account gets a dashboard of tiles asking them to, and a member
+    // who has gets exactly what they can see at GitHub.
+    const scope = (id: string) =>
+      manifest.endpoints?.find((endpoint) => endpoint.id === id)?.requires?.all_of;
     for (const widget of dashboardWidgets()) {
       expect(
-        sourceScope(widget.binding.source_id),
-        `${widget.binding.source_id} is answered from something other than the caller`
+        scope(widget.binding.endpoint_id),
+        `${widget.binding.endpoint_id} is answered from something other than the caller`
       ).toContain("account");
     }
   });

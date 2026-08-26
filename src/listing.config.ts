@@ -37,7 +37,7 @@ import {
   type Listing,
 } from "initiative-app-kit";
 
-import { manifest } from "./manifest.config.js";
+import { READ_IDS, manifest } from "./manifest.config.js";
 
 /** This app's catalog id. Immutable: changing it publishes a second app. */
 export const LISTING_UID = "TYG4VVZKAWRMBZ";
@@ -85,7 +85,7 @@ export function listings(version: string): Listing[] {
         type: appWidgetType(LISTING_UID, "open-issues"),
         title: "Open issues",
         grid: { x: 0, y: 0, w: 3, h: 3 },
-        binding: { source_id: "open-issues" },
+        binding: { endpoint_id: READ_IDS.openIssues },
       },
       {
         // Guild-scoped either side of per-member on one dashboard, deliberately:
@@ -96,21 +96,21 @@ export function listings(version: string): Listing[] {
         type: appWidgetType(LISTING_UID, "review-queue"),
         title: "Waiting on your review",
         grid: { x: 3, y: 0, w: 6, h: 3 },
-        binding: { source_id: "review-queue" },
+        binding: { endpoint_id: READ_IDS.reviewQueue },
       },
       {
         id: "alerts",
         type: appWidgetType(LISTING_UID, "dependabot-alerts"),
         title: "Dependabot alerts",
         grid: { x: 9, y: 0, w: 3, h: 3 },
-        binding: { source_id: "dependabot-alerts" },
+        binding: { endpoint_id: READ_IDS.dependabotAlerts },
       },
       {
         id: "throughput",
         type: appWidgetType(LISTING_UID, "issue-throughput"),
         title: "Opened and closed",
         grid: { x: 0, y: 3, w: 12, h: 4 },
-        binding: { source_id: "issue-throughput" },
+        binding: { endpoint_id: READ_IDS.issueThroughput },
       },
     ],
   });
