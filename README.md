@@ -25,6 +25,11 @@ called at, and the id says which one you want. A widget filling a tile and an
 automation asking the app to act reach the same surface, and what separates them
 is who they prove themselves as.
 
+Each one says what it is, what it hands back and which drawer it belongs in, in
+four languages. So an automation service can offer them by name rather than by
+id, and can wire the issue one step just opened into the step after it — without
+anybody having to fire one to find out what comes back.
+
 The widgets need nothing but this app. The writes and the announcements exist
 for an automation service to use, and a guild without one gets the same
 dashboard.
