@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.0] — 2026-08-26
 
 ### The callable surface is GitHub's API, not a set of tiles
 
