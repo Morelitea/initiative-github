@@ -1,10 +1,10 @@
 /**
  * This app's own identity at GitHub, which is what makes it a GitHub App.
  *
- * An OAuth app is a client that borrows people. A GitHub App is a party in its
- * own right: it holds a private key, it is *installed* onto an organization by
- * someone who owns that organization, and everything it reaches it reaches
- * through that installation. That difference is the whole file.
+ * The app is a party at GitHub in its own right. It holds a private key, it is
+ * *installed* onto an organization by someone who owns that organization, and
+ * everything it reaches through that installation is what the organization
+ * agreed to.
  *
  * Three credentials, and the ladder between them is the point:
  *
@@ -17,18 +17,15 @@
  * 3. **An installation token**, good for one hour, carrying only the
  *    permissions the org agreed to on only the repositories it chose.
  *
- * What that buys over the admin-pasted token this replaced is custody. A
- * personal access token is a *person's* credential wearing the guild's name: it
- * carries everything that person can reach, it outlives their interest in the
- * guild, and revoking it means finding the person who minted it. An
- * installation is the organization's own grant, visible in its settings,
- * scoped to the repositories it picked, and revoked by a button that belongs to
- * the org rather than to anybody's account. The app cannot widen it and cannot
- * survive its removal — the next mint simply fails.
+ * The installation is the organization's own grant: visible in its settings,
+ * scoped to the repositories it picked, revoked by a button that belongs to it.
+ * This app cannot widen it and cannot survive its removal — the next mint
+ * simply fails.
  *
- * So this app now holds one credential of its own, and that is the correct
- * shape rather than a compromise: the thing it identifies is the app, not a
- * person, and it is useless anywhere nobody has invited it.
+ * **What still runs on it, after the read path stopped.** Widgets and writes
+ * run on the caller's own credential now, so the ladder above serves two things
+ * and no more: the webhook, which arrives per installation, and listing the
+ * repositories an organization granted when a guild named none of its own.
  */
 
 import { createSign } from "node:crypto";

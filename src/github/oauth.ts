@@ -1,7 +1,7 @@
 /**
  * The member's own GitHub account, connected by the member.
  *
- * The shape worth copying is what this app learns and what it does not. The
+ * What matters here is what this app learns and what it does not. The
  * platform sends a member here with a `connection_ref` — an opaque handle it
  * minted per (install, connection, member). That handle is the *only* name this
  * app ever has for that person: no user id, no email, no display name. The same
@@ -12,16 +12,12 @@
  * same handle in `connection_refs`, and this app looks up the credential
  * without ever learning whose it is.
  *
- * **What a GitHub App changes here.** The flow looks like OAuth and is not
- * quite:
+ * **Three things about the flow that surprise people who know OAuth:**
  *
- *   * **There are no scopes.** An OAuth app asks for `repo` and receives
- *     everything `repo` covers, in every repository that person can reach,
- *     until they revoke it. A GitHub App's user token carries the permissions
- *     the *installation* was granted, intersected with what that member can
- *     already reach — bounded by the organization's own grant rather than by a
- *     string this app chose. Sending a `scope` parameter would be sending
- *     something with nowhere to land.
+ *   * **There are no scopes.** A user token carries the permissions the
+ *     *installation* was granted, intersected with what that member can already
+ *     reach — bounded by the organization's own grant rather than by a string
+ *     this app chose. A `scope` parameter would have nowhere to land.
  *   * **Tokens expire.** Eight hours, renewed with a refresh token good for six
  *     months. That is why this file has a refresh path at all, and why the
  *     credential is a rotating pair rather than one durable secret.

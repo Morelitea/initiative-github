@@ -52,7 +52,7 @@ process.stdout.write(
   [
     "wrote github-app.json",
     "",
-    "One click instead of this form: set GITHUB_APP_SETUP_TOKEN, start the app,",
+    "One click instead of this form: set INITIATIVE_APP_SETUP_TOKEN, start the app,",
     "and open  <APP_PUBLIC_URL>/setup/github/register?token=...  — it posts this",
     "manifest to GitHub and shows you the credentials. Otherwise, by hand:",
     "",

@@ -34,7 +34,15 @@
  * no column-by-column upgrade path: this app has never been deployed anywhere
  * whose database would need one, and carrying an upgrade nobody is upgrading
  * from means a schema that has to be read historically to be understood.
+ *
+ * What stands in for one is a version, not a migration. The database records
+ * which version of this file built it, and `migrate` refuses at boot when that
+ * is not this one — see {@link SchemaMismatchError}. Without it, the same
+ * situation is a runtime `column … does not exist` from whichever query first
+ * touches the difference, which is a long way from the change that caused it.
  */
+
+import { createHash } from "node:crypto";
 
 import { Pool } from "pg";
 
@@ -142,16 +150,82 @@ const SCHEMA = [
      ON delegation_tokens (expires_at)`,
 ];
 
-/** Apply the schema. Safe to run on every boot and on every replica. */
+/**
+ * What built the schema in front of us, recorded so we can tell.
+ *
+ * Derived from the statements rather than declared beside them, because a
+ * number a person bumps is a number a person forgets — and the failure that
+ * matters is precisely the one nobody noticed they were causing.
+ *
+ * It costs one thing, honestly: reformatting a statement changes this as surely
+ * as adding a column does, and asks for the same recreate. That is the right
+ * direction to be wrong in. A fingerprint that never misses a real change and
+ * occasionally flags a cosmetic one beats one that can silently miss.
+ */
+const FINGERPRINT = createHash("sha256")
+  .update(SCHEMA.join(";"))
+  .digest("hex")
+  .slice(0, 16);
+
+/** Raised at boot when the database was built by a different version of this file. */
+export class SchemaMismatchError extends Error {}
+
+/**
+ * Apply the schema, or say why it cannot be. Safe on every boot and replica.
+ *
+ * There is no migration tool here and no column-by-column upgrade path — five
+ * tables of this shape do not earn the dependency. What replaces it is knowing:
+ * the database records which version of this file built it, and a mismatch is
+ * refused **at boot**, with both fingerprints and the remedy.
+ *
+ * Refused rather than repaired, because repair is not available. Every statement
+ * below is `IF NOT EXISTS`, so re-running them against a database missing a
+ * column does exactly nothing — the table already exists. An app that carried on
+ * would serve every route and fail on whichever query first touched the column,
+ * which is how this used to be found: a runtime `column … does not exist`, hours
+ * later, from a query with nothing to do with the change.
+ *
+ * And never dropped automatically. The tables hold members' GitHub credentials
+ * and the secrets subscribers verify deliveries with — none of it rebuildable,
+ * all of it worth a human deciding.
+ */
 export async function migrate(): Promise<void> {
   const client = await pool.connect();
   try {
     // One transaction, so two replicas booting together either both see the
     // finished schema or one waits — never a half-applied one.
     await client.query("BEGIN");
+    await client.query(
+      // One row, enforced by the primary key: `id` can only ever be true.
+      `CREATE TABLE IF NOT EXISTS schema_version (
+         id          BOOLEAN PRIMARY KEY DEFAULT true CHECK (id),
+         fingerprint TEXT NOT NULL,
+         applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+       )`
+    );
+    const found = await client.query<{ fingerprint: string }>(
+      "SELECT fingerprint FROM schema_version"
+    );
+    const stored = found.rows[0]?.fingerprint ?? null;
+
+    if (stored !== null && stored !== FINGERPRINT) {
+      throw new SchemaMismatchError(
+        `this database was built by a different version of src/db.ts ` +
+          `(it says ${stored}, this build is ${FINGERPRINT}). There is no ` +
+          `migration path: drop the database and let it be recreated, or ` +
+          `reconcile the difference by hand and update schema_version.`
+      );
+    }
+
     for (const statement of SCHEMA) {
       await client.query(statement);
     }
+    // Recorded last, so a statement that fails leaves no claim that it ran.
+    await client.query(
+      `INSERT INTO schema_version (fingerprint) VALUES ($1)
+       ON CONFLICT (id) DO NOTHING`,
+      [FINGERPRINT]
+    );
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");

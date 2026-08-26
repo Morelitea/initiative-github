@@ -2,12 +2,14 @@
  * What the operator supplies, read once at boot.
  *
  * **Two addresses, and they are not the same one.** Conflating them is what
- * makes a cluster deployment hairpin out through its own ingress and back:
+ * sends this app out to a public address and back to reach something it could
+ * have called directly:
  *
  *   * `INITIATIVE_BASE_URL` — where **this server** reaches Initiative, to
  *     fetch the verification keys a context token is checked against. That is
- *     server-to-server, so in a cluster it belongs on the in-cluster Service
- *     and never depends on the public ingress being up.
+ *     server-to-server, so where Initiative has a private address as well as a
+ *     public one this is the private one, and verification then does not depend
+ *     on whatever fronts the public address being up.
  *   * `APP_PUBLIC_URL` — where **a person's browser** reaches this app. Public
  *     by necessity: GitHub redirects a browser to it, and every URL on this
  *     app's GitHub App registration is built from it.
@@ -16,7 +18,7 @@
  * the iframe loads" — an app that *does* embed needs one, and must not reuse
  * the server-to-server address for it. Initiative calls that one `embed_origin`
  * on the registration, and falls back to `base_url` when it is unset, which is
- * exactly how a cluster ends up framing an address no browser can resolve.
+ * exactly how a deployment ends up framing an address no browser can resolve.
  *
  * **Two addresses at GitHub, as well**, for the same reason and less obviously.
  * `api.github.com` answers the API; `github.com` serves the pages a person is

@@ -230,9 +230,8 @@ export async function issueThroughput(
   claims: ContextClaims,
   params: URLSearchParams
 ): Promise<Record<string, unknown>> {
-  // Guild-scoped for the same reason as the count, and it matters more here:
-  // this is the heaviest call this app makes, and it runs once per guild per
-  // TTL rather than once per member.
+  // The heaviest call this app makes, and the one where answering per member
+  // costs most: a fortnight of daily counts, once per member per TTL.
   const where = await access(claims, params);
   if ("unavailable" in where) return where;
   const { token, owner, repo } = where;

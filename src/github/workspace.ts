@@ -8,10 +8,10 @@
  * twice, and the two installs are separate configurations.
  *
  * Beside those values sits one this app worked out rather than was given: the
- * **GitHub installation** that covers the repository. An admin types
- * `owner/repo` into Initiative's settings — the thing they were always going to
- * type — and the app asks GitHub whether it has been installed there. Nobody
- * pastes a credential, and nobody has to go and find an installation id.
+ * **GitHub installation** covering that account. An admin types an owner and,
+ * optionally, which repositories — and the app asks GitHub whether it has been
+ * installed there. Nobody pastes a credential or goes looking for an
+ * installation id.
  *
  * Persisted rather than cached in memory. Losing it is not catastrophic — the
  * next sync refetches — but every source answers "not configured" until

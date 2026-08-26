@@ -5,10 +5,10 @@
  * a malformed manifest before `initiative-app validate` does and before a
  * deployment does. `npm run manifest` writes it.
  *
- * Read this file first if you are starting an app. It is the whole surface: a
- * connection each vendor account authorizes, sources the platform fetches, and
- * widgets drawn from those sources. Nothing here is an address — every route is
- * a path, and the operator's registration says where the app lives.
+ * The whole surface is here: the connections a person fills in or authorizes,
+ * the sources the platform fetches, the widgets drawn from them, and the events
+ * this app publishes. Nothing here is an address — every route is a path, and
+ * the operator's registration says where the app lives.
  *
  * **No embedded page.** This app deliberately mounts no surface of its own:
  * everything it offers lands inside Initiative's own — dashboard widgets, and
@@ -55,9 +55,10 @@ const ACCESS_HINT_SCOPES = Object.entries(PERMISSIONS).map(
  * the route.
  *
  * The envelope also carries the catalog `uid` — publisher-assigned, immutable,
- * the id that ties a verified registration to its listing. This app passes none,
- * so it registers and names no listing: fine for a reference nobody installs
- * from a catalog, and the one thing to change first if you publish yours.
+ * and the id that ties a verified registration to its listing. Without one the
+ * app registers, verifies, and names no listing, which reads as healthy from
+ * every angle except the marketplace. It is set in `listing.config.ts`, beside
+ * the listings that publish under it.
  */
 
 export const manifest: Manifest = {
@@ -375,7 +376,8 @@ export const manifest: Manifest = {
       ],
       // Per member, and this is the one where the cost is felt: it is the
       // heaviest call this app makes, and it now runs once per member per five
-      // minutes rather than once per guild. A longer TTL is the lever if that
+      // minutes, where it used to be once per guild. A longer TTL is the lever
+      // if that
       // ever bites.
       requires: { all_of: ["workspace", "account"] },
     },
