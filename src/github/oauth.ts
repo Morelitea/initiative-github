@@ -33,10 +33,11 @@
 
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 
+import { type ConnectOutcome, landingUrl } from "initiative-app-kit";
+
 import { config } from "../config.js";
 import { initiative } from "../initiative.js";
 import { pool } from "../db.js";
-import { page } from "../page.js";
 import { CALLBACK_PATH } from "../routes.js";
 import { open, seal } from "../secrets.js";
 import { appIdentity } from "./app.js";
@@ -67,7 +68,8 @@ const TOKEN_URL = `${config.github.webBase}/login/oauth/access_token`;
  */
 async function beginFlow(
   connectionRef: string,
-  guildId: number
+  guildId: number,
+  returnUrl: string | null
 ): Promise<{ state: string; challenge: string }> {
   const state = randomUUID();
   // 32 bytes as base64url is 43 characters — the shortest verifier the spec
@@ -75,9 +77,10 @@ async function beginFlow(
   const verifier = randomBytes(32).toString("base64url");
 
   await pool.query(
-    `INSERT INTO oauth_states (state, connection_ref, guild_id, code_verifier, expires_at)
-     VALUES ($1, $2, $3, $4, now() + ($5 || ' minutes')::interval)`,
-    [state, connectionRef, guildId, verifier, String(STATE_TTL_MINUTES)]
+    `INSERT INTO oauth_states
+       (state, connection_ref, guild_id, code_verifier, return_url, expires_at)
+     VALUES ($1, $2, $3, $4, $5, now() + ($6 || ' minutes')::interval)`,
+    [state, connectionRef, guildId, verifier, returnUrl, String(STATE_TTL_MINUTES)]
   );
   // Swept here rather than by a job: the table is small, and a sweep that runs
   // when somebody connects cannot fall behind in a way that matters.
@@ -105,9 +108,10 @@ function authorizeParams(state: string, challenge: string): URLSearchParams {
 /** Where to send the member so GitHub can authorize them. */
 export async function beginOAuth(
   connectionRef: string,
-  guildId: number
+  guildId: number,
+  returnUrl: string | null
 ): Promise<string> {
-  const { state, challenge } = await beginFlow(connectionRef, guildId);
+  const { state, challenge } = await beginFlow(connectionRef, guildId, returnUrl);
   const query = authorizeParams(state, challenge);
   return `${config.github.webBase}/login/oauth/authorize?${query}`;
 }
@@ -127,10 +131,11 @@ export async function beginOAuth(
  */
 export async function beginInstall(
   connectionRef: string,
-  guildId: number
+  guildId: number,
+  returnUrl: string | null
 ): Promise<string> {
   const app = await appIdentity();
-  const { state, challenge } = await beginFlow(connectionRef, guildId);
+  const { state, challenge } = await beginFlow(connectionRef, guildId, returnUrl);
   const query = authorizeParams(state, challenge);
   if (!app) return `${config.github.webBase}/login/oauth/authorize?${query}`;
   return `${config.github.webBase}/apps/${app.slug}/installations/new?${query}`;
@@ -201,8 +206,23 @@ async function store(
   );
 }
 
-/** Exchange the code, store the credential under its handle, and say so. */
-export async function completeOAuth(params: URLSearchParams): Promise<string> {
+/**
+ * What the callback ends as, and where the member goes to hear it.
+ *
+ * `home` is the address Initiative signed when it began the flow, or `null` for
+ * a flow that carried none — one begun before the state row could hold one, or
+ * by somebody who assembled the connect URL themselves. The caller draws its
+ * own page in that case; here, both endings are the same four words.
+ */
+export interface ConnectResult {
+  outcome: ConnectOutcome;
+  home: string | null;
+}
+
+/** Exchange the code, store the credential under its handle, and say how it went. */
+export async function completeOAuth(
+  params: URLSearchParams
+): Promise<ConnectResult> {
   const state = params.get("state") ?? "";
   const code = params.get("code") ?? "";
 
@@ -212,20 +232,26 @@ export async function completeOAuth(params: URLSearchParams): Promise<string> {
     connection_ref: string;
     guild_id: string | null;
     code_verifier: string | null;
+    return_url: string | null;
   }>(
     `DELETE FROM oauth_states
       WHERE state = $1 AND expires_at > now()
-      RETURNING connection_ref, guild_id, code_verifier`,
+      RETURNING connection_ref, guild_id, code_verifier, return_url`,
     [state]
   );
   const claim = claimed.rows[0];
 
-  if (!claim || !code) {
-    return page(
-      "Could not connect",
-      "That link has expired. Start again from the app's settings."
-    );
-  }
+  // No row is the only ending with nowhere to send them: the address was in the
+  // row, and there is no row. Whoever arrives here followed a link that had
+  // expired, been spent, or was never minted.
+  if (!claim) return { outcome: "expired", home: null };
+
+  const home = claim.return_url;
+
+  // GitHub sends the member back with no code when they decline, so this is
+  // their answer rather than a fault — told apart from an expired link because
+  // the remedy is different: theirs at the vendor, not theirs here.
+  if (!code) return { outcome: "refused", home };
 
   const tokens = await exchange({
     client_id: config.github.clientId,
@@ -234,12 +260,7 @@ export async function completeOAuth(params: URLSearchParams): Promise<string> {
     redirect_uri: REDIRECT_URI,
     ...(claim.code_verifier ? { code_verifier: claim.code_verifier } : {}),
   });
-  if (!tokens) {
-    return page(
-      "Could not connect",
-      "GitHub did not return a token. Start again from the app's settings."
-    );
-  }
+  if (!tokens) return { outcome: "refused", home };
 
   const who = await fetch(`${config.github.apiBase}/user`, {
     headers: {
@@ -271,14 +292,20 @@ export async function completeOAuth(params: URLSearchParams): Promise<string> {
   // token stored and never announced is a member who authorized GitHub and
   // still cannot see a single tile.
   if (!(await announce(guildId, claim.connection_ref, user.login ?? null, label))) {
-    return page(
-      "Nearly there",
-      "GitHub authorized this app, but Initiative did not record it. Try " +
-        "connecting again from the app's settings — nothing was lost."
-    );
+    return { outcome: "not_recorded", home };
   }
 
-  return page("Connected", "You can close this tab and go back to Initiative.");
+  return { outcome: "connected", home };
+}
+
+/**
+ * Where to send the member, given how it ended.
+ *
+ * `null` when Initiative gave no address to go back to, and the caller says its
+ * piece on its own page instead.
+ */
+export function landingFor(result: ConnectResult): string | null {
+  return result.home ? landingUrl(result.home, result.outcome) : null;
 }
 
 /**

@@ -82,11 +82,17 @@ const SCHEMA = [
   // not read back off the callback: GitHub controls that query string and
   // echoes only `state`, so a value that arrived there would be a value the
   // redirect supplied rather than one bound to this flow.
+  // `return_url` is where Initiative asked for the member back when this is
+  // over. Held here rather than carried, for the same reason as everything else
+  // in this row: GitHub echoes `state` and nothing more, so a value that came
+  // back on the callback would be one the redirect supplied. Verified before it
+  // was written, so what is read out at the end is an address Initiative signed.
   `CREATE TABLE IF NOT EXISTS oauth_states (
      state          TEXT PRIMARY KEY,
      connection_ref TEXT NOT NULL,
      guild_id       BIGINT,
      code_verifier  TEXT,
+     return_url     TEXT,
      expires_at     TIMESTAMPTZ NOT NULL
    )`,
   // Expired states are swept on use rather than by a job: the table is small,
@@ -97,9 +103,9 @@ const SCHEMA = [
   // nothing else, back into somewhere to publish. `installation_id` is which
   // GitHub installation covers it — discovered rather than typed, and held so a
   // restart does not have to ask GitHub before it can answer anything. `repos`
-  // is what a guild narrowed itself to, empty meaning every repository the
-  // installation covers; an array rather than a second table, because it is
-  // read whole, written whole, and bounded by what one organization granted.
+  // is the boundary an admin wrote down — every call is resolved against it and
+  // every delivery matched against it — as an array rather than a second table,
+  // because it is read whole and written whole.
   `CREATE TABLE IF NOT EXISTS workspaces (
      app_install_id  BIGINT PRIMARY KEY,
      guild_id        BIGINT,

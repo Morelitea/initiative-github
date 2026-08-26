@@ -285,7 +285,9 @@ connected.
 ## Step 8 — Connect your account
 
 If step 7 did not do it: in the app's settings, **Your GitHub account →
-Connect**. You are sent to GitHub, you authorize, you come back.
+Connect**. You are sent to GitHub, you authorize, and Initiative tells you how
+it went — this app hands you back rather than writing that page itself, so you
+read it in your own language.
 
 Every widget runs on your credential, so a member who has not connected is asked
 to rather than shown somebody else's numbers.
@@ -329,7 +331,7 @@ Optional:
 | `this database was built by a different version of src/db.ts` | There is no migration path here. Drop the app's database and let it be recreated. |
 | Registration stuck `pending` | Initiative cannot reach `base_url`, or the two secrets differ. |
 | Every tile says *connect your account* | You have not connected, or the write-back failed — see the next row. |
-| *Nearly there* after authorizing | GitHub authorized you and Initiative did not record it. Try again; nothing was lost. |
+| *Nearly there* after authorizing | GitHub authorized you and Initiative did not record it. Connect again; nothing was lost. |
 | Tile says *not configured* | **Owner or organization** or **Repositories** is blank in step 6. Both are required. |
 | Tile says *repository-required* | **Repositories** names several and the tile does not say which. Set `repo` on the dashboard tile. |
 | Tile says *repository-not-listed* | The tile's `repo` is not in **Repositories**. Fix one or the other. |

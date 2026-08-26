@@ -1,12 +1,18 @@
 /**
- * The only HTML this app serves.
+ * The only HTML this app serves, and it is the fallback rather than the ending.
  *
- * Three plain pages, all of them somewhere a person lands after a trip to
- * GitHub: a member who connected, an org owner who installed, and whoever
- * followed a link that had expired. There is no fourth, because this app mounts
- * no embedded surface — everything it offers renders inside Initiative's own.
+ * A member Initiative sent goes back to Initiative when a vendor flow is over,
+ * because Initiative knows what language they read and this app does not. What
+ * is left here is for everybody else: somebody who assembled a connect URL by
+ * hand, somebody whose in-flight row expired and took the return address with
+ * it, and the org owner who followed a bare install link and was never in
+ * Initiative at all.
  *
- * Every one is a fixed sentence written here. Nothing a caller supplies is
+ * English, and that is the honest answer rather than a gap — nothing here knows
+ * anything about the person reading it, which is the whole argument for handing
+ * the ones we do know back.
+ *
+ * Every page is a fixed sentence written here. Nothing a caller supplies is
  * interpolated, which is why there is no escaping in this file — if that ever
  * stops being true, the escaping has to come back with it.
  */

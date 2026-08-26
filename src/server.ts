@@ -47,8 +47,10 @@ import {
   delegateHeader,
   isDigits,
   parseInvoke,
+  returnAddress,
   verifyContextToken,
   verifyDelegationToken,
+  type ConnectOutcome,
   type ContextClaims,
   type DelegationClaims,
 } from "initiative-app-kit";
@@ -82,7 +84,7 @@ import {
   invoke,
 } from "./endpoints.js";
 import { installUrl } from "./github/app.js";
-import { beginInstall, beginOAuth, completeOAuth } from "./github/oauth.js";
+import { beginInstall, beginOAuth, completeOAuth, landingFor } from "./github/oauth.js";
 import {
   DELIVERY_HEADER,
   EVENT_HEADER,
@@ -136,6 +138,46 @@ const NO_GUILD = page(
   "Open this app's settings in Initiative and connect from there. If you did, " +
     "this deployment's Initiative may be older than this app."
 );
+
+/**
+ * The same four endings, for somebody Initiative did not send.
+ *
+ * A member who arrived from Initiative goes back to Initiative, which writes
+ * these in the language they read. These are for whoever did not: a link
+ * assembled by hand, or one whose in-flight row has expired and taken the
+ * return address with it. English, because nothing here knows anything about
+ * the person reading it — which is the whole argument for the redirect.
+ */
+const ENDINGS: Record<ConnectOutcome, string> = {
+  connected: page("Connected", "You can close this tab and go back to Initiative."),
+  refused: page(
+    "Not connected",
+    "GitHub did not complete the sign-in. Nothing changed — start again from " +
+      "the app's settings in Initiative."
+  ),
+  expired: page(
+    "Could not connect",
+    "That link has expired. Start again from the app's settings in Initiative."
+  ),
+  not_recorded: page(
+    "Nearly there",
+    "GitHub authorized this app, but Initiative did not record it. Try " +
+      "connecting again from the app's settings — nothing was lost."
+  ),
+};
+
+/**
+ * Where Initiative asked for this member back, if it asked at all.
+ *
+ * Verified against the secret this registration was wired with, so an address
+ * on the query string that Initiative did not write is refused rather than
+ * followed. `null` is the ordinary answer as well as the refused one — the
+ * caller draws its own page either way, and telling them apart would only be
+ * useful to whoever forged one.
+ */
+function homeFrom(url: URL): string | null {
+  return returnAddress({ secret: config.appSecret, params: url.searchParams });
+}
 
 /**
  * Whether `value` is a GitHub account login and nothing else.
@@ -378,14 +420,24 @@ export const server = createServer(async (req, res) => {
       const guildId = guildFrom(url.searchParams);
       if (guildId === null) return sendPage(res, NO_GUILD);
 
-      const redirect = await beginOAuth(connectionRef, guildId);
+      const redirect = await beginOAuth(connectionRef, guildId, homeFrom(url));
       res.writeHead(302, { Location: redirect });
       return res.end();
     }
 
     if (req.method === "GET" && path === CALLBACK_PATH) {
-      const html = await completeOAuth(url.searchParams);
-      return sendPage(res, html);
+      // Initiative renders the ending, in the language this member reads and
+      // inside the product they started in. This app finishes the exchange and
+      // hands them back with one word saying how it went.
+      const result = await completeOAuth(url.searchParams);
+      const home = landingFor(result);
+      if (home) {
+        res.writeHead(302, { Location: home });
+        return res.end();
+      }
+      // No address to go back to, which means they did not arrive from
+      // Initiative — a link assembled by hand, or one whose row has expired.
+      return sendPage(res, ENDINGS[result.outcome]);
     }
 
     // --- installing the GitHub App -----------------------------------------
@@ -403,7 +455,7 @@ export const server = createServer(async (req, res) => {
 
       const redirect =
         connectionRef && guildId !== null
-          ? await beginInstall(connectionRef, guildId)
+          ? await beginInstall(connectionRef, guildId, homeFrom(url))
           : await installUrl();
       if (!redirect) {
         // GitHub would not say what this app is called, which means the private

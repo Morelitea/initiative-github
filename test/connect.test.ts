@@ -28,12 +28,21 @@ const { writeConnection } = vi.hoisted(() => ({
 }));
 vi.mock("../src/initiative.js", () => ({ initiative: { writeConnection } }));
 
+import { signReturnUrl } from "initiative-app-kit";
+
+import { config } from "../src/config.js";
 import { close, migrate, pool } from "../src/db.js";
-import { beginOAuth, completeOAuth, credentialFor } from "../src/github/oauth.js";
+import {
+  beginOAuth,
+  completeOAuth,
+  credentialFor,
+  landingFor,
+} from "../src/github/oauth.js";
 import { manifest } from "../src/manifest.config.js";
 
 const REF = "ref-abcdef";
 const GUILD = 500;
+const HOME = "https://initiative.test/apps/connected?app=morelitea.github";
 
 /** GitHub answering the token exchange and the `/user` lookup that follows. */
 function github(token = "ghu_member") {
@@ -51,9 +60,19 @@ function github(token = "ghu_member") {
 }
 
 /** Start a flow the way the route does, and read back the state GitHub gets. */
-async function started(guildId = GUILD) {
-  const redirect = await beginOAuth(REF, guildId);
+async function started(guildId = GUILD, home: string | null = HOME) {
+  const redirect = await beginOAuth(REF, guildId, home);
   return new URL(redirect).searchParams.get("state")!;
+}
+
+/** A connect URL as Initiative builds it, signed with the shared secret. */
+function handoff(home = HOME): URLSearchParams {
+  return new URLSearchParams({
+    connection_ref: REF,
+    guild_id: String(GUILD),
+    return_url: home,
+    return_sig: signReturnUrl(config.appSecret, home),
+  });
 }
 
 beforeEach(async () => {
@@ -73,7 +92,7 @@ afterAll(async () => {
 
 describe("sending a member to GitHub", () => {
   it("sends them to GitHub's own authorization page", async () => {
-    const redirect = new URL(await beginOAuth(REF, GUILD));
+    const redirect = new URL(await beginOAuth(REF, GUILD, HOME));
     expect(redirect.origin + redirect.pathname).toBe(
       "https://github.com/login/oauth/authorize"
     );
@@ -85,7 +104,7 @@ describe("sending a member to GitHub", () => {
   });
 
   it("keeps the verifier on this side and sends only its hash", async () => {
-    const redirect = new URL(await beginOAuth(REF, GUILD));
+    const redirect = new URL(await beginOAuth(REF, GUILD, HOME));
     const stored = await pool.query<{ code_verifier: string }>(
       "SELECT code_verifier FROM oauth_states"
     );
@@ -100,7 +119,7 @@ describe("sending a member to GitHub", () => {
     // guild read back there would be one the redirect supplied. This is the
     // moment Initiative hands the member over, and the only honest place to
     // take it.
-    await beginOAuth(REF, GUILD);
+    await beginOAuth(REF, GUILD, HOME);
     const stored = await pool.query<{ guild_id: string }>(
       "SELECT guild_id FROM oauth_states"
     );
@@ -166,9 +185,9 @@ describe("when they come back", () => {
     writeConnection.mockRejectedValue(new Error("platform unreachable"));
     const state = await started();
 
-    const html = await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
+    const result = await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
 
-    expect(html).toContain("Nearly there");
+    expect(result.outcome).toBe("not_recorded");
     expect(await credentialFor(REF)).not.toBeNull();
   });
 
@@ -181,16 +200,19 @@ describe("when they come back", () => {
     await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
     const second = await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
 
-    expect(second).toContain("Could not connect");
+    expect(second.outcome).toBe("expired");
     expect(writeConnection).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a state it never minted", async () => {
     const fetching = github();
-    const html = await completeOAuth(
+    const result = await completeOAuth(
       new URLSearchParams({ state: "not-one-of-ours", code: "gh-code" })
     );
-    expect(html).toContain("Could not connect");
+    expect(result.outcome).toBe("expired");
+    // And nowhere to send them: the address was in the row, and there is no
+    // row. So this is one of the two endings the app draws itself.
+    expect(landingFor(result)).toBeNull();
     expect(fetching).not.toHaveBeenCalled();
     expect(writeConnection).not.toHaveBeenCalled();
   });
@@ -206,5 +228,79 @@ describe("when they come back", () => {
       "SELECT guild_id FROM connections"
     );
     expect(Number(row.rows[0].guild_id)).toBe(GUILD);
+  });
+});
+
+describe("where they land when it is over", () => {
+  it("goes back to Initiative with one word saying how it went", async () => {
+    // The whole point. This app knows a handle and a guild id and has never
+    // been told what language this person reads — so it does not write the
+    // ending, it hands them back and Initiative writes it.
+    github();
+    const state = await started();
+
+    const landing = new URL(
+      landingFor(await completeOAuth(new URLSearchParams({ state, code: "gh-code" })))!
+    );
+
+    expect(landing.origin + landing.pathname).toBe(
+      "https://initiative.test/apps/connected"
+    );
+    expect(landing.searchParams.get("outcome")).toBe("connected");
+    // And what Initiative put on its own address survives the trip, so the page
+    // can say which app was being connected.
+    expect(landing.searchParams.get("app")).toBe("morelitea.github");
+  });
+
+  it("says they declined when GitHub sends them back with no code", async () => {
+    // Their answer at the vendor, not a fault here — and a different remedy
+    // from an expired link, which is why it is a different word.
+    const state = await started();
+
+    const result = await completeOAuth(new URLSearchParams({ state }));
+
+    expect(result.outcome).toBe("refused");
+    expect(landingFor(result)).toContain("outcome=refused");
+    expect(await credentialFor(REF)).toBeNull();
+  });
+
+  it("carries the outcome even when Initiative did not record the connection", async () => {
+    github();
+    writeConnection.mockRejectedValue(new Error("platform unreachable"));
+    const state = await started();
+
+    const landing = landingFor(
+      await completeOAuth(new URLSearchParams({ state, code: "gh-code" }))
+    );
+
+    expect(landing).toContain("outcome=not_recorded");
+  });
+
+  it("has nowhere to send somebody Initiative did not send", async () => {
+    // A flow begun without a return address — a connect URL assembled by hand.
+    // It still works; the ending is just this app's own page.
+    github();
+    const state = await started(GUILD, null);
+
+    const result = await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
+
+    expect(result.outcome).toBe("connected");
+    expect(landingFor(result)).toBeNull();
+  });
+});
+
+describe("the address Initiative signed", () => {
+  it("is what gets stored, and only if it verifies", async () => {
+    // The route reads this off the query string before the flow begins, so an
+    // address somebody typed never reaches the row that the redirect is built
+    // from at the end.
+    const { returnAddress } = await import("initiative-app-kit");
+
+    const real = handoff();
+    expect(returnAddress({ secret: config.appSecret, params: real })).toBe(HOME);
+
+    const forged = handoff();
+    forged.set("return_url", "https://evil.test/looks-official");
+    expect(returnAddress({ secret: config.appSecret, params: forged })).toBeNull();
   });
 });
