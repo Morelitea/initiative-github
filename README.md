@@ -26,13 +26,16 @@ are called at, and the id says which one you want. A widget filling a tile and a
 automation asking the app to act reach the same surface, and what separates them
 is who they prove themselves as.
 
-Most of the reads do a second job: they are what **fills the pickers** on every
-other endpoint's parameters. A parameter names one of them as its `source`, and
-a consumer calls it as the person editing — so "which repository" is a list
-rather than a name typed from memory, "which labels" is that repository's
-labels, and a board's fields and one field's values chain the same way. That is
-work no consumer could have done: an automation editor holds no GitHub
-credential, so it can only fill pickers over its own data.
+Five of the reads do a second job: they are what a caller **fills a picker**
+from. `list-repositories`, `list-labels`, `list-projects`,
+`list-project-fields` and `list-project-options` answer "which repositories can
+you see", "which labels does it have", and the board → field → value chain — so
+a consumer building a form has a list rather than a text box, and each step of
+the chain takes the one above it.
+
+The manifest says nothing about that, deliberately. What a step looks like on
+somebody's canvas is their product and their decision; this app's job is to
+make sure the read they need exists and answers honestly.
 
 A read is a question at GitHub rather than the shape of a tile — the
 repository's own vocabulary, narrowed by what GitHub narrows it by. So a step in

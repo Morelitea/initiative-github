@@ -12,7 +12,6 @@ import {
   TOTAL_OUT,
   UNAVAILABLE,
   WRITE_IDS,
-  fed,
   many,
   param,
   text,
@@ -249,15 +248,7 @@ export const listProjectOptions: Read = {
     visibility: "member",
     cache_ttl_seconds: 300,
 
-    params: [
-      PROJECT_ID,
-      fed(
-        param("field", "string", "Field", "Feld", "Campo", "Champ"),
-        READ_IDS.listProjectFields,
-        "ids",
-        { labels: "names", feeds: { project_id: "project_id" } }
-      ),
-    ],
+    params: [PROJECT_ID, param("field", "string", "Field", "Feld", "Campo", "Champ")],
     returns: [
       value("field_id", "string", "Field", "Feld", "Campo", "Champ"),
       value("field_name", "string", "Field name", "Feldname", "Nombre del campo", "Nom du champ"),
@@ -391,28 +382,15 @@ export const moveProjectItem: Write = {
     actors: ["member"],
 
     requires: { all_of: ["account"] },
-    // The chain this vocabulary exists for: a board, then that board's fields,
-    // then that field's values. Each is fed from the one above it, and none of
-    // them could be said before a parameter could name a read of ours.
-    //
-    // `item_id` is the one left plain, and deliberately: a card is found by
-    // "Find a project card" upstream and bound from its result, so a menu of
-    // every card on a board would be offering the wrong gesture.
+    // Four node ids, and `list-projects`, `list-project-fields` and
+    // `list-project-options` are what a caller resolves each of them from —
+    // in that order, each read taking the one above it. This app's job is to
+    // answer those; arranging them into a form is the caller's.
     params: [
       PROJECT_ID,
       param("item_id", "string", "Card", "Karte", "Tarjeta", "Carte"),
-      fed(
-        param("field_id", "string", "Field", "Feld", "Campo", "Champ"),
-        READ_IDS.listProjectFields,
-        "ids",
-        { labels: "names", feeds: { project_id: "project_id" } }
-      ),
-      fed(
-        param("option_id", "string", "Value", "Wert", "Valor", "Valeur"),
-        READ_IDS.listProjectOptions,
-        "option_ids",
-        { labels: "option_names", feeds: { project_id: "project_id", field: "field_id" } }
-      ),
+      param("field_id", "string", "Field", "Feld", "Campo", "Champ"),
+      param("option_id", "string", "Value", "Wert", "Valor", "Valeur"),
     ],
 
     returns: [value("item_id", "string", "Card", "Karte", "Tarjeta", "Carte")],

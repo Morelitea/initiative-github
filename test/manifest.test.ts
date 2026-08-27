@@ -429,60 +429,53 @@ describe("what an endpoint says about itself", () => {
     }
   });
 
-  it("names no Initiative resource, because none of these are one", () => {
-    // `resource` says the value is a row inside INITIATIVE, and a consumer
-    // draws the picker it has for that kind. Nothing this app asks for is one:
-    // a repository, an issue number and a Projects v2 board all live at
-    // GitHub, and the consumer holds no GitHub credential.
-    //
-    // `project_id` is the trap. It names a Projects v2 board rather than an
-    // Initiative project, so the picker that looks right is the wrong one and
-    // would fill the field with an id this app cannot resolve.
+  it("says nothing about how a caller should ASK for any of it", () => {
+    // The rule this manifest keeps and the reason `picker` and everything
+    // after it is gone: a repository picker is a decision about somebody
+    // else's product, and this app is not the party making it. What this app
+    // owes is a read that answers "which repositories can you see" — which is
+    // `list-repositories`, and it is right there.
+    const surface = ["resource", "source", "default", "optional", "constraints"];
     for (const endpoint of endpoints()) {
       for (const param of endpoint.params ?? []) {
-        expect(param.resource, `${endpoint.id}/${param.key}`).toBeUndefined();
+        for (const term of surface) {
+          expect(term in param, `${endpoint.id}/${param.key}.${term}`).toBe(false);
+        }
+        // A written label on a choice is the same mistake one level down.
+        for (const option of param.options ?? []) {
+          expect(typeof option, `${endpoint.id}/${param.key}`).toBe("string");
+        }
+      }
+      for (const value of endpoint.returns ?? []) {
+        expect("filter" in value, `${endpoint.id}/${value.key}.filter`).toBe(false);
       }
     }
   });
 
-  it("feeds every parameter whose values this app can answer", () => {
-    // The other half of the same fact: a consumer cannot fill these, and this
-    // app can. Before a parameter could name a read of ours, "which
-    // repository" was a text box on thirteen of these twenty endpoints.
-    const fed = new Map<string, string>();
-    for (const endpoint of endpoints()) {
-      for (const param of endpoint.params ?? []) {
-        if (param.source) fed.set(`${endpoint.id}/${param.key}`, param.source.endpoint);
-      }
-    }
-    // Every `repo` is fed, on every endpoint that takes one.
-    const repos = [...fed.keys()].filter((where) => where.endsWith("/repo"));
-    const takesRepo = endpoints().filter((endpoint) =>
-      (endpoint.params ?? []).some((param) => param.key === "repo")
+  it("answers every list a caller could need to fill a control", () => {
+    // The other half of the same fact. Saying nothing about pickers is only
+    // honest if the lists behind them exist: a repository, a repository's
+    // labels, a board, a board's fields, and one field's values.
+    const reads = new Set(
+      endpoints()
+        .filter((endpoint) => endpoint.direction === "read")
+        .map((endpoint) => endpoint.id)
     );
-    expect(repos.length).toBe(takesRepo.length);
-    expect(takesRepo.length).toBeGreaterThan(10);
-  });
-
-  it("feeds the dependent ones from the sibling that decides them", () => {
-    // A repository's labels are that repository's, and a board field's values
-    // are that field's. A source that could not pass a sibling's answer would
-    // have served the few parameters that stand alone and none of these.
-    const dependent = endpoints()
-      .flatMap((endpoint) => (endpoint.params ?? []).map((param) => [endpoint.id, param] as const))
-      .filter(([, param]) => param.source?.params !== undefined);
-
-    expect(dependent.length).toBeGreaterThan(0);
-    for (const [id, param] of dependent) {
-      for (const [key, argument] of Object.entries(param.source?.params ?? {})) {
-        expect(argument.from, `${id}/${param.key}/${key}`).toBeTruthy();
-      }
+    for (const id of [
+      READ_IDS.listRepositories,
+      READ_IDS.listLabels,
+      READ_IDS.listProjects,
+      READ_IDS.listProjectFields,
+      READ_IDS.listProjectOptions,
+    ]) {
+      expect(reads.has(id), id).toBe(true);
     }
   });
 
   it("holds several values wherever GitHub takes several", () => {
-    // These were comma-separated strings by convention, which a consumer could
-    // not validate, complete, or draw as anything but a box about commas.
+    // Cardinality survived the pruning because it is a fact about the VALUE: a
+    // caller building a request has to know whether this takes an array, and
+    // only this app can say. These were comma-separated strings by convention.
     const lists = endpoints().flatMap((endpoint) =>
       (endpoint.params ?? []).filter((param) => param.list).map((param) => param.key)
     );
@@ -528,26 +521,6 @@ describe("what an endpoint says about itself", () => {
     }
   });
 
-  it("lets a subscriber narrow an emission to work it cares about", () => {
-    // "When an issue is opened" meant in any repository this guild watches,
-    // and there was nowhere to say otherwise — an emit endpoint carries no
-    // parameters, because nobody calls it.
-    for (const endpoint of endpoints().filter((e) => e.direction === "emit")) {
-      const filters = (endpoint.returns ?? []).filter((value) => value.filter);
-      expect(filters.map((value) => value.key), endpoint.id).toEqual([
-        "repository",
-        "owner",
-        "author",
-      ]);
-    }
-  });
-
-  it("feeds the repository narrowing from the same list its parameters use", () => {
-    for (const endpoint of endpoints().filter((e) => e.direction === "emit")) {
-      const repository = (endpoint.returns ?? []).find((value) => value.key === "repository");
-      expect(repository?.source?.values, endpoint.id).toBe("names");
-    }
-  });
 });
 
 describe("what an emission promises to carry", () => {

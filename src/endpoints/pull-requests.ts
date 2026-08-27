@@ -27,7 +27,6 @@ import {
   URL_OUT,
   WRITE_IDS,
   ISSUE_IDENTITY,
-  choice,
   param,
   pick,
   several,
@@ -127,12 +126,7 @@ export const findPullRequests: Read = {
       REPO,
       pick(
         "state",
-        [
-          choice("open", "Open", "Offen", "Abiertas", "Ouvertes"),
-          choice("closed", "Closed", "Geschlossen", "Cerradas", "Fermées"),
-          choice("merged", "Merged", "Gemergt", "Fusionadas", "Fusionnées"),
-          choice("all", "Any", "Beliebig", "Cualquiera", "Toutes"),
-        ],
+        ["open", "closed", "merged", "all"],
         "State",
         "Status",
         "Estado",

@@ -5,7 +5,7 @@ import type {
   LocalizedText,
 } from "initiative-app-kit";
 
-import { ISSUE_IDENTITY, READ_IDS, declare } from "../vocabulary.js";
+import { ISSUE_IDENTITY, declare } from "../vocabulary.js";
 
 function text(en: string, de: string, es: string, fr: string): LocalizedText {
   return { en, de, es, fr };
@@ -81,38 +81,23 @@ const PUBLISHED: Record<string, Record<string, Announcement>> = {
 };
 
 /**
- * What every emission here carries, and which of it a subscriber may narrow on.
+ * What every emission here carries.
  *
- * `filter` is the answer to the thing this app could not say before: "when an
- * issue is opened" meant *in any repository this guild watches*, and there was
- * nowhere to say otherwise — an emit endpoint carries no parameters, because
- * nobody calls it. What it DECLARES it carries is the honest place to narrow
- * from, and a subscriber matches at delivery rather than after a run has
- * already started.
- *
- * Three of the six, and the other three are deliberate omissions. `repository`
- * and `owner` are where the work is; `author` is who did it, which is the
- * second thing anybody wants ("only mine", "only Dependabot's"). `title` and
- * `url` are not questions with a fixed answer, and `number` names one issue
- * forever — a trigger narrowed to it would fire at most once.
- *
- * `repository` carries the same feed its parameters do, so the narrowing
- * control is the repository picker rather than a box to type a name into.
+ * A subscriber narrows on these — "only this repository" — and it does so by
+ * matching what a delivery carries, which is why declaring the payload
+ * honestly is the whole of this app's part in it. Which of them are worth
+ * OFFERING as a filter is the subscriber's own judgment about its own surface,
+ * and it was briefly a flag here; a `title` is not a question with a fixed
+ * answer and a `number` names one issue forever, but neither of those is a
+ * fact about GitHub.
  */
 const SUBJECT: readonly EndpointReturn[] = [
-  {
-    ...value("repository", "string", "Repository", "Repository", "Repositorio", "Dépôt"),
-    filter: true,
-    source: { endpoint: READ_IDS.listRepositories, values: "names" },
-  },
-  {
-    ...value("owner", "string", "Owner", "Inhaber", "Propietario", "Propriétaire"),
-    filter: true,
-  },
+  value("repository", "string", "Repository", "Repository", "Repositorio", "Dépôt"),
+  value("owner", "string", "Owner", "Inhaber", "Propietario", "Propriétaire"),
   value("number", "int", "Number", "Nummer", "Número", "Numéro"),
   value("title", "string", "Title", "Titel", "Título", "Titre"),
   value("url", "url", "Link", "Link", "Enlace", "Lien"),
-  { ...value("author", "string", "Author", "Autor", "Autor", "Auteur"), filter: true },
+  value("author", "string", "Author", "Autor", "Autor", "Auteur"),
 ];
 
 const PER_DELIVERY: Record<string, { group: string; carries: EndpointReturn }> = {

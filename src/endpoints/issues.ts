@@ -32,9 +32,7 @@ import {
   URL_OUT,
   WRITE_IDS,
   ISSUE_IDENTITY,
-  choice,
   declare,
-  fed,
   many,
   param,
   pick,
@@ -254,11 +252,7 @@ export const findIssues: Read = {
       REPO,
       pick(
         "state",
-        [
-          choice("open", "Open", "Offen", "Abiertas", "Ouverts"),
-          choice("closed", "Closed", "Geschlossen", "Cerradas", "Fermés"),
-          choice("all", "Any", "Beliebig", "Cualquiera", "Tous"),
-        ],
+        ["open", "closed", "all"],
         "State",
         "Status",
         "Estado",
@@ -494,10 +488,7 @@ export const closeIssue: Write = {
       NUMBER,
       pick(
         "reason",
-        [
-          choice("completed", "Completed", "Erledigt", "Completada", "Terminé"),
-          choice("not_planned", "Not planned", "Nicht geplant", "No planificada", "Non planifié"),
-        ],
+        ["completed", "not_planned"],
         "Reason",
         "Grund",
         "Motivo",
@@ -568,27 +559,14 @@ export const label: Write = {
     group: "issues",
     actors: ["member"],
     requires: { all_of: ["workspace", "account"] },
-    // Both fed from the repository above, which is the shape a source
-    // declaration exists for: a repository's labels are that repository's, and
-    // an editor asking for them without saying which would get nothing.
     params: [
       REPO,
       NUMBER,
-      fed(
-        several(
-          param("add", "string", "Labels to add", "Hinzuzufügende Labels", "Etiquetas a añadir", "Étiquettes à ajouter")
-        ),
-        READ_IDS.listLabels,
-        "names",
-        { feeds: { repo: "repo" } }
+      several(
+        param("add", "string", "Labels to add", "Hinzuzufügende Labels", "Etiquetas a añadir", "Étiquettes à ajouter")
       ),
-      fed(
-        several(
-          param("remove", "string", "Labels to remove", "Zu entfernende Labels", "Etiquetas a quitar", "Étiquettes à retirer")
-        ),
-        READ_IDS.listLabels,
-        "names",
-        { feeds: { repo: "repo" } }
+      several(
+        param("remove", "string", "Labels to remove", "Zu entfernende Labels", "Etiquetas a quitar", "Étiquettes à retirer")
       ),
     ],
 
