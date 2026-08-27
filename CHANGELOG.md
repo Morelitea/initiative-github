@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.7.0] — 2026-08-27
 
 ### A vendor flow that ends on a page, not in a 500
 
