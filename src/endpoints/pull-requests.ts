@@ -26,8 +26,11 @@ import {
   UPDATED_OUT,
   URL_OUT,
   WRITE_IDS,
+  ISSUE_IDENTITY,
+  choice,
   param,
   pick,
+  several,
   text,
   value,
 } from "../vocabulary.js";
@@ -124,7 +127,12 @@ export const findPullRequests: Read = {
       REPO,
       pick(
         "state",
-        ["open", "closed", "merged", "all"],
+        [
+          choice("open", "Open", "Offen", "Abiertas", "Ouvertes"),
+          choice("closed", "Closed", "Geschlossen", "Cerradas", "Fermées"),
+          choice("merged", "Merged", "Gemergt", "Fusionadas", "Fusionnées"),
+          choice("all", "Any", "Beliebig", "Cualquiera", "Toutes"),
+        ],
         "State",
         "Status",
         "Estado",
@@ -319,10 +327,16 @@ export const requestReview: Write = {
     params: [
       REPO,
       NUMBER,
-      param("reviewers", "string", "Reviewers", "Reviewer", "Revisores", "Relecteurs"),
-      param("team_reviewers", "string", "Team reviewers", "Team-Reviewer", "Equipos revisores", "Équipes relectrices"),
+      several(param("reviewers", "string", "Reviewers", "Reviewer", "Revisores", "Relecteurs")),
+      several(
+        param("team_reviewers", "string", "Team reviewers", "Team-Reviewer", "Equipos revisores", "Équipes relectrices")
+      ),
     ],
-    returns: [NUMBER_OUT, LINK_OUT],
+    // A pull request is an issue to GitHub's own API, and to this identity for
+    // the same reason: a flow watching "a review was requested" is watching the
+    // same numbered thing the write touched.
+    returns: [REPO_OUT, NUMBER_OUT, LINK_OUT],
+    identity: ISSUE_IDENTITY,
   },
 
   async run(actor, workspace, params) {
@@ -347,6 +361,13 @@ export const requestReview: Write = {
       }
     );
     if (failed(answer)) return answer;
-    return { actor: actor.kind, result: identifiers(answer, ["number", "html_url"]) };
+    return {
+      actor: actor.kind,
+      result: {
+        repository: place.repo,
+        number,
+        ...identifiers(answer, ["html_url"]),
+      },
+    };
   },
 };

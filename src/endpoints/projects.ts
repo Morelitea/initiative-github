@@ -12,6 +12,7 @@ import {
   TOTAL_OUT,
   UNAVAILABLE,
   WRITE_IDS,
+  fed,
   many,
   param,
   text,
@@ -111,6 +112,122 @@ export const listProjects: Read = {
   },
 };
 
+/**
+ * Which single-select fields a board has.
+ *
+ * Added for the value sources, and it earns its place: "Move a project card"
+ * asks for a field id and then for one of that field's values, and neither had
+ * anywhere to come from — `list-project-options` already answered the VALUES,
+ * but only once you knew which field, which meant typing a field name from
+ * memory to find out what the fields were called.
+ *
+ * Two parallel lists, ids beside names, because a Projects v2 field id is an
+ * opaque node id and a menu of those is unreadable.
+ */
+export const listProjectFields: Read = {
+  declaration: {
+    id: READ_IDS.listProjectFields,
+    direction: "read",
+    label: text("Project fields", "Projektfelder", "Campos de proyecto", "Champs de projet"),
+    description: text(
+      "The single-select fields one board has — its columns, and anything else set that way.",
+      "Die Einfachauswahl-Felder eines Boards — seine Spalten und alles andere dieser Art.",
+      "Los campos de selección única de un tablero: sus columnas y cualquier otro similar.",
+      "Les champs à choix unique d'un tableau — ses colonnes, et tout autre du même type."
+    ),
+    group: "projects",
+    actors: ["member"],
+    visibility: "member",
+    cache_ttl_seconds: 300,
+
+    params: [PROJECT_ID],
+    returns: [
+      many("ids", "string", "Fields", "Felder", "Campos", "Champs"),
+      many("names", "string", "Field names", "Feldnamen", "Nombres de campos", "Noms des champs"),
+      COUNT_OUT,
+      UNAVAILABLE,
+    ],
+    requires: { all_of: ["workspace", "account"] },
+  },
+
+  async run(caller: Caller, params: URLSearchParams) {
+    const found = await singleSelectFields(caller, params);
+    if ("unavailable" in found) return found;
+    return {
+      ids: found.fields.map((field) => field.id),
+      names: found.fields.map((field) => field.name ?? ""),
+      count: found.fields.length,
+    };
+  },
+};
+
+/**
+ * One board's single-select fields, or why there are none to give.
+ *
+ * Shared by the two reads above and below rather than duplicated, because they
+ * ask the same question of GitHub and apply the same containment: a node id
+ * names a board outright, so without the owner check either read would reach
+ * any board the member is on, which is not the same set as what this install
+ * is about.
+ */
+async function singleSelectFields(
+  caller: Caller,
+  params: URLSearchParams
+): Promise<
+  | { fields: Array<{ id: string; name?: string; options?: Array<{ id?: string; name?: string }> }> }
+  | { unavailable: string }
+> {
+  const where = await connected(caller);
+  if ("unavailable" in where) return where;
+  const { token, workspace } = where;
+
+  const projectId = readText(params, "project_id");
+  if (!projectId) return { unavailable: "project-required" };
+
+  const answer = await graphql<{
+    node: {
+      owner?: { login?: string } | null;
+      fields: Connection<{
+        id?: string;
+        name?: string;
+        options?: Array<{ id?: string; name?: string }>;
+      }>;
+    } | null;
+  }>(
+    token,
+    `query Fields($project: ID!, $first: Int!) {
+       node(id: $project) {
+         ... on ProjectV2 {
+           owner {
+             ... on Organization { login }
+             ... on User { login }
+           }
+           fields(first: $first) {
+             nodes { ... on ProjectV2SingleSelectField { id name options { id name } } }
+           }
+         }
+       }
+     }`,
+    { project: projectId, first: PAGE }
+  );
+  if (empty(answer)) return answer;
+
+  const board = answer.body.node;
+  if (!board) return { unavailable: "no-such-project" };
+
+  const owner = board.owner?.login;
+  if (typeof owner !== "string" || owner.toLowerCase() !== workspace.owner.toLowerCase()) {
+    return { unavailable: "project-not-listed" };
+  }
+
+  return {
+    fields: rows(board.fields).filter(
+      (candidate): candidate is { id: string; name?: string; options?: Array<{ id?: string; name?: string }> } =>
+        typeof candidate.id === "string"
+    ),
+  };
+}
+
 export const listProjectOptions: Read = {
   declaration: {
     id: READ_IDS.listProjectOptions,
@@ -134,7 +251,12 @@ export const listProjectOptions: Read = {
 
     params: [
       PROJECT_ID,
-      param("field", "string", "Field", "Feld", "Campo", "Champ"),
+      fed(
+        param("field", "string", "Field", "Feld", "Campo", "Champ"),
+        READ_IDS.listProjectFields,
+        "ids",
+        { labels: "names", feeds: { project_id: "project_id" } }
+      ),
     ],
     returns: [
       value("field_id", "string", "Field", "Feld", "Campo", "Champ"),
@@ -147,57 +269,17 @@ export const listProjectOptions: Read = {
   },
 
   async run(caller: Caller, params: URLSearchParams) {
-    const where = await connected(caller);
-    if ("unavailable" in where) return where;
-    const { token, workspace } = where;
-
-    const projectId = readText(params, "project_id");
-    if (!projectId) return { unavailable: "project-required" };
     const wanted = readText(params, "field");
     if (!wanted) return { unavailable: "field-required" };
 
-    const answer = await graphql<{
-      node: {
-        owner?: { login?: string } | null;
-        fields: Connection<{
-          id?: string;
-          name?: string;
-          options?: Array<{ id?: string; name?: string }>;
-        }>;
-      } | null;
-    }>(
-      token,
-      `query Fields($project: ID!, $first: Int!) {
-         node(id: $project) {
-           ... on ProjectV2 {
-             owner {
-               ... on Organization { login }
-               ... on User { login }
-             }
-             fields(first: $first) {
-               nodes { ... on ProjectV2SingleSelectField { id name options { id name } } }
-             }
-           }
-         }
-       }`,
-      { project: projectId, first: PAGE }
-    );
-    if (empty(answer)) return answer;
+    const found = await singleSelectFields(caller, params);
+    if ("unavailable" in found) return found;
 
-    const board = answer.body.node;
-    if (!board) return NOT_FOUND;
-
-    const owner = board.owner?.login;
-    // A node id names a board outright, so without this the read would reach any
-    // board the member is on — not the same set as what this install is about.
-    if (typeof owner !== "string" || owner.toLowerCase() !== workspace.owner.toLowerCase()) {
-      return { unavailable: "project-not-listed" };
-    }
-
-    const field = rows(board.fields).find(
+    // By id or by name: the picker sends an id, and a stored automation
+    // written before there was a picker sends the name somebody typed.
+    const field = found.fields.find(
       (candidate) =>
-        typeof candidate.id === "string" &&
-        (candidate.id === wanted || (candidate.name ?? "").toLowerCase() === wanted.toLowerCase())
+        candidate.id === wanted || (candidate.name ?? "").toLowerCase() === wanted.toLowerCase()
     );
     if (!field) return { unavailable: "no-such-field" };
 
@@ -309,14 +391,36 @@ export const moveProjectItem: Write = {
     actors: ["member"],
 
     requires: { all_of: ["account"] },
+    // The chain this vocabulary exists for: a board, then that board's fields,
+    // then that field's values. Each is fed from the one above it, and none of
+    // them could be said before a parameter could name a read of ours.
+    //
+    // `item_id` is the one left plain, and deliberately: a card is found by
+    // "Find a project card" upstream and bound from its result, so a menu of
+    // every card on a board would be offering the wrong gesture.
     params: [
-      param("project_id", "string", "Project", "Projekt", "Proyecto", "Projet"),
+      PROJECT_ID,
       param("item_id", "string", "Card", "Karte", "Tarjeta", "Carte"),
-      param("field_id", "string", "Field", "Feld", "Campo", "Champ"),
-      param("option_id", "string", "Value", "Wert", "Valor", "Valeur"),
+      fed(
+        param("field_id", "string", "Field", "Feld", "Campo", "Champ"),
+        READ_IDS.listProjectFields,
+        "ids",
+        { labels: "names", feeds: { project_id: "project_id" } }
+      ),
+      fed(
+        param("option_id", "string", "Value", "Wert", "Valor", "Valeur"),
+        READ_IDS.listProjectOptions,
+        "option_ids",
+        { labels: "option_names", feeds: { project_id: "project_id", field: "field_id" } }
+      ),
     ],
 
     returns: [value("item_id", "string", "Card", "Karte", "Tarjeta", "Carte")],
+    // A card is identified by its own node id and nothing else — no repository,
+    // no number. Declared even though no emission here is about a card yet:
+    // what it costs is one line, and what it buys is that an automation
+    // service can name what this write touched at all.
+    identity: { kind: "project_card", key: ["item_id"] },
   },
 
   async run(actor, workspace, params) {

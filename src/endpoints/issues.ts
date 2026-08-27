@@ -31,10 +31,14 @@ import {
   UPDATED_OUT,
   URL_OUT,
   WRITE_IDS,
+  ISSUE_IDENTITY,
+  choice,
   declare,
+  fed,
   many,
   param,
   pick,
+  several,
   text,
   value,
 } from "../vocabulary.js";
@@ -250,7 +254,11 @@ export const findIssues: Read = {
       REPO,
       pick(
         "state",
-        ["open", "closed", "all"],
+        [
+          choice("open", "Open", "Offen", "Abiertas", "Ouverts"),
+          choice("closed", "Closed", "Geschlossen", "Cerradas", "Fermés"),
+          choice("all", "Any", "Beliebig", "Cualquiera", "Tous"),
+        ],
         "State",
         "Status",
         "Estado",
@@ -333,7 +341,13 @@ async function setState(
     }
   );
   if (failed(answer)) return answer;
-  return { actor: actor.kind, result: identifiers(answer, ["number", "state", "html_url"]) };
+  return {
+    actor: actor.kind,
+    result: {
+      repository: place.repo,
+      ...identifiers(answer, ["number", "state", "html_url"]),
+    },
+  };
 }
 
 export const openIssue: Write = {
@@ -352,17 +366,23 @@ export const openIssue: Write = {
     requires: { all_of: ["workspace", "account"] },
     params: [
       REPO,
-      param("title", "string", "Title", "Titel", "Título", "Titre"),
+      { ...param("title", "string", "Title", "Titel", "Título", "Titre"), required: true },
       param("body", "string", "Body", "Text", "Cuerpo", "Corps"),
-      param("labels", "string", "Labels", "Labels", "Etiquetas", "Étiquettes"),
-      param("assignees", "string", "Assignees", "Zuständige", "Asignados", "Assignés"),
+      LABELS_IN,
+      several(param("assignees", "string", "Assignees", "Zuständige", "Asignados", "Assignés")),
     ],
 
+    // `repository` rides along so the identity below can be built. It costs a
+    // string on a payload that already carries three and it is the difference
+    // between an automation service being able to tell this write apart from
+    // another repository's and not.
     returns: [
+      REPO_OUT,
       NUMBER_OUT,
       LINK_OUT,
       value("id", "int", "GitHub id", "GitHub-ID", "ID de GitHub", "Identifiant GitHub"),
     ],
+    identity: ISSUE_IDENTITY,
   },
 
   async run(actor, workspace, params) {
@@ -381,7 +401,10 @@ export const openIssue: Write = {
         : {}),
     });
     if (failed(answer)) return answer;
-    return { actor: actor.kind, result: identifiers(answer, ["number", "html_url", "id"]) };
+    return {
+      actor: actor.kind,
+      result: { repository: place.repo, ...identifiers(answer, ["number", "html_url", "id"]) },
+    };
   },
 };
 
@@ -400,9 +423,15 @@ export const comment: Write = {
     actors: ["member"],
     requires: { all_of: ["workspace", "account"] },
 
-    params: [REPO, NUMBER, param("body", "string", "Body", "Text", "Cuerpo", "Corps")],
+    params: [
+      REPO,
+      NUMBER,
+      { ...param("body", "string", "Body", "Text", "Cuerpo", "Corps"), required: true },
+    ],
 
     returns: [
+      REPO_OUT,
+      NUMBER_OUT,
       value(
         "id",
         "int",
@@ -413,6 +442,10 @@ export const comment: Write = {
       ),
       LINK_OUT,
     ],
+    // A comment is a change to the ISSUE, which is what a flow watching issues
+    // would otherwise re-fire on. Naming the issue rather than minting a
+    // "comment" kind is what makes that suppression work at all.
+    identity: ISSUE_IDENTITY,
   },
 
   async run(actor, workspace, params) {
@@ -431,7 +464,14 @@ export const comment: Write = {
       { body }
     );
     if (failed(answer)) return answer;
-    return { actor: actor.kind, result: identifiers(answer, ["id", "html_url"]) };
+    return {
+      actor: actor.kind,
+      result: {
+        repository: place.repo,
+        number,
+        ...identifiers(answer, ["id", "html_url"]),
+      },
+    };
   },
 };
 
@@ -452,15 +492,26 @@ export const closeIssue: Write = {
     params: [
       REPO,
       NUMBER,
-      {
-        key: "reason",
-        type: "select",
-        options: ["completed", "not_planned"],
-        label: { en: "Reason", de: "Grund", es: "Motivo", fr: "Raison" },
-      },
+      pick(
+        "reason",
+        [
+          choice("completed", "Completed", "Erledigt", "Completada", "Terminé"),
+          choice("not_planned", "Not planned", "Nicht geplant", "No planificada", "Non planifié"),
+        ],
+        "Reason",
+        "Grund",
+        "Motivo",
+        "Raison"
+      ),
     ],
 
-    returns: [NUMBER_OUT, value("state", "string", "State", "Status", "Estado", "État"), LINK_OUT],
+    returns: [
+      REPO_OUT,
+      NUMBER_OUT,
+      value("state", "string", "State", "Status", "Estado", "État"),
+      LINK_OUT,
+    ],
+    identity: ISSUE_IDENTITY,
   },
 
   async run(actor, workspace, params) {
@@ -489,7 +540,13 @@ export const reopenIssue: Write = {
     requires: { all_of: ["workspace", "account"] },
     params: [REPO, NUMBER],
 
-    returns: [NUMBER_OUT, value("state", "string", "State", "Status", "Estado", "État"), LINK_OUT],
+    returns: [
+      REPO_OUT,
+      NUMBER_OUT,
+      value("state", "string", "State", "Status", "Estado", "État"),
+      LINK_OUT,
+    ],
+    identity: ISSUE_IDENTITY,
   },
 
   async run(actor, workspace, params) {
@@ -511,14 +568,32 @@ export const label: Write = {
     group: "issues",
     actors: ["member"],
     requires: { all_of: ["workspace", "account"] },
+    // Both fed from the repository above, which is the shape a source
+    // declaration exists for: a repository's labels are that repository's, and
+    // an editor asking for them without saying which would get nothing.
     params: [
       REPO,
       NUMBER,
-      param("add", "string", "Labels to add", "Hinzuzufügende Labels", "Etiquetas a añadir", "Étiquettes à ajouter"),
-      param("remove", "string", "Labels to remove", "Zu entfernende Labels", "Etiquetas a quitar", "Étiquettes à retirer"),
+      fed(
+        several(
+          param("add", "string", "Labels to add", "Hinzuzufügende Labels", "Etiquetas a añadir", "Étiquettes à ajouter")
+        ),
+        READ_IDS.listLabels,
+        "names",
+        { feeds: { repo: "repo" } }
+      ),
+      fed(
+        several(
+          param("remove", "string", "Labels to remove", "Zu entfernende Labels", "Etiquetas a quitar", "Étiquettes à retirer")
+        ),
+        READ_IDS.listLabels,
+        "names",
+        { feeds: { repo: "repo" } }
+      ),
     ],
 
-    returns: [NUMBER_OUT],
+    returns: [REPO_OUT, NUMBER_OUT],
+    identity: ISSUE_IDENTITY,
   },
 
   async run(actor, workspace, params) {
@@ -545,10 +620,12 @@ export const label: Write = {
 
       if (failed(answer) && answer.status !== 404) return answer;
     }
-    if (!add.length) return { actor: actor.kind, result: { number } };
+    if (!add.length) {
+      return { actor: actor.kind, result: { repository: place.repo, number } };
+    }
 
     const answer = await call(actor, "POST", `${base}/${number}/labels`, { labels: add });
     if (failed(answer)) return answer;
-    return { actor: actor.kind, result: { number } };
+    return { actor: actor.kind, result: { repository: place.repo, number } };
   },
 };

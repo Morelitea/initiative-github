@@ -1,6 +1,11 @@
-import type { Endpoint, EndpointReturn, LocalizedText } from "initiative-app-kit";
+import type {
+  Endpoint,
+  EndpointIdentity,
+  EndpointReturn,
+  LocalizedText,
+} from "initiative-app-kit";
 
-import { declare } from "../vocabulary.js";
+import { ISSUE_IDENTITY, READ_IDS, declare } from "../vocabulary.js";
 
 function text(en: string, de: string, es: string, fr: string): LocalizedText {
   return { en, de, es, fr };
@@ -75,13 +80,39 @@ const PUBLISHED: Record<string, Record<string, Announcement>> = {
   },
 };
 
+/**
+ * What every emission here carries, and which of it a subscriber may narrow on.
+ *
+ * `filter` is the answer to the thing this app could not say before: "when an
+ * issue is opened" meant *in any repository this guild watches*, and there was
+ * nowhere to say otherwise — an emit endpoint carries no parameters, because
+ * nobody calls it. What it DECLARES it carries is the honest place to narrow
+ * from, and a subscriber matches at delivery rather than after a run has
+ * already started.
+ *
+ * Three of the six, and the other three are deliberate omissions. `repository`
+ * and `owner` are where the work is; `author` is who did it, which is the
+ * second thing anybody wants ("only mine", "only Dependabot's"). `title` and
+ * `url` are not questions with a fixed answer, and `number` names one issue
+ * forever — a trigger narrowed to it would fire at most once.
+ *
+ * `repository` carries the same feed its parameters do, so the narrowing
+ * control is the repository picker rather than a box to type a name into.
+ */
 const SUBJECT: readonly EndpointReturn[] = [
-  value("repository", "string", "Repository", "Repository", "Repositorio", "Dépôt"),
-  value("owner", "string", "Owner", "Inhaber", "Propietario", "Propriétaire"),
+  {
+    ...value("repository", "string", "Repository", "Repository", "Repositorio", "Dépôt"),
+    filter: true,
+    source: { endpoint: READ_IDS.listRepositories, values: "names" },
+  },
+  {
+    ...value("owner", "string", "Owner", "Inhaber", "Propietario", "Propriétaire"),
+    filter: true,
+  },
   value("number", "int", "Number", "Nummer", "Número", "Numéro"),
   value("title", "string", "Title", "Titel", "Título", "Titre"),
   value("url", "url", "Link", "Link", "Enlace", "Lien"),
-  value("author", "string", "Author", "Autor", "Autor", "Auteur"),
+  { ...value("author", "string", "Author", "Autor", "Autor", "Auteur"), filter: true },
 ];
 
 const PER_DELIVERY: Record<string, { group: string; carries: EndpointReturn }> = {
@@ -109,6 +140,13 @@ export const EMIT_ENDPOINTS: readonly Endpoint[] = Object.entries(PUBLISHED)
         description: announcement.description,
         group: PER_DELIVERY[event].group,
         returns: [...SUBJECT, PER_DELIVERY[event].carries],
+        // The same identity the write endpoints declare, which is the whole
+        // point of it: `open-issue` and `issue-opened` describe an issue the
+        // same way, so an automation service can tell that the second is an
+        // echo of the first and not fire the flow that caused it. Written once
+        // in vocabulary.ts because two ends agreeing by hand is two ends
+        // drifting apart.
+        identity: ISSUE_IDENTITY,
       })
     )
   )
@@ -119,9 +157,18 @@ export const EMITTED: readonly string[] = EMIT_ENDPOINTS.map((endpoint) => endpo
 export const SUBSCRIBED_EVENTS: readonly string[] = Object.keys(PUBLISHED).sort();
 
 export interface TranslatedEvent {
-    endpoint: string;
-    repo: string;
+  endpoint: string;
+  repo: string;
   payload: Record<string, unknown>;
+  /**
+   * What this emission is about, as the declaration behind it says.
+   *
+   * Carried out of the translation rather than looked up at the point of
+   * publish, because the endpoint is settled here and the emitter holds a
+   * store rather than a manifest. `subjectOf` in the kit builds the change's
+   * `subject` from it.
+   */
+  identity: EndpointIdentity;
 }
 
 function textOf(source: unknown, key: string): string | undefined {
@@ -183,5 +230,5 @@ export function translate(
       : [];
   }
 
-  return { endpoint: announcement.id, repo, payload: base };
+  return { endpoint: announcement.id, repo, payload: base, identity: ISSUE_IDENTITY };
 }

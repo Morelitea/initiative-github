@@ -15,16 +15,24 @@ ghcr.io/morelitea/initiative-github:latest
 
 | | |
 |---|---|
-| **Ten reads** | Repositories · labels · one issue · find issues · one pull request · find pull requests · Dependabot alerts · project boards · a board's field values · an issue's card. |
+| **Eleven reads** | Repositories · labels · one issue · find issues · one pull request · find pull requests · Dependabot alerts · project boards · a board's fields · a field's values · an issue's card. |
 | **Seven writes** | Open an issue, comment, close, reopen, label, request a review, move a Projects v2 card — each performed as the member whose automation asked for it. |
 | **Three announcements** | An issue opened, an issue closed, a review requested. |
 | **Four widgets** | Open issues · pull requests waiting on your review · Dependabot alerts by severity · a fortnight of opens against closes. |
 | **A ready-made dashboard** | *GitHub overview*, arranging all four so there is something to look at without assembling it. |
 
-All twenty are **endpoints**: one list this app declares, one address they are
-called at, and the id says which one you want. A widget filling a tile and an
+All twenty-one are **endpoints**: one list this app declares, one address they
+are called at, and the id says which one you want. A widget filling a tile and an
 automation asking the app to act reach the same surface, and what separates them
 is who they prove themselves as.
+
+Most of the reads do a second job: they are what **fills the pickers** on every
+other endpoint's parameters. A parameter names one of them as its `source`, and
+a consumer calls it as the person editing — so "which repository" is a list
+rather than a name typed from memory, "which labels" is that repository's
+labels, and a board's fields and one field's values chain the same way. That is
+work no consumer could have done: an automation editor holds no GitHub
+credential, so it can only fill pickers over its own data.
 
 A read is a question at GitHub rather than the shape of a tile — the
 repository's own vocabulary, narrowed by what GitHub narrows it by. So a step in

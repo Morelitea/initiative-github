@@ -290,14 +290,15 @@ describe("the choices this app makes", () => {
     // one has to accept it, or the ones that do not are stuck on whatever the
     // install defaults to.
     //
-    // Three do not resolve a repository, and they are listed rather than
-    // detected so that a fourth cannot join them quietly. Two are about the
+    // Four do not resolve a repository, and they are listed rather than
+    // detected so that a fifth cannot join them quietly. Two are about the
     // account — which repositories there are, and which boards it has — and the
-    // third names a board by id. A `repo` on any of them would be a parameter
-    // accepted and ignored.
+    // other two name a board by id. A `repo` on any of them would be a
+    // parameter accepted and ignored.
     const ACCOUNT_WIDE = [
       READ_IDS.listRepositories,
       READ_IDS.listProjects,
+      READ_IDS.listProjectFields,
       READ_IDS.listProjectOptions,
     ];
     for (const read of (manifest.endpoints ?? []).filter((e) => e.direction === "read")) {
@@ -428,18 +429,123 @@ describe("what an endpoint says about itself", () => {
     }
   });
 
-  it("claims no picker, because no consumer could populate one", () => {
-    // A picker names one of the CONSUMER's own controls and the vocabulary is
-    // open — but a consumer only offers what it can fill, and the automation
-    // editor fills its six from Initiative's own data. It holds no GitHub
-    // credential, so it can list nothing this app asks for.
+  it("names no Initiative resource, because none of these are one", () => {
+    // `resource` says the value is a row inside INITIATIVE, and a consumer
+    // draws the picker it has for that kind. Nothing this app asks for is one:
+    // a repository, an issue number and a Projects v2 board all live at
+    // GitHub, and the consumer holds no GitHub credential.
     //
-    // `project_id` is the trap: it names a Projects v2 board rather than an
-    // Initiative project, so the picker that looks right is the wrong one.
+    // `project_id` is the trap. It names a Projects v2 board rather than an
+    // Initiative project, so the picker that looks right is the wrong one and
+    // would fill the field with an id this app cannot resolve.
     for (const endpoint of endpoints()) {
       for (const param of endpoint.params ?? []) {
-        expect(param.picker, `${endpoint.id}/${param.key}`).toBeUndefined();
+        expect(param.resource, `${endpoint.id}/${param.key}`).toBeUndefined();
       }
+    }
+  });
+
+  it("feeds every parameter whose values this app can answer", () => {
+    // The other half of the same fact: a consumer cannot fill these, and this
+    // app can. Before a parameter could name a read of ours, "which
+    // repository" was a text box on thirteen of these twenty endpoints.
+    const fed = new Map<string, string>();
+    for (const endpoint of endpoints()) {
+      for (const param of endpoint.params ?? []) {
+        if (param.source) fed.set(`${endpoint.id}/${param.key}`, param.source.endpoint);
+      }
+    }
+    // Every `repo` is fed, on every endpoint that takes one.
+    const repos = [...fed.keys()].filter((where) => where.endsWith("/repo"));
+    const takesRepo = endpoints().filter((endpoint) =>
+      (endpoint.params ?? []).some((param) => param.key === "repo")
+    );
+    expect(repos.length).toBe(takesRepo.length);
+    expect(takesRepo.length).toBeGreaterThan(10);
+  });
+
+  it("feeds the dependent ones from the sibling that decides them", () => {
+    // A repository's labels are that repository's, and a board field's values
+    // are that field's. A source that could not pass a sibling's answer would
+    // have served the few parameters that stand alone and none of these.
+    const dependent = endpoints()
+      .flatMap((endpoint) => (endpoint.params ?? []).map((param) => [endpoint.id, param] as const))
+      .filter(([, param]) => param.source?.params !== undefined);
+
+    expect(dependent.length).toBeGreaterThan(0);
+    for (const [id, param] of dependent) {
+      for (const [key, argument] of Object.entries(param.source?.params ?? {})) {
+        expect(argument.from, `${id}/${param.key}/${key}`).toBeTruthy();
+      }
+    }
+  });
+
+  it("holds several values wherever GitHub takes several", () => {
+    // These were comma-separated strings by convention, which a consumer could
+    // not validate, complete, or draw as anything but a box about commas.
+    const lists = endpoints().flatMap((endpoint) =>
+      (endpoint.params ?? []).filter((param) => param.list).map((param) => param.key)
+    );
+    expect(new Set(lists)).toEqual(
+      new Set(["labels", "assignees", "add", "remove", "reviewers", "team_reviewers"])
+    );
+  });
+
+  it("says what a write touched, and says it the same way an emission does", () => {
+    // The join that closes echo suppression, and the only thing about it that
+    // matters: an automation service can keep a change this app made from
+    // firing that same automation again ONLY if `open-issue` and
+    // `issue-opened` describe an issue identically. Two `kind`s that disagreed
+    // by a word would look configured and suppress nothing.
+    const byKind = new Map<string, Set<string>>();
+    for (const endpoint of endpoints()) {
+      if (!endpoint.identity) continue;
+      const shapes = byKind.get(endpoint.identity.kind) ?? new Set();
+      shapes.add(JSON.stringify(endpoint.identity.key));
+      byKind.set(endpoint.identity.kind, shapes);
+    }
+    // One key per kind, whoever declares it.
+    for (const [kind, shapes] of byKind) {
+      expect([...shapes], kind).toHaveLength(1);
+    }
+    // And the issue kind is declared on both sides of the wire, which is what
+    // makes it a join rather than a label.
+    const issueSides = new Set(
+      endpoints()
+        .filter((endpoint) => endpoint.identity?.kind === "issue")
+        .map((endpoint) => endpoint.direction)
+    );
+    expect(issueSides).toEqual(new Set(["write", "emit"]));
+  });
+
+  it("declares an identity on every write and every emission", () => {
+    for (const endpoint of endpoints()) {
+      if (endpoint.direction === "read") {
+        expect(endpoint.identity, endpoint.id).toBeUndefined();
+      } else {
+        expect(endpoint.identity, endpoint.id).toBeDefined();
+      }
+    }
+  });
+
+  it("lets a subscriber narrow an emission to work it cares about", () => {
+    // "When an issue is opened" meant in any repository this guild watches,
+    // and there was nowhere to say otherwise — an emit endpoint carries no
+    // parameters, because nobody calls it.
+    for (const endpoint of endpoints().filter((e) => e.direction === "emit")) {
+      const filters = (endpoint.returns ?? []).filter((value) => value.filter);
+      expect(filters.map((value) => value.key), endpoint.id).toEqual([
+        "repository",
+        "owner",
+        "author",
+      ]);
+    }
+  });
+
+  it("feeds the repository narrowing from the same list its parameters use", () => {
+    for (const endpoint of endpoints().filter((e) => e.direction === "emit")) {
+      const repository = (endpoint.returns ?? []).find((value) => value.key === "repository");
+      expect(repository?.source?.values, endpoint.id).toBe("names");
     }
   });
 });

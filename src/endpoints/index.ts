@@ -15,6 +15,7 @@ import {
 } from "./issues.js";
 import {
   findProjectItem,
+  listProjectFields,
   listProjectOptions,
   listProjects,
   moveProjectItem,
@@ -52,6 +53,7 @@ export const READS: readonly Read[] = [
   findPullRequests,
   listAlerts,
   listProjects,
+  listProjectFields,
   listProjectOptions,
   findProjectItem,
 ];

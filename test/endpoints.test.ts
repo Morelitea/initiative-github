@@ -228,7 +228,11 @@ describe("what it does at GitHub", () => {
       actor: "member",
       // Identifiers only. The issue body went to GitHub; it does not come back
       // through this app to whoever asked.
-      result: { number: 42, html_url: "https://gh/42", id: 9 },
+      //
+      // `repository` is among them because the endpoint's `identity` names it:
+      // an automation service tells this write apart from another repository's
+      // by the pair, and it can only build one out of what comes back.
+      result: { repository: "widgets", number: 42, html_url: "https://gh/42", id: 9 },
     });
     expect(sent[0]).toMatchObject({
       url: "https://api.github.com/repos/acme/widgets/issues",
@@ -250,9 +254,11 @@ describe("what it does at GitHub", () => {
       body: "on it",
     });
 
+    // A comment is a change to the ISSUE, which is what its identity names —
+    // so a flow watching issues does not re-fire on a comment it left.
     expect(failed(result) === false && result).toEqual({
       actor: "installation",
-      result: { id: 5, html_url: "https://gh/c/5" },
+      result: { repository: "widgets", number: 812, id: 5, html_url: "https://gh/c/5" },
     });
     expect(sent[0].url).toBe("https://api.github.com/repos/acme/widgets/issues/812/comments");
   });
@@ -776,7 +782,7 @@ describe("what a read makes of the answer", () => {
 });
 
 describe("what a read says it hands back", () => {
-  /** The smallest call each read accepts, so the assertions cover all ten. */
+  /** The smallest call each read accepts, so the assertions cover every one. */
   const CALLS: Record<string, Record<string, string>> = {
     [READ_IDS.listRepositories]: {},
     [READ_IDS.listLabels]: {},
@@ -786,6 +792,7 @@ describe("what a read says it hands back", () => {
     [READ_IDS.findPullRequests]: {},
     [READ_IDS.listAlerts]: {},
     [READ_IDS.listProjects]: {},
+    [READ_IDS.listProjectFields]: { project_id: "PVT_1" },
     [READ_IDS.listProjectOptions]: { project_id: "PVT_1", field: "Status" },
     [READ_IDS.findProjectItem]: { project_id: "PVT_1", number: "7" },
   };

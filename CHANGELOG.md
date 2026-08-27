@@ -1,5 +1,68 @@
 # Changelog
 
+## [Unreleased]
+
+### Every parameter now says where its values come from
+
+`list-repositories` answered "which repositories can you see" a release ago,
+and nothing could point a parameter at it. Twenty-five parameters do now, in
+three chains: a repository from the account's list, a repository's labels from
+that repository, and a board's fields and one field's values from that board.
+Before this, "which repository" was a text box on thirteen of twenty endpoints
+and you had to know the right name.
+
+That was never something a consumer could have fixed. An automation editor
+fills its pickers from Initiative's own data and holds no GitHub credential —
+so it could offer a project picker and never a repository one, which is exactly
+why no parameter here carried the old `picker` hint. What changed is that a
+parameter can now name a **read of this app's own**, and be fed the sibling
+answer it depends on.
+
+**`list-project-fields` is new**, and it is the endpoint that chain needed:
+`list-project-options` already answered a field's values, but only once you
+knew which field, which meant typing a field name from memory to discover what
+the fields were called.
+
+### Six parameters hold a list, because they always did
+
+`labels`, `assignees`, `add`, `remove`, `reviewers` and `team_reviewers` were
+comma-separated strings by convention. A convention is not something a consumer
+can validate, complete, or draw as anything but a text box with a hint about
+commas. The value on the wire is unchanged — `paramList` accepted both already.
+
+### A subscriber can narrow an emission
+
+"When an issue is opened" meant *in any repository this install watches*, and
+there was nowhere to say otherwise: an emit endpoint carries no parameters,
+because nobody calls it. Each emission now marks `repository`, `owner` and
+`author` as things a subscriber may filter on, and `repository` carries the
+same repository feed its parameters do — so the narrowing is a picker rather
+than a name typed from memory. `title` and `url` are not questions with a fixed
+answer, and `number` names one issue forever.
+
+### Every write says what it touched, in the words its emission uses
+
+An automation service keeps a change an app made from firing that same
+automation again, and for an app there was no key at all: nothing said which
+returns identify the thing. `open-issue` and `issue-opened` now describe an
+issue the same way — a repository name and a number, written once in
+`vocabulary.ts` — so the two ends meet because one declaration produced both
+rather than because two ends agreed by hand. The `subject` on each delivery is
+built from it.
+
+Five write endpoints now return `repository` alongside their identifiers,
+because an address cannot be built out of values that never come back.
+
+### Smaller
+
+- `since` is a `datetime` rather than a string somebody types ISO-8601 into.
+- `limit` carries its real bounds and its real default, so the form opens
+  showing what the endpoint will actually do.
+- Every select's choices carry written labels in all four languages — "Not
+  planned" rather than `not_planned`.
+- `npm run manifest` fails if a string is missing one of the four languages
+  this app ships.
+
 ## [0.6.0] — 2026-08-26
 
 ### The callable surface is GitHub's API, not a set of tiles

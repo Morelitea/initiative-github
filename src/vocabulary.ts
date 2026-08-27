@@ -1,4 +1,10 @@
-import type { EndpointParam, EndpointReturn, LocalizedText } from "initiative-app-kit";
+import type {
+  EndpointIdentity,
+  EndpointParam,
+  EndpointReturn,
+  LocalizedText,
+  ValueSource,
+} from "initiative-app-kit";
 
 export const CONNECT_PATH = "/connect/github";
 
@@ -24,6 +30,7 @@ export function declare(name: string): string {
 export const READ_IDS = {
   listRepositories: declare("list-repositories"),
   listLabels: declare("list-labels"),
+  listProjectFields: declare("list-project-fields"),
   getIssue: declare("get-issue"),
   findIssues: declare("find-issues"),
   getPullRequest: declare("get-pull-request"),
@@ -59,6 +66,84 @@ export function param(
   return { key, type, label: text(en, de, es, fr) };
 }
 
+/**
+ * The same parameter, holding several values.
+ *
+ * These were comma-separated strings by convention until a parameter could say
+ * `list` — six of them across this manifest — which meant an automation editor
+ * could not validate one, could not complete one, and could not draw one as
+ * anything but a text box with a hint about commas. The value on the wire is
+ * unchanged for this app: `paramList` already accepted an array or a string.
+ */
+export function several(base: EndpointParam): EndpointParam {
+  return { ...base, list: true };
+}
+
+/**
+ * A parameter whose choices this app answers itself.
+ *
+ * The half of the vocabulary worth reading this file for. Every one of the
+ * twenty-seven parameters here wants a list GitHub can already give —
+ * repositories, labels, boards, board fields, the values of one of those
+ * fields — and until a parameter could name a read of ours, none of them could
+ * say so. There is nothing an automation editor could have done about that on
+ * its own: it holds no GitHub credential, so it can fill only pickers over
+ * Initiative's own data, which is why `resource` appears nowhere in this file.
+ *
+ * `feeds` is what makes the dependent ones work, and it is the majority case:
+ * labels are ONE repository's labels, a board field's options are ONE board's.
+ * A source that could not pass a sibling's value would have served the few
+ * parameters that stand alone.
+ */
+export function fed(
+  base: EndpointParam,
+  endpoint: string,
+  values: string,
+  options: { labels?: string; feeds?: Record<string, string> } = {}
+): EndpointParam {
+  const source: ValueSource = {
+    endpoint,
+    values,
+    ...(options.labels ? { labels: options.labels } : {}),
+    ...(options.feeds
+      ? {
+          params: Object.fromEntries(
+            Object.entries(options.feeds).map(([key, from]) => [key, { from }])
+          ),
+        }
+      : {}),
+  };
+  return { ...base, source };
+}
+
+/**
+ * What a write touched, or what an emission is about.
+ *
+ * One helper because the two have to AGREE: an automation service keeps a
+ * change this app made from firing that same automation again, and it can only
+ * do that if `open-issue` and `issue-opened` describe an issue the same way.
+ * Written once here rather than twice at the two ends.
+ *
+ * A repository name plus a number, because that is what identifies an issue on
+ * GitHub — the numeric `id` would be shorter and is not on the webhook payload
+ * this app translates, so the two ends could not have met on it.
+ */
+export const ISSUE_IDENTITY: EndpointIdentity = {
+  kind: "issue",
+  key: ["repository", "number"],
+};
+
+/** A choice with words on it, for a value somebody READS rather than types. */
+export function choice(
+  value: string,
+  en: string,
+  de: string,
+  es: string,
+  fr: string
+): { value: string; label: LocalizedText } {
+  return { value, label: text(en, de, es, fr) };
+}
+
 export function value(
   key: string,
   type: EndpointReturn["type"],
@@ -70,15 +155,49 @@ export function value(
   return { key, type, label: text(en, de, es, fr) };
 }
 
-export const REPO = param("repo", "string", "Repository", "Repository", "Repositorio", "Dépôt");
+/**
+ * Which repository, on thirteen of this app's twenty endpoints.
+ *
+ * The parameter that made the case for value sources. "A repository" is not
+ * something an automation editor has a control for and never sensibly will, so
+ * before this it was a text box you had to know the right name for — on more
+ * than half the endpoints here.
+ *
+ * It stays a plain `string` on the wire, and the reason matters: `resolveRepository`
+ * still accepts a bare name and still falls back to the workspace's single
+ * repository when the parameter is absent, so a stored automation that typed
+ * one keeps working and a one-repository install can leave it blank.
+ */
+export const REPO = fed(
+  param("repo", "string", "Repository", "Repository", "Repositorio", "Dépôt"),
+  READ_IDS.listRepositories,
+  "names"
+);
 
 export const NUMBER = param("number", "int", "Number", "Nummer", "Número", "Numéro");
 
-export const PROJECT_ID = param("project_id", "string", "Project", "Projekt", "Proyecto", "Projet");
+/**
+ * Which Projects v2 board.
+ *
+ * Deliberately NOT `resource: "projects"`, and this is the trap the resource
+ * vocabulary invites: this names a GitHub board, not an Initiative project, so
+ * the picker that looks right is the wrong one and would fill the field with
+ * an id this app cannot resolve. What it wants is the board list, which this
+ * app can answer and nobody else can.
+ *
+ * The values are opaque GraphQL node ids, so the titles carry the labels —
+ * otherwise the menu would be a column of base64.
+ */
+export const PROJECT_ID = fed(
+  param("project_id", "string", "Project", "Projekt", "Proyecto", "Projet"),
+  READ_IDS.listProjects,
+  "ids",
+  { labels: "titles" }
+);
 
 export function pick(
   key: string,
-  options: string[],
+  options: Array<string | { value: string; label: LocalizedText }>,
   en: string,
   de: string,
   es: string,
@@ -162,10 +281,33 @@ export const ROWS_OUT: EndpointReturn[] = [
   UNAVAILABLE,
 ];
 
-export const LABELS_IN = param("labels", "string", "Labels", "Labels", "Etiquetas", "Étiquettes");
+/**
+ * Labels, fed from the repository picked beside them.
+ *
+ * The dependent case, and the one that decides whether a source declaration is
+ * worth having: a repository's labels are that repository's. Eight of this
+ * app's parameters are in this shape.
+ */
+export const LABELS_IN = fed(
+  several(param("labels", "string", "Labels", "Labels", "Etiquetas", "Étiquettes")),
+  READ_IDS.listLabels,
+  "names",
+  { feeds: { repo: "repo" } }
+);
+
 export const SORT_IN = pick(
   "sort",
-  ["created", "updated", "comments"],
+  [
+    choice("created", "When it was opened", "Öffnungszeit", "Cuándo se abrió", "Date d'ouverture"),
+    choice(
+      "updated",
+      "When it last changed",
+      "Letzte Änderung",
+      "Última modificación",
+      "Dernière modification"
+    ),
+    choice("comments", "How many comments", "Anzahl Kommentare", "Número de comentarios", "Nombre de commentaires"),
+  ],
   "Order by",
   "Sortieren nach",
   "Ordenar por",
@@ -173,23 +315,42 @@ export const SORT_IN = pick(
 );
 export const DIRECTION_IN = pick(
   "direction",
-  ["desc", "asc"],
-  "Newest first",
-  "Neueste zuerst",
-  "Más recientes primero",
-  "Plus récents d'abord"
+  [
+    choice("desc", "Newest first", "Neueste zuerst", "Más recientes primero", "Plus récents d'abord"),
+    choice("asc", "Oldest first", "Älteste zuerst", "Más antiguos primero", "Plus anciens d'abord"),
+  ],
+  "Order",
+  "Reihenfolge",
+  "Orden",
+  "Ordre"
 );
-export const LIMIT_IN = param("limit", "int", "How many", "Wie viele", "Cuántos", "Combien");
 
-export const SINCE_IN = param("since", "string", "Since", "Seit", "Desde", "Depuis");
-export const SINCE_DAYS_IN = param(
-  "since_days",
-  "int",
-  "Days back",
-  "Tage zurück",
-  "Días atrás",
-  "Jours en arrière"
-);
+/**
+ * How many rows to bring back.
+ *
+ * The bounds are `readLimit`'s own, written here so the control carries them
+ * rather than silently clamping a number somebody typed — and the default is
+ * what the endpoint uses when the parameter is absent, so the form opens
+ * showing what it will actually do.
+ */
+export const LIMIT_IN: EndpointParam = {
+  ...param("limit", "int", "How many", "Wie viele", "Cuántos", "Combien"),
+  default: 30,
+  constraints: { min: 1, max: 100 },
+};
+
+/**
+ * Only what changed since an instant.
+ *
+ * A `string` until a parameter could be a `datetime`, which meant a text box
+ * somebody typed ISO-8601 into by hand. The value on the wire is the same
+ * string; what changed is that an editor now knows to draw a date and a time.
+ */
+export const SINCE_IN = param("since", "datetime", "Since", "Seit", "Desde", "Depuis");
+export const SINCE_DAYS_IN: EndpointParam = {
+  ...param("since_days", "int", "Days back", "Tage zurück", "Días atrás", "Jours en arrière"),
+  constraints: { min: 1 },
+};
 
 export const NUMBER_OUT = value("number", "int", "Number", "Nummer", "Número", "Numéro");
 

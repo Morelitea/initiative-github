@@ -107,6 +107,7 @@ async function publishActivity(
       guildId: install.guildId,
       appInstallId: install.appInstallId,
       endpoint: translated.endpoint,
+      identity: translated.identity,
       payload: translated.payload,
       deliveryKey: deliveryId,
     });
