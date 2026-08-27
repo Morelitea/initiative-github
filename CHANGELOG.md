@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.1] — 2026-08-26
 
 ### The manifest describes this app's API and nothing about how to draw it
 
@@ -42,6 +42,18 @@ The `subject` on each delivery is built from it.
 
 Five write endpoints now return `repository` alongside their identifiers,
 because an address cannot be built from values that never come back.
+
+### A return carries a label only where its key does not say it
+
+Eighty-eight of a hundred and thirty-nine were the key, title-cased and
+translated four ways — `title` as "Title", "Titel", "Título", "Titre". A
+return's key IS the word a caller reads it by, so those said nothing `key` had
+not, and the fifth language nobody wrote made the set incomplete rather than
+the value unreadable.
+
+Twenty survive, each carrying a fact the key does not: `head_ref` is a branch
+but not which end, `created_at` on an issue is when it was *opened*, a Projects
+v2 `item_id` is a card, and `count` beside `total` is which of the two.
 
 ### Smaller
 
