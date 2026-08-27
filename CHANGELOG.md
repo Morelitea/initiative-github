@@ -1,5 +1,94 @@
 # Changelog
 
+## [Unreleased]
+
+### A vendor flow that ends on a page, not in a 500
+
+The token exchange and the account lookup after it called `fetch` and read
+`.json()` off the answer with nothing around either. A reset connection, a
+proxy's HTML where the tokens should be, GitHub having a bad afternoon — each of
+them threw, reached the server's last resort, and answered a member with
+`{"error":"internal error"}` in a browser tab. The page for this was already
+written: *"GitHub did not complete the sign-in. Nothing changed — start again
+from the app's settings in Initiative."* Every one of those 500s was that page,
+routed around by an unguarded call.
+
+Both go through the kit now — `exchangeCode` and `fetchJson`, which answer
+instead of throwing — and so does `appIdentity`, which is awaited on the same
+redirect and took out `/connect/github` and `/install/github` the same way.
+
+A refusal that arrives as a `200` with `{"error": ...}`, which is how GitHub
+answers a spent code, is a refusal here too. So is a body that is not JSON.
+
+### A refusal and an outage are not the same thing
+
+Renewing a credential now reads *why* the exchange failed before acting on it.
+GitHub saying the grant is finished still drops the row and tells Initiative, so
+the member is asked to connect again. GitHub saying nothing at all — unreachable,
+`503`, rate limited — no longer does: nothing was learned about the grant, the
+credential is kept, and the call it is spent on fails as a vendor error, which
+is the honest answer. The old code could not tell the two apart, and one bad
+afternoon at GitHub would have disconnected every member whose token happened to
+be inside the two-minute refresh skew.
+
+### The verifier is sent only for a challenge GitHub recorded
+
+PKCE on the member's connect flow is real and stays: GitHub has supported it on
+the authorization code flow since July 2025, `S256` only, and that flow sends a
+challenge and answers with the verifier.
+
+The install flow was a different story. `/apps/<slug>/installations/new` is not
+an authorization request — GitHub preserves the `state` it documents, drops what
+it does not, and begins the authorization itself. The challenge never reached
+the step that would record it, and a verifier was stored anyway and sent at
+exchange time for a binding GitHub never made. That is the case GitHub has
+called out as using PKCE incorrectly, and it is invisible from here: an exchange
+refused for it is indistinguishable from a member who declined.
+
+The kit mints the state, the pair and the parameters together now, so what is
+stored and what is sent cannot disagree. The install link carries `state` and
+nothing else, and the verifier stored beside it is `null` — there is nothing to
+send back and nothing to claim. With no registration to name, the flow falls
+back to the authorize step, which does carry a challenge.
+
+### An answer GitHub did not give is not written down as one
+
+The same shape again, one layer up. `installationForOwner` returned `null` both
+for *GitHub says there is no installation* and for *the lookup failed*, and the
+sync wrote that straight into the workspace row — so a `500` from GitHub cleared
+the installation id, and every guild-scoped source, the Dependabot widget
+included, went quiet until a later sync happened to succeed. A thrown network
+fault was worse: reaching `/v1/lifecycle`, it was caught by a handler that
+forgot the install outright and dropped the workspace.
+
+It returns the two separately now. "There is none" is still recorded, because an
+app that was uninstalled has to stop routing deliveries. "GitHub would not say"
+is not: `rememberWorkspace` leaves the id it already had, and the next sync asks
+again. A 404 on `/orgs/…` still falls through to `/users/…` — that is an answer,
+just not the one being asked for.
+
+`/v1/lifecycle` now forgets an install only when Initiative says there is no
+install to sync, which is the one party that can say it. A channel refusing for
+a minute, a database error, GitHub — none of them is a reason to take a guild's
+dashboard down to fix nothing. Repairing a stale workspace is what the poll is
+for; the lifecycle route only has to avoid destroying a good one.
+
+### A credential held under a name nothing knows says so
+
+The account lookup produces `account_login`, which is the one field the
+connection is satisfied by. When it does not answer, the token is still real and
+still stored — but Initiative has nothing that counts, so the ending is
+`not_recorded` rather than `connected`. Same situation as a write that did not
+land, same word for it, and the same remedy: connect again, nothing was lost.
+Telling them "Connected" sent them back to a dashboard that refused them with no
+way to understand why.
+
+### Needs kit 0.10.0
+
+`beginAuthorization`, `exchangeCode`, `refreshGrant` and `fetchJson` are new
+there. Everything above is the app spending them rather than restating them —
+there is no `fetch` left in this app that can throw a member into a 500.
+
 ## [0.6.1] — 2026-08-26
 
 ### The manifest describes this app's API and nothing about how to draw it

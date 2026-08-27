@@ -200,8 +200,16 @@ export async function syncInstall(guildId: number): Promise<boolean> {
     return false;
   }
 
-  const installationId = await installationForOwner(workspace.owner);
-  await rememberWorkspace(installId, guildId, workspace, installationId);
+  // `undefined` where GitHub would not answer, which leaves the stored id
+  // alone. Recording "no installation" on a failed lookup would take the
+  // guild-scoped sources down until a later sync happened to succeed.
+  const found = await installationForOwner(workspace.owner);
+  await rememberWorkspace(
+    installId,
+    guildId,
+    workspace,
+    found.known ? found.installationId : undefined
+  );
 
   await initiative.reportStatus(guildId, { state: "ok" });
   return true;
@@ -209,6 +217,20 @@ export async function syncInstall(guildId: number): Promise<boolean> {
 
 export async function forgetInstall(installId: number): Promise<void> {
   await forgetWorkspace(installId);
+}
+
+/**
+ * Whether a failed sync means there is no install, or only that this one did
+ * not finish.
+ *
+ * Only Initiative can say the first — it is the party that knows — and it says
+ * it by refusing the config read for a guild whose install is gone. Everything
+ * else is a failure to find out: the channel being unreachable, the database,
+ * GitHub. Forgetting a workspace on one of those takes every widget in the
+ * guild down until the poll next succeeds, to fix nothing.
+ */
+export function installIsGone(error: unknown): boolean {
+  return error instanceof ChannelError && (error.status === 404 || error.status === 410);
 }
 
 export async function syncAllInstalls(): Promise<void> {

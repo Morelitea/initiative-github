@@ -30,6 +30,7 @@ import {
   WEBHOOK_PATH,
 } from "./vocabulary.js";
 import {
+  installIsGone,
   listSubscriptions,
   spendToken,
   subscribe,
@@ -261,7 +262,10 @@ export const server = createServer(async (req, res) => {
         await syncInstall(claims.guild_id);
       } catch (error) {
         console.error(`lifecycle sync failed for guild ${claims.guild_id}`, error);
-        await forgetInstall(claims.app_install_id);
+        // Drop the install only when Initiative says there is no install to
+        // sync. Repairing a stale workspace is what the poll is for; this only
+        // has to not destroy a good one.
+        if (installIsGone(error)) await forgetInstall(claims.app_install_id);
       }
 
       return send(res, 204, null);

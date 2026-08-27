@@ -15,6 +15,16 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { InstallationLookup } from "../src/github/app.js";
+
+/** GitHub answering: this owner has this installation, or has none. */
+function told(installationId: number | null) {
+  return { known: true as const, installationId };
+}
+
+/** GitHub not answering, which is a different thing entirely. */
+const SILENT = { known: false as const, detail: "fetch failed" };
+
 const {
   config: configCall,
   installs,
@@ -28,7 +38,9 @@ const {
   config: vi.fn(),
   installs: vi.fn(),
   reportStatus: vi.fn(async () => ({})),
-  installationForOwner: vi.fn(async () => null as number | null),
+  installationForOwner: vi.fn<(owner: string) => Promise<InstallationLookup>>(
+    async () => told(null)
+  ),
   rememberWorkspace: vi.fn(async () => {}),
   workspaceFor: vi.fn(async () => null as unknown),
   forgetWorkspace: vi.fn(async () => {}),
@@ -57,7 +69,9 @@ vi.mock("../src/github/app.js", async () => {
   return { ...actual, installationForOwner };
 });
 
-import { forgetInstall, syncAllInstalls, syncInstall } from "../src/platform.js";
+import { ChannelError } from "initiative-app-kit";
+
+import { forgetInstall, installIsGone, syncAllInstalls, syncInstall } from "../src/platform.js";
 
 /** One install's configuration as the channel returns it. */
 function installConfig(overrides: Record<string, unknown> = {}) {
@@ -88,7 +102,7 @@ describe("finding the guild's access", () => {
     // in the repository they were always going to fill in, and the app asks
     // GitHub whether it has been installed there.
     configCall.mockResolvedValue(installConfig());
-    installationForOwner.mockResolvedValue(4242);
+    installationForOwner.mockResolvedValue(told(4242));
 
     await expect(syncInstall(500)).resolves.toBe(true);
 
@@ -130,7 +144,7 @@ describe("finding the guild's access", () => {
     // What is still missing is the webhook, which is why the poll keeps
     // looking rather than treating this as settled.
     configCall.mockResolvedValue(installConfig());
-    installationForOwner.mockResolvedValue(null);
+    installationForOwner.mockResolvedValue(told(null));
 
     await expect(syncInstall(500)).resolves.toBe(true);
     expect(reportStatus).toHaveBeenCalledWith(500, { state: "ok" });
@@ -140,7 +154,7 @@ describe("finding the guild's access", () => {
     // Written down as null rather than left at whatever it was. An install that
     // was working and has been uninstalled at GitHub has to stop working here.
     configCall.mockResolvedValue(installConfig());
-    installationForOwner.mockResolvedValue(null);
+    installationForOwner.mockResolvedValue(told(null));
 
     await syncInstall(500);
 
@@ -152,12 +166,33 @@ describe("finding the guild's access", () => {
     );
   });
 
+  it("writes nothing down when GitHub would not answer", async () => {
+    // The other half of the case above, and the one that has no symptom. An
+    // answer of "none" is a fact and gets recorded; a lookup that failed is not
+    // one, and recording it as "none" takes every guild-scoped source down —
+    // the alerts widget included — until a later sync happens to succeed.
+    configCall.mockResolvedValue(installConfig());
+    installationForOwner.mockResolvedValue(SILENT);
+
+    await expect(syncInstall(500)).resolves.toBe(true);
+
+    expect(rememberWorkspace).toHaveBeenCalledWith(
+      11,
+      500,
+      { owner: "acme", repos: ["widgets"] },
+      undefined
+    );
+    // And the install is still usable: the reads that run as a member never
+    // needed the installation in the first place.
+    expect(reportStatus).toHaveBeenCalledWith(500, { state: "ok" });
+  });
+
   it("asks again on every sync rather than trusting the last answer", async () => {
     // An organization can uninstall and reinstall, which is a different id
     // under the same name. Every delivery is routed by that id, so a stale one
     // is events silently ceasing to arrive.
     configCall.mockResolvedValue(installConfig());
-    installationForOwner.mockResolvedValueOnce(4242).mockResolvedValueOnce(7)
+    installationForOwner.mockResolvedValueOnce(told(4242)).mockResolvedValueOnce(told(7))
 
     await syncInstall(500);
     await syncInstall(500);
@@ -177,7 +212,7 @@ describe("finding the guild's access", () => {
     // next delivery for that installation finds nobody rather than finding a
     // guild that has not been in it for a week.
     configCall.mockResolvedValue(installConfig());
-    installationForOwner.mockResolvedValueOnce(4242).mockResolvedValueOnce(null);
+    installationForOwner.mockResolvedValueOnce(told(4242)).mockResolvedValueOnce(told(null));
 
     await syncInstall(500);
     await syncInstall(500);
@@ -230,7 +265,7 @@ describe("what the private key can do", () => {
       const actual = await vi.importActual<typeof import("../src/github/app.js")>(
         "../src/github/app.js"
       );
-      await expect(actual.installationForOwner("acme")).resolves.toBe(4242);
+      await expect(actual.installationForOwner("acme")).resolves.toEqual(told(4242));
 
       const asked = fetching.mock.calls.map((call) => String(call[0]));
       expect(asked).toEqual([expect.stringContaining("/orgs/acme/installation")]);
@@ -264,5 +299,91 @@ describe("what the private key can do", () => {
     walk("src");
 
     expect(found).toEqual([]);
+  });
+});
+
+describe("what a failed lifecycle sync means", () => {
+  // The route calls this before deciding whether to forget the install, and
+  // the wrong answer is expensive in one direction only: forgetting a
+  // workspace over a blip takes the guild's dashboard down until the poll
+  // rebuilds it, while keeping one that is genuinely gone costs a poll.
+
+  it("is gone when Initiative says there is no such install", async () => {
+    expect(installIsGone(new ChannelError(404, "no such install"))).toBe(true);
+    expect(installIsGone(new ChannelError(410, "uninstalled"))).toBe(true);
+  });
+
+  it("is not gone when the channel merely refused", async () => {
+    expect(installIsGone(new ChannelError(503, "unavailable"))).toBe(false);
+    expect(installIsGone(new ChannelError(429, "slow down"))).toBe(false);
+    expect(installIsGone(new ChannelError(500, "boom"))).toBe(false);
+  });
+
+  it("is not gone for anything that is not the channel at all", async () => {
+    // A database error, a bug here, GitHub. None of them is Initiative saying
+    // the install ended.
+    expect(installIsGone(new Error("connection terminated"))).toBe(false);
+    expect(installIsGone(undefined)).toBe(false);
+  });
+});
+
+describe("asking GitHub which installation covers an owner", () => {
+  it("tries the user route when the account is not an organization", async () => {
+    // A 404 is an answer, and not the one being asked for. Concluding "no
+    // installation" from it would leave every personal account unrouted.
+    const fetching = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+      String(url).includes("/orgs/")
+        ? Response.json({ message: "Not Found" }, { status: 404 })
+        : Response.json({ id: 4242 })
+    );
+    try {
+      const actual = await vi.importActual<typeof import("../src/github/app.js")>(
+        "../src/github/app.js"
+      );
+
+      await expect(actual.installationForOwner("alice")).resolves.toEqual(told(4242));
+      expect(fetching.mock.calls.map((made) => String(made[0]))).toEqual([
+        expect.stringContaining("/orgs/alice/installation"),
+        expect.stringContaining("/users/alice/installation"),
+      ]);
+    } finally {
+      fetching.mockRestore();
+    }
+  });
+
+  it("says there is none when both routes say so", async () => {
+    const fetching = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ message: "Not Found" }, { status: 404 })
+    );
+    try {
+      const actual = await vi.importActual<typeof import("../src/github/app.js")>(
+        "../src/github/app.js"
+      );
+      await expect(actual.installationForOwner("acme")).resolves.toEqual(told(null));
+    } finally {
+      fetching.mockRestore();
+    }
+  });
+
+  it("does not turn a failed lookup into an answer", async () => {
+    // The distinction the return type exists for. Unreachable, and a 500, are
+    // GitHub not saying — which is not the same as GitHub saying "none".
+    for (const failing of [
+      async () => {
+        throw new TypeError("fetch failed");
+      },
+      async () => Response.json({ message: "unavailable" }, { status: 503 }),
+    ]) {
+      const fetching = vi.spyOn(globalThis, "fetch").mockImplementation(failing as never);
+      try {
+        const actual = await vi.importActual<typeof import("../src/github/app.js")>(
+          "../src/github/app.js"
+        );
+        const looked = await actual.installationForOwner("acme");
+        expect(looked.known).toBe(false);
+      } finally {
+        fetching.mockRestore();
+      }
+    }
   });
 });

@@ -31,8 +31,9 @@ vi.mock("../src/initiative.js", () => ({ initiative: { writeConnection } }));
 import { signReturnUrl } from "initiative-app-kit";
 
 import { config } from "../src/config.js";
-import { close, migrate, pool } from "../src/db.js";
+import { close, migrate, pool, seal } from "../src/db.js";
 import {
+  beginInstall,
   beginOAuth,
   completeOAuth,
   credentialFor,
@@ -59,10 +60,46 @@ function github(token = "ghu_member") {
   });
 }
 
+/** GitHub naming the registration, and then answering as above. */
+function githubWithApp(token = "ghu_member") {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+    if (String(url).endsWith("/app")) {
+      return Response.json({ slug: "initiative-for-github", name: "Initiative" });
+    }
+    if (String(url).includes("access_token")) {
+      return Response.json({ access_token: token, expires_in: 28_800 });
+    }
+    return Response.json({ login: "alice" });
+  });
+}
+
 /** Start a flow the way the route does, and read back the state GitHub gets. */
 async function started(guildId = GUILD, home: string | null = HOME) {
   const redirect = await beginOAuth(REF, guildId, home);
   return new URL(redirect).searchParams.get("state")!;
+}
+
+/** The same, through the install page rather than the authorize page. */
+async function installStarted(home: string | null = HOME) {
+  return new URL(await beginInstall(REF, GUILD, home));
+}
+
+/** The form the exchange put on the wire. */
+function exchanged(fetching: ReturnType<typeof github>): URLSearchParams {
+  const call = fetching.mock.calls.find((made) =>
+    String(made[0]).includes("access_token")
+  )!;
+  return new URLSearchParams(String(call[1]?.body ?? ""));
+}
+
+/** A connection already held, with an access token this near to lapsing. */
+async function holding(expiresInSeconds: number) {
+  await pool.query(
+    `INSERT INTO connections
+       (connection_ref, guild_id, access_token, refresh_token, expires_at, account_label)
+     VALUES ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval, $6)`,
+    [REF, GUILD, seal("ghu_held"), seal("ghr_held"), String(expiresInSeconds), "@alice"]
+  );
 }
 
 /** A connect URL as Initiative builds it, signed with the shared secret. */
@@ -302,5 +339,182 @@ describe("the address Initiative signed", () => {
     const forged = handoff();
     forged.set("return_url", "https://evil.test/looks-official");
     expect(returnAddress({ secret: config.appSecret, params: forged })).toBeNull();
+  });
+});
+
+describe("a verifier is only sent for a challenge that travelled", () => {
+  // PKCE is real on GitHub's authorize step, and the install page is not that
+  // step: it preserves `state` and starts the authorization itself, with its
+  // own parameters. A challenge put on it is dropped, and a verifier stored
+  // against that would be sent at exchange time for a binding GitHub never
+  // recorded — which is at best ignored and at worst refused, on a path
+  // nothing here would be able to tell apart from a member declining.
+
+  it("still carries a challenge when there is no install page to use", async () => {
+    // First, deliberately: `appIdentity` caches the registration it resolves,
+    // and a test that has to fail to resolve one cannot run after a test that
+    // succeeded. With none, this falls back to the authorize step — which does
+    // record a challenge.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ message: "Bad credentials" }, { status: 401 })
+    );
+
+    const redirect = await installStarted();
+
+    expect(redirect.pathname).toBe("/login/oauth/authorize");
+    expect(redirect.searchParams.get("code_challenge_method")).toBe("S256");
+    const stored = await pool.query<{ code_verifier: string | null }>(
+      "SELECT code_verifier FROM oauth_states"
+    );
+    expect(stored.rows[0].code_verifier).toBeTruthy();
+  });
+
+  it("binds the member's own flow, and says so on the wire", async () => {
+    const fetching = github();
+    const state = await started();
+
+    await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
+
+    const stored = await pool.query("SELECT code_verifier FROM oauth_states");
+    expect(stored.rowCount).toBe(0);
+    expect(exchanged(fetching).get("code_verifier")).toBeTruthy();
+  });
+
+  it("sends the install page only the state it keeps", async () => {
+    githubWithApp();
+
+    const redirect = await installStarted();
+
+    expect(redirect.pathname).toBe("/apps/initiative-for-github/installations/new");
+    expect([...redirect.searchParams.keys()]).toEqual(["state"]);
+  });
+
+  it("stores no verifier for a flow that sent no challenge", async () => {
+    githubWithApp();
+
+    await installStarted();
+
+    const stored = await pool.query<{ code_verifier: string | null }>(
+      "SELECT code_verifier FROM oauth_states"
+    );
+    expect(stored.rows[0].code_verifier).toBeNull();
+  });
+
+  it("claims nothing at exchange time that GitHub did not record", async () => {
+    const fetching = githubWithApp();
+    const state = (await installStarted()).searchParams.get("state")!;
+
+    const result = await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
+
+    expect(result.outcome).toBe("connected");
+    expect(exchanged(fetching).has("code_verifier")).toBe(false);
+  });
+
+});
+
+describe("when GitHub does not answer", () => {
+  // The app has a page written for a flow that did not complete, and an
+  // unguarded `fetch` routes around it: the exception reaches the server's last
+  // resort and the member gets `{"error":"internal error"}` in a browser tab.
+
+  it("ends on the page for it rather than in a 500", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("fetch failed"));
+    const state = await started();
+
+    const result = await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
+
+    expect(result.outcome).toBe("refused");
+    expect(landingFor(result)).toContain("outcome=refused");
+    expect(await credentialFor(REF)).toBeNull();
+  });
+
+  it("does the same for a refusal that arrives as a 200", async () => {
+    // GitHub answers a spent code with `{"error": ...}` and a success status.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ error: "bad_verification_code" })
+    );
+    const state = await started();
+
+    const result = await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
+
+    expect(result.outcome).toBe("refused");
+    expect(await credentialFor(REF)).toBeNull();
+  });
+
+  it("does the same for a proxy's HTML where the tokens should be", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response("<html>502 Bad Gateway</html>", { status: 200 })
+    );
+    const state = await started();
+
+    const result = await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
+
+    expect(result.outcome).toBe("refused");
+  });
+
+  it("keeps a credential it cannot put a name to, and says so", async () => {
+    // The token is real; the lookup that says whose it is did not answer, and
+    // that lookup produces the only field the connection is satisfied by. So
+    // this is the ending that means "held here, not recorded there" — the same
+    // one a failed write gets, and the same remedy.
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      if (String(url).includes("access_token")) {
+        return Response.json({ access_token: "ghu_member", expires_in: 28_800 });
+      }
+      throw new TypeError("fetch failed");
+    });
+    const state = await started();
+
+    const result = await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
+
+    expect(result.outcome).toBe("not_recorded");
+    expect((await credentialFor(REF))?.accessToken).toBe("ghu_member");
+  });
+});
+
+describe("renewing a credential that is nearly out", () => {
+  it("drops it when GitHub says the grant is finished", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ error: "bad_refresh_token" })
+    );
+    await holding(-60);
+
+    expect(await credentialFor(REF)).toBeNull();
+
+    const left = await pool.query("SELECT 1 FROM connections");
+    expect(left.rowCount).toBe(0);
+    // And Initiative is told, so the member is asked to connect rather than
+    // shown a tile that fails.
+    expect(writeConnection).toHaveBeenCalledWith(GUILD, REF, {
+      values: { account_login: null },
+      status: "pending",
+    });
+  });
+
+  it("keeps it when GitHub simply could not be reached", async () => {
+    // The opposite remedy, and the reason the two are told apart at all. An
+    // outage is not a revocation: dropping the row here would disconnect every
+    // member whose token happened to be inside the refresh skew, and tell
+    // Initiative to ask all of them to connect again.
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("fetch failed"));
+    await holding(60);
+
+    const held = await credentialFor(REF);
+
+    expect(held?.accessToken).toBe("ghu_held");
+    const left = await pool.query("SELECT 1 FROM connections");
+    expect(left.rowCount).toBe(1);
+    expect(writeConnection).not.toHaveBeenCalled();
+  });
+
+  it("does not treat GitHub being down as a revocation either", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json({ message: "unavailable" }, { status: 503 })
+    );
+    await holding(-60);
+
+    expect(await credentialFor(REF)).not.toBeNull();
+    const left = await pool.query("SELECT 1 FROM connections");
+    expect(left.rowCount).toBe(1);
   });
 });

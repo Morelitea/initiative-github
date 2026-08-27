@@ -1,10 +1,12 @@
-import { randomUUID } from "node:crypto";
-
 import {
-  CHALLENGE_METHOD,
-  type ConnectOutcome,
+  beginAuthorization,
+  exchangeCode,
+  fetchJson,
   landingUrl,
-  mintPkce,
+  refreshGrant,
+  type Authorization,
+  type ConnectOutcome,
+  type Grant,
 } from "initiative-app-kit";
 
 import { config } from "../config.js";
@@ -27,34 +29,31 @@ const redirectUri = () => `${config.publicUrl}${CALLBACK_PATH}`;
 
 const tokenUrl = () => `${config.github.webBase}/login/oauth/access_token`;
 
-async function beginFlow(
+/**
+ * The flow, written down: the state to match the callback against, and the
+ * verifier to answer it with — which is `null` whenever no challenge went out.
+ */
+async function remember(
+  auth: Authorization,
   connectionRef: string,
   guildId: number,
   returnUrl: string | null
-): Promise<{ state: string; challenge: string }> {
-  const state = randomUUID();
-  const { verifier, challenge } = mintPkce();
-
+): Promise<void> {
   await pool.query(
     `INSERT INTO oauth_states
        (state, connection_ref, guild_id, code_verifier, return_url, expires_at)
      VALUES ($1, $2, $3, $4, $5, now() + ($6 || ' minutes')::interval)`,
-    [state, connectionRef, guildId, verifier, returnUrl, String(STATE_TTL_MINUTES)]
+    [
+      auth.state,
+      connectionRef,
+      guildId,
+      auth.verifier,
+      returnUrl,
+      String(STATE_TTL_MINUTES),
+    ]
   );
 
   await pool.query("DELETE FROM oauth_states WHERE expires_at < now()");
-
-  return { state, challenge };
-}
-
-function authorizeParams(state: string, challenge: string): URLSearchParams {
-  return new URLSearchParams({
-    client_id: config.github.clientId,
-    redirect_uri: redirectUri(),
-    state,
-    code_challenge: challenge,
-    code_challenge_method: CHALLENGE_METHOD,
-  });
 }
 
 export async function beginOAuth(
@@ -62,9 +61,16 @@ export async function beginOAuth(
   guildId: number,
   returnUrl: string | null
 ): Promise<string> {
-  const { state, challenge } = await beginFlow(connectionRef, guildId, returnUrl);
-  const query = authorizeParams(state, challenge);
-  return `${config.github.webBase}/login/oauth/authorize?${query}`;
+  // GitHub's authorize step takes a challenge and checks the verifier against
+  // it at exchange time, so this flow is bound to this server. No scope: a
+  // GitHub App's user token carries the installation's permissions.
+  const auth = beginAuthorization({
+    clientId: config.github.clientId,
+    redirectUri: redirectUri(),
+  });
+
+  await remember(auth, connectionRef, guildId, returnUrl);
+  return `${config.github.webBase}/login/oauth/authorize?${auth.params}`;
 }
 
 export async function beginInstall(
@@ -73,44 +79,32 @@ export async function beginInstall(
   returnUrl: string | null
 ): Promise<string> {
   const app = await appIdentity();
-  const { state, challenge } = await beginFlow(connectionRef, guildId, returnUrl);
-  const query = authorizeParams(state, challenge);
-  if (!app) return `${config.github.webBase}/login/oauth/authorize?${query}`;
-  return `${config.github.webBase}/apps/${app.slug}/installations/new?${query}`;
+
+  // Nothing to name an install page after, so this is the ordinary member
+  // flow — which does go through the authorize step, and does carry a
+  // challenge.
+  if (!app) return beginOAuth(connectionRef, guildId, returnUrl);
+
+  // The install page is not an authorization request. GitHub preserves the
+  // `state` on it and then begins the authorization itself, with parameters of
+  // its own choosing — so a challenge put here never reaches the step that
+  // would record it, and a verifier stored against it would be sent at
+  // exchange time for a binding GitHub never made. No challenge goes out, so
+  // `beginAuthorization` hands back no verifier and there is none to send.
+  const auth = beginAuthorization({ pkce: false });
+
+  await remember(auth, connectionRef, guildId, returnUrl);
+  return `${config.github.webBase}/apps/${app.slug}/installations/new?${auth.params}`;
 }
 
-interface TokenResponse {
-  access_token?: string;
-  expires_in?: number;
-  refresh_token?: string;
-  refresh_token_expires_in?: number;
-  error?: string;
-}
-
-async function exchange(body: Record<string, string>): Promise<TokenResponse | null> {
-  const response = await fetch(tokenUrl(), {
-    method: "POST",
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) return null;
-
-  const answer = (await response.json()) as TokenResponse;
-  if (!answer.access_token) {
-    if (answer.error) console.error(`GitHub refused the exchange: ${answer.error}`);
-    return null;
-  }
-  return answer;
-}
-
-function lapsesAt(seconds: number | undefined): Date | null {
-  return typeof seconds === "number" ? new Date(Date.now() + seconds * 1000) : null;
+function lapsesAt(seconds: number | null): Date | null {
+  return seconds === null ? null : new Date(Date.now() + seconds * 1000);
 }
 
 async function store(
   connectionRef: string,
   guildId: number,
-  tokens: TokenResponse,
+  grant: Grant,
   accountLabel: string | null
 ): Promise<void> {
   await pool.query(
@@ -130,13 +124,34 @@ async function store(
     [
       connectionRef,
       guildId,
-      seal(tokens.access_token!),
-      tokens.refresh_token ? seal(tokens.refresh_token) : null,
-      lapsesAt(tokens.expires_in),
-      lapsesAt(tokens.refresh_token_expires_in),
+      seal(grant.accessToken),
+      grant.refreshToken ? seal(grant.refreshToken) : null,
+      lapsesAt(grant.expiresIn),
+      lapsesAt(grant.refreshExpiresIn),
       accountLabel,
     ]
   );
+}
+
+/**
+ * Whose account this token is, or `null` if GitHub would not say.
+ *
+ * `null` is a real answer rather than a fault: the credential is still good,
+ * and what is missing is the one field the connection is satisfied by.
+ */
+async function accountLogin(accessToken: string): Promise<string | null> {
+  const who = await fetchJson<{ login?: unknown }>(`${config.github.apiBase}/user`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/vnd.github+json",
+    },
+  });
+
+  if (!who.ok) {
+    console.error(`could not read the account this token belongs to: ${who.detail}`);
+    return null;
+  }
+  return typeof who.body.login === "string" && who.body.login ? who.body.login : null;
 }
 
 export interface ConnectResult {
@@ -169,37 +184,44 @@ export async function completeOAuth(
 
   if (!code) return { outcome: "refused", home };
 
-  const tokens = await exchange({
-    client_id: config.github.clientId,
-    client_secret: config.github.clientSecret,
+  const exchanged = await exchangeCode({
+    tokenUrl: tokenUrl(),
+    clientId: config.github.clientId,
+    clientSecret: config.github.clientSecret,
     code,
-    redirect_uri: redirectUri(),
-    ...(claim.code_verifier ? { code_verifier: claim.code_verifier } : {}),
+    redirectUri: redirectUri(),
+    // Whatever was stored when the flow began, including nothing.
+    verifier: claim.code_verifier,
   });
-  if (!tokens) return { outcome: "refused", home };
 
-  const who = await fetch(`${config.github.apiBase}/user`, {
-    headers: {
-      Authorization: `Bearer ${tokens.access_token}`,
-      Accept: "application/vnd.github+json",
-    },
-  });
-  const user = (await who.json()) as { login?: string };
+  if (!exchanged.ok) {
+    // GitHub refusing and GitHub being unreachable end the same way here:
+    // nothing was stored, so the remedy is to start again. This is the page
+    // that says so, and reaching it is the whole point of not throwing.
+    console.error(`GitHub did not complete the exchange: ${exchanged.detail}`);
+    return { outcome: "refused", home };
+  }
 
   const guildId = Number(claim.guild_id);
-  const label = user.login ? `@${user.login}` : null;
-  await store(claim.connection_ref, guildId, tokens, label);
+  const login = await accountLogin(exchanged.grant.accessToken);
+  const label = login ? `@${login}` : null;
+  await store(claim.connection_ref, guildId, exchanged.grant, label);
 
   const installationId = params.get("installation_id");
   if (installationId) {
     console.log(`a member authorized after installing (installation ${installationId})`);
   }
 
-  if (!(await announce(guildId, claim.connection_ref, user.login ?? null, label))) {
+  if (!(await announce(guildId, claim.connection_ref, login, label))) {
     return { outcome: "not_recorded", home };
   }
 
-  return { outcome: "connected", home };
+  // A token held under a name nothing knows is the same situation as a write
+  // that did not land: this app has the credential, Initiative has nothing
+  // that satisfies the connection, and connecting again is safe and is the
+  // remedy. Telling them "Connected" would send them to a dashboard that
+  // refuses them with no way to understand why.
+  return { outcome: login ? "connected" : "not_recorded", home };
 }
 
 export function landingFor(result: ConnectResult): string | null {
@@ -253,10 +275,11 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
       return null;
     }
 
+    const held = open(row.access_token);
+
     if (!row.stale) {
       await client.query("COMMIT");
-      const accessToken = open(row.access_token);
-      return accessToken ? { accessToken, accountLabel: row.account_label } : null;
+      return held ? { accessToken: held, accountLabel: row.account_label } : null;
     }
 
     const sealed = row.refresh_token;
@@ -270,13 +293,26 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
       return null;
     }
 
-    const tokens = await exchange({
-      client_id: config.github.clientId,
-      client_secret: config.github.clientSecret,
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
+    const exchanged = await refreshGrant({
+      tokenUrl: tokenUrl(),
+      clientId: config.github.clientId,
+      clientSecret: config.github.clientSecret,
+      refreshToken,
     });
-    if (!tokens) {
+
+    if (!exchanged.ok) {
+      if (exchanged.reason === "unreachable") {
+        // GitHub did not say this grant is finished — it did not say anything.
+        // Dropping the row on that would disconnect every member whose token
+        // happened to be near expiry during an outage, and tell Initiative so.
+        // Hold what we have: the skew means it is usually still valid, and if
+        // it is not, the call it is spent on fails as a vendor error, which is
+        // the honest answer rather than "connect your account again".
+        await client.query("COMMIT");
+        console.warn(`could not refresh ${connectionRef}: ${exchanged.detail}`);
+        return held ? { accessToken: held, accountLabel: row.account_label } : null;
+      }
+
       await client.query("DELETE FROM connections WHERE connection_ref = $1", [
         connectionRef,
       ]);
@@ -285,6 +321,7 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
       return null;
     }
 
+    const { grant } = exchanged;
     await client.query(
       `UPDATE connections
           SET access_token       = $2,
@@ -295,15 +332,15 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
         WHERE connection_ref = $1`,
       [
         connectionRef,
-        seal(tokens.access_token!),
+        seal(grant.accessToken),
 
-        tokens.refresh_token ? seal(tokens.refresh_token) : sealed,
-        lapsesAt(tokens.expires_in),
-        lapsesAt(tokens.refresh_token_expires_in),
+        grant.refreshToken ? seal(grant.refreshToken) : sealed,
+        lapsesAt(grant.expiresIn),
+        lapsesAt(grant.refreshExpiresIn),
       ]
     );
     await client.query("COMMIT");
-    return { accessToken: tokens.access_token!, accountLabel: row.account_label };
+    return { accessToken: grant.accessToken, accountLabel: row.account_label };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

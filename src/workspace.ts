@@ -14,12 +14,21 @@ export interface WatchingInstall {
   guildId: number;
 }
 
+/**
+ * Write down what this install watches, and what routes deliveries to it.
+ *
+ * `installationId` is what GitHub said: a number, or `null` for "there is no
+ * installation", which has to be recorded so an app that was uninstalled stops
+ * being found. Pass `undefined` when GitHub did not say — the row keeps the id
+ * it already had rather than recording an absence nobody established.
+ */
 export async function rememberWorkspace(
   appInstallId: number,
   guildId: number,
   workspace: Workspace,
-  installationId: number | null
+  installationId: number | null | undefined
 ): Promise<void> {
+  const learned = installationId !== undefined;
   await pool.query(
     `INSERT INTO workspaces (app_install_id, guild_id, owner, repos, installation_id)
      VALUES ($1, $2, $3, $4, $5)
@@ -27,9 +36,17 @@ export async function rememberWorkspace(
         SET guild_id = EXCLUDED.guild_id,
             owner = EXCLUDED.owner,
             repos = EXCLUDED.repos,
-            installation_id = EXCLUDED.installation_id,
+            installation_id = CASE WHEN $6 THEN EXCLUDED.installation_id
+                                   ELSE workspaces.installation_id END,
             updated_at = now()`,
-    [appInstallId, guildId, workspace.owner, workspace.repos, installationId]
+    [
+      appInstallId,
+      guildId,
+      workspace.owner,
+      workspace.repos,
+      installationId ?? null,
+      learned,
+    ]
   );
 }
 

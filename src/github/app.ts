@@ -1,5 +1,7 @@
 import { createSign } from "node:crypto";
 
+import { fetchJson } from "initiative-app-kit";
+
 import { config } from "../config.js";
 import { SUBSCRIBED_EVENTS } from "../endpoints/emissions.js";
 import {
@@ -32,16 +34,12 @@ export function appJwt(now: number = Date.now()): string {
   return `${header}.${payload}.${base64url(signature)}`;
 }
 
-async function asApp(path: string, init: RequestInit = {}): Promise<Response> {
-  return fetch(`${config.github.apiBase}${path}`, {
-    ...init,
-    headers: {
-      ...init.headers,
-      Authorization: `Bearer ${appJwt()}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
-  });
+function appHeaders(): Record<string, string> {
+  return {
+    Authorization: `Bearer ${appJwt()}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
 }
 
 export interface AppIdentity {
@@ -51,14 +49,26 @@ export interface AppIdentity {
 
 let identity: AppIdentity | null = null;
 
+/**
+ * The registration this private key belongs to, or `null` if GitHub would not
+ * say right now.
+ *
+ * Answered rather than thrown, because both callers are on a member's redirect:
+ * `/install/github` and the install half of the connect flow. A fault here has
+ * a sensible ending — the ordinary authorize URL, or a page saying this app is
+ * not registered — and an exception thrown out of this reaches neither.
+ */
 export async function appIdentity(): Promise<AppIdentity | null> {
   if (identity) return identity;
-  const response = await asApp("/app");
-  if (!response.ok) {
-    console.error(`GitHub would not identify this app: ${response.status}`);
+  const answer = await fetchJson<{ slug?: string; name?: string }>(
+    `${config.github.apiBase}/app`,
+    { headers: appHeaders() }
+  );
+  if (!answer.ok) {
+    console.error(`GitHub would not identify this app: ${answer.detail}`);
     return null;
   }
-  const body = (await response.json()) as { slug?: string; name?: string };
+  const body = answer.body;
   if (!body.slug) return null;
   identity = { slug: body.slug, name: body.name ?? body.slug };
   return identity;
@@ -70,19 +80,45 @@ export async function installUrl(): Promise<string | null> {
   return `${config.github.webBase}/apps/${app.slug}/installations/new`;
 }
 
-export async function installationForOwner(owner: string): Promise<number | null> {
+/**
+ * What GitHub said about who has this app installed, or that it did not say.
+ *
+ * The two are not degrees of the same thing, and the whole reason this is a
+ * union is that the caller writes the answer down. `installationId: null` is
+ * GitHub answering that there is no installation — removed, or never added —
+ * and that is a fact worth recording, because an install that has gone has to
+ * stop routing deliveries. `known: false` is GitHub not answering, which is not
+ * a fact about anything: stored as "none", a bad minute at GitHub turns every
+ * guild-scoped widget off until some later sync happens to succeed.
+ */
+export type InstallationLookup =
+  | { known: true; installationId: number | null }
+  | { known: false; detail: string };
+
+export async function installationForOwner(owner: string): Promise<InstallationLookup> {
   const name = encodeURIComponent(owner);
   for (const path of [`/orgs/${name}/installation`, `/users/${name}/installation`]) {
-    const response = await asApp(path);
-    if (response.status === 404) continue;
-    if (!response.ok) {
-      console.error(`could not look up the installation for ${owner}: ${response.status}`);
-      return null;
+    const answer = await fetchJson<{ id?: unknown }>(
+      `${config.github.apiBase}${path}`,
+      { headers: appHeaders() }
+    );
+
+    // Not that kind of account. An answer, and not the one being asked for —
+    // so ask about the other kind before concluding anything.
+    if (!answer.ok && answer.reason === "http" && answer.status === 404) continue;
+
+    if (!answer.ok) {
+      console.error(`could not look up the installation for ${owner}: ${answer.detail}`);
+      return { known: false, detail: answer.detail };
     }
-    const body = (await response.json()) as { id?: number };
-    if (typeof body.id === "number") return body.id;
+
+    if (typeof answer.body.id === "number") {
+      return { known: true, installationId: answer.body.id };
+    }
   }
-  return null;
+
+  // Both routes answered, and neither named an installation.
+  return { known: true, installationId: null };
 }
 
 function stripTrailingSlashes(value: string): string {
