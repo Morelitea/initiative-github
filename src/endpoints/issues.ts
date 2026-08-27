@@ -8,37 +8,38 @@ import {
   COMMENTS_OUT,
   COUNT_OUT,
   CREATED_OUT,
+  declare,
   DIRECTION_IN,
+  ISSUE_IDENTITY,
   LABELS_IN,
   LABELS_OUT,
   LIMIT_IN,
   LINK_OUT,
+  many,
   MILESTONE_OUT,
+  named,
   NUMBER,
   NUMBER_OUT,
   OWNER_OUT,
+  param,
+  pick,
   READ_IDS,
   REPO,
   REPO_OUT,
   ROWS_OUT,
+  several,
   SINCE_DAYS_IN,
   SINCE_IN,
   SORT_IN,
   STATE_OUT,
+  text,
   TITLE_OUT,
   TOTAL_OUT,
   UNAVAILABLE,
   UPDATED_OUT,
   URL_OUT,
-  WRITE_IDS,
-  ISSUE_IDENTITY,
-  declare,
-  many,
-  param,
-  pick,
-  several,
-  text,
   value,
+  WRITE_IDS,
 } from "../vocabulary.js";
 import type {
   Connection,
@@ -102,7 +103,7 @@ export const listLabels: Read = {
     params: [REPO],
 
     returns: [
-      many("names", "string", "Labels", "Labels", "Etiquetas", "Étiquettes"),
+      many(named("names", "string", "Labels", "Labels", "Etiquetas", "Étiquettes")),
       COUNT_OUT,
       TOTAL_OUT,
       UNAVAILABLE,
@@ -164,7 +165,7 @@ export const getIssue: Read = {
       TITLE_OUT,
       STATE_OUT,
 
-      value(
+      named(
         "state_reason",
         "string",
         "Why it closed",
@@ -179,14 +180,7 @@ export const getIssue: Read = {
       MILESTONE_OUT,
       COMMENTS_OUT,
 
-      value(
-        "is_pull_request",
-        "bool",
-        "Is a pull request",
-        "Ist ein Pull Request",
-        "Es una pull request",
-        "Est une pull request"
-      ),
+      value("is_pull_request", "bool"),
       CREATED_OUT,
       UPDATED_OUT,
       CLOSED_OUT,
@@ -374,7 +368,7 @@ export const openIssue: Write = {
       REPO_OUT,
       NUMBER_OUT,
       LINK_OUT,
-      value("id", "int", "GitHub id", "GitHub-ID", "ID de GitHub", "Identifiant GitHub"),
+      named("id", "int", "GitHub id", "GitHub-ID", "ID de GitHub", "Identifiant GitHub"),
     ],
     identity: ISSUE_IDENTITY,
   },
@@ -426,7 +420,7 @@ export const comment: Write = {
     returns: [
       REPO_OUT,
       NUMBER_OUT,
-      value(
+      named(
         "id",
         "int",
         "Comment id",
@@ -499,7 +493,7 @@ export const closeIssue: Write = {
     returns: [
       REPO_OUT,
       NUMBER_OUT,
-      value("state", "string", "State", "Status", "Estado", "État"),
+      value("state", "string"),
       LINK_OUT,
     ],
     identity: ISSUE_IDENTITY,
@@ -534,7 +528,7 @@ export const reopenIssue: Write = {
     returns: [
       REPO_OUT,
       NUMBER_OUT,
-      value("state", "string", "State", "Status", "Estado", "État"),
+      value("state", "string"),
       LINK_OUT,
     ],
     identity: ISSUE_IDENTITY,

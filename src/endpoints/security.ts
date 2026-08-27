@@ -3,13 +3,15 @@ import { config } from "../config.js";
 import type { Read } from "./index.js";
 import {
   COUNT_OUT,
+  many,
+  named,
   READ_IDS,
   REPO,
+  text,
   TOTAL_OUT,
   UNAVAILABLE,
   URL_OUT,
-  many,
-  text,
+  value,
 } from "../vocabulary.js";
 import type {
   Connection,
@@ -52,10 +54,10 @@ export const listAlerts: Read = {
     params: [REPO],
 
     returns: [
-      many("numbers", "int", "Alert numbers", "Warnungsnummern", "Números de alerta", "Numéros d'alerte"),
-      many("severities", "string", "Severities", "Schweregrade", "Severidades", "Gravités"),
-      many("packages", "string", "Packages", "Pakete", "Paquetes", "Paquets"),
-      many("urls", "url", "Links", "Links", "Enlaces", "Liens"),
+      many(named("numbers", "int", "Alert numbers", "Warnungsnummern", "Números de alerta", "Numéros d'alerte")),
+      many(value("severities", "string")),
+      many(value("packages", "string")),
+      many(value("urls", "url")),
       COUNT_OUT,
       TOTAL_OUT,
 

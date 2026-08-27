@@ -5,22 +5,7 @@ import type {
   LocalizedText,
 } from "initiative-app-kit";
 
-import { ISSUE_IDENTITY, declare } from "../vocabulary.js";
-
-function text(en: string, de: string, es: string, fr: string): LocalizedText {
-  return { en, de, es, fr };
-}
-
-function value(
-  key: string,
-  type: EndpointReturn["type"],
-  en: string,
-  de: string,
-  es: string,
-  fr: string
-): EndpointReturn {
-  return { key, type, label: text(en, de, es, fr) };
-}
+import { ISSUE_IDENTITY, declare, many, text, value } from "../vocabulary.js";
 
 interface Announcement {
   id: string;
@@ -92,26 +77,22 @@ const PUBLISHED: Record<string, Record<string, Announcement>> = {
  * fact about GitHub.
  */
 const SUBJECT: readonly EndpointReturn[] = [
-  value("repository", "string", "Repository", "Repository", "Repositorio", "Dépôt"),
-  value("owner", "string", "Owner", "Inhaber", "Propietario", "Propriétaire"),
-  value("number", "int", "Number", "Nummer", "Número", "Numéro"),
-  value("title", "string", "Title", "Titel", "Título", "Titre"),
-  value("url", "url", "Link", "Link", "Enlace", "Lien"),
-  value("author", "string", "Author", "Autor", "Autor", "Auteur"),
+  value("repository", "string"),
+  value("owner", "string"),
+  value("number", "int"),
+  value("title", "string"),
+  value("url", "url"),
+  value("author", "string"),
 ];
 
 const PER_DELIVERY: Record<string, { group: string; carries: EndpointReturn }> = {
   issues: {
     group: "issues",
-    carries: {
-      ...value("labels", "string", "Labels", "Labels", "Etiquetas", "Étiquettes"),
-      list: true,
-    },
+    carries: many(value("labels", "string")),
   },
   pull_request: {
     group: "reviews",
-
-    carries: value("reviewer", "string", "Reviewer", "Reviewer", "Revisor", "Relecteur"),
+    carries: value("reviewer", "string"),
   },
 };
 

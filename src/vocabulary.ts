@@ -65,7 +65,32 @@ export function param(
   return { key, type, label: text(en, de, es, fr) };
 }
 
-export function value(
+/**
+ * One value an endpoint hands back.
+ *
+ * Key and type, and nothing else by default. A return's key IS the word a
+ * caller reads it by — `title`, `author`, `closed_at` — so a label repeating it
+ * translated four ways is four strings that say what `key` already said, and a
+ * fifth language nobody wrote makes the set incomplete rather than the value
+ * unreadable.
+ *
+ * Where the key genuinely does not say it, {@link named} does. Those are the
+ * ones worth translating, and the reason the two are separate helpers is so
+ * that adding a label is a decision rather than the shape of the call.
+ */
+export function value(key: string, type: EndpointReturn["type"]): EndpointReturn {
+  return { key, type };
+}
+
+/**
+ * A return whose key does not say what it is.
+ *
+ * `head_ref` is a branch but not which end; `created_at` on an issue is when it
+ * was *opened*; `count` beside `total` is which of the two. Each of those is a
+ * fact about the API that a caller cannot get from the key, which is what earns
+ * the four translations.
+ */
+export function named(
   key: string,
   type: EndpointReturn["type"],
   en: string,
@@ -140,42 +165,52 @@ export function pick(
   return { key, type: "select", options, label: text(en, de, es, fr) };
 }
 
-export function many(
-  key: string,
-  type: EndpointReturn["type"],
-  en: string,
-  de: string,
-  es: string,
-  fr: string
-): EndpointReturn {
-  return { ...value(key, type, en, de, es, fr), list: true };
+/** The same return, holding several values. Mirrors {@link several}. */
+export function many(base: EndpointReturn): EndpointReturn {
+  return { ...base, list: true };
 }
 
-export const REPO_OUT = value("repository", "string", "Repository", "Repository", "Repositorio", "Dépôt");
+export const REPO_OUT = value("repository", "string");
 
-export const OWNER_OUT = value("owner", "string", "Owner", "Inhaber", "Propietario", "Propriétaire");
+export const OWNER_OUT = value("owner", "string");
 
-export const URL_OUT = value("url", "url", "Link", "Link", "Enlace", "Lien");
+export const URL_OUT = value("url", "url");
 
-export const COUNT_OUT = value("count", "int", "How many", "Wie viele", "Cuántos", "Combien");
+/**
+ * How many came back, and how many there are.
+ *
+ * The one pair here whose keys cannot be told apart on sight: side by side in a
+ * returns list, `count` and `total` are two integers and nothing says which is
+ * the page and which is the whole. So both are named, and the pair is why.
+ */
+export const COUNT_OUT = named("count", "int", "How many", "Wie viele", "Cuántos", "Combien");
 
-export const TOTAL_OUT = value("total", "int", "How many in all", "Wie viele insgesamt", "Cuántos en total", "Combien en tout");
+export const TOTAL_OUT = named(
+  "total",
+  "int",
+  "How many in all",
+  "Wie viele insgesamt",
+  "Cuántos en total",
+  "Combien en tout"
+);
 
-export const AUTHOR_OUT = value("author", "string", "Author", "Autor", "Autor", "Auteur");
+export const AUTHOR_OUT = value("author", "string");
 
-export const LABELS_OUT = many("labels", "string", "Labels", "Labels", "Etiquetas", "Étiquettes");
+export const LABELS_OUT = many(value("labels", "string"));
 
-export const TITLE_OUT = value("title", "string", "Title", "Titel", "Título", "Titre");
+export const TITLE_OUT = value("title", "string");
 
-export const STATE_OUT = value("state", "string", "State", "Status", "Estado", "État");
+export const STATE_OUT = value("state", "string");
 
-export const ASSIGNEES_OUT = many("assignees", "string", "Assignees", "Zuständige", "Asignados", "Assignés");
+export const ASSIGNEES_OUT = many(value("assignees", "string"));
 
-export const MILESTONE_OUT = value("milestone", "string", "Milestone", "Meilenstein", "Hito", "Jalon");
+export const MILESTONE_OUT = value("milestone", "string");
 
-export const COMMENTS_OUT = value("comments", "int", "Comments", "Kommentare", "Comentarios", "Commentaires");
+export const COMMENTS_OUT = value("comments", "int");
 
-export const CREATED_OUT = value(
+/** GitHub's `created_at`; on an issue the moment it was **opened**, which is
+ *  the word everything else about an issue uses. */
+export const CREATED_OUT = named(
   "created_at",
   "string",
   "Opened",
@@ -183,7 +218,9 @@ export const CREATED_OUT = value(
   "Abierta",
   "Ouvert"
 );
-export const UPDATED_OUT = value(
+
+/** Not "when it was updated" but the **last** time — the key reads as either. */
+export const UPDATED_OUT = named(
   "updated_at",
   "string",
   "Last updated",
@@ -191,9 +228,12 @@ export const UPDATED_OUT = value(
   "Última actualización",
   "Dernière mise à jour"
 );
-export const CLOSED_OUT = value("closed_at", "string", "Closed", "Geschlossen", "Cerrada", "Fermé");
 
-export const UNAVAILABLE = value(
+export const CLOSED_OUT = value("closed_at", "string");
+
+/** The one return that is not data. Named because `unavailable` says a thing is
+ *  missing and not that this carries the reason. */
+export const UNAVAILABLE = named(
   "unavailable",
   "string",
   "Why there is no answer",
@@ -203,13 +243,13 @@ export const UNAVAILABLE = value(
 );
 
 export const ROWS_OUT: EndpointReturn[] = [
-  many("numbers", "int", "Numbers", "Nummern", "Números", "Numéros"),
-  many("titles", "string", "Titles", "Titel", "Títulos", "Titres"),
-  many("urls", "url", "Links", "Links", "Enlaces", "Liens"),
-  many("states", "string", "States", "Status", "Estados", "États"),
-  many("created_at", "string", "Opened", "Geöffnet", "Abiertas", "Ouverts"),
-  many("updated_at", "string", "Last updated", "Zuletzt aktualisiert", "Última actualización", "Dernière mise à jour"),
-  many("closed_at", "string", "Closed", "Geschlossen", "Cerradas", "Fermés"),
+  many(value("numbers", "int")),
+  many(value("titles", "string")),
+  many(value("urls", "url")),
+  many(value("states", "string")),
+  many(CREATED_OUT),
+  many(UPDATED_OUT),
+  many(value("closed_at", "string")),
   COUNT_OUT,
   TOTAL_OUT,
   UNAVAILABLE,
@@ -255,6 +295,8 @@ export const SINCE_DAYS_IN = param(
   "Jours en arrière"
 );
 
-export const NUMBER_OUT = value("number", "int", "Number", "Nummer", "Número", "Numéro");
+export const NUMBER_OUT = value("number", "int");
 
-export const LINK_OUT = value("html_url", "url", "Link", "Link", "Enlace", "Lien");
+/** GitHub answers both an API `url` and an `html_url`; this is the one a person
+ *  can open, which is the whole of what the key does not say. */
+export const LINK_OUT = named("html_url", "url", "Link", "Link", "Enlace", "Lien");

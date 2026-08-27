@@ -2,20 +2,21 @@ import type { Caller } from "./index.js";
 import type { Read, Write } from "./index.js";
 import {
   COUNT_OUT,
+  many,
+  named,
   NUMBER,
   NUMBER_OUT,
   OWNER_OUT,
+  param,
   PROJECT_ID,
   READ_IDS,
   REPO,
   REPO_OUT,
+  text,
   TOTAL_OUT,
   UNAVAILABLE,
-  WRITE_IDS,
-  many,
-  param,
-  text,
   value,
+  WRITE_IDS,
 } from "../vocabulary.js";
 import type {
   Connection,
@@ -62,10 +63,10 @@ export const listProjects: Read = {
     cache_ttl_seconds: 300,
 
     returns: [
-      many("ids", "string", "Boards", "Boards", "Tableros", "Tableaux"),
-      many("titles", "string", "Names", "Namen", "Nombres", "Noms"),
-      many("numbers", "int", "Numbers", "Nummern", "Números", "Numéros"),
-      many("urls", "url", "Links", "Links", "Enlaces", "Liens"),
+      many(named("ids", "string", "Boards", "Boards", "Tableros", "Tableaux")),
+      many(value("titles", "string")),
+      many(value("numbers", "int")),
+      many(value("urls", "url")),
       COUNT_OUT,
       TOTAL_OUT,
       UNAVAILABLE,
@@ -141,8 +142,8 @@ export const listProjectFields: Read = {
 
     params: [PROJECT_ID],
     returns: [
-      many("ids", "string", "Fields", "Felder", "Campos", "Champs"),
-      many("names", "string", "Field names", "Feldnamen", "Nombres de campos", "Noms des champs"),
+      many(named("ids", "string", "Fields", "Felder", "Campos", "Champs")),
+      many(named("names", "string", "Field names", "Feldnamen", "Nombres de campos", "Noms des champs")),
       COUNT_OUT,
       UNAVAILABLE,
     ],
@@ -250,10 +251,10 @@ export const listProjectOptions: Read = {
 
     params: [PROJECT_ID, param("field", "string", "Field", "Feld", "Campo", "Champ")],
     returns: [
-      value("field_id", "string", "Field", "Feld", "Campo", "Champ"),
-      value("field_name", "string", "Field name", "Feldname", "Nombre del campo", "Nom du champ"),
-      many("option_ids", "string", "Values", "Werte", "Valores", "Valeurs"),
-      many("option_names", "string", "Value names", "Wertnamen", "Nombres de valores", "Noms des valeurs"),
+      value("field_id", "string"),
+      value("field_name", "string"),
+      many(named("option_ids", "string", "Values", "Werte", "Valores", "Valeurs")),
+      many(named("option_names", "string", "Value names", "Wertnamen", "Nombres de valores", "Noms des valeurs")),
       UNAVAILABLE,
     ],
     requires: { all_of: ["workspace", "account"] },
@@ -310,7 +311,7 @@ export const findProjectItem: Read = {
     params: [PROJECT_ID, REPO, NUMBER],
 
     returns: [
-      value("item_id", "string", "Card", "Karte", "Tarjeta", "Carte"),
+      named("item_id", "string", "Card", "Karte", "Tarjeta", "Carte"),
       REPO_OUT,
       OWNER_OUT,
       NUMBER_OUT,
@@ -393,7 +394,7 @@ export const moveProjectItem: Write = {
       param("option_id", "string", "Value", "Wert", "Valor", "Valeur"),
     ],
 
-    returns: [value("item_id", "string", "Card", "Karte", "Tarjeta", "Carte")],
+    returns: [named("item_id", "string", "Card", "Karte", "Tarjeta", "Carte")],
     // A card is identified by its own node id and nothing else — no repository,
     // no number. Declared even though no emission here is about a card yet:
     // what it costs is one line, and what it buys is that an automation

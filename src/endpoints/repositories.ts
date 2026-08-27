@@ -2,11 +2,12 @@ import type { Caller } from "./index.js";
 import type { Read } from "./index.js";
 import {
   COUNT_OUT,
+  many,
+  named,
   OWNER_OUT,
   READ_IDS,
-  UNAVAILABLE,
-  many,
   text,
+  UNAVAILABLE,
 } from "../vocabulary.js";
 import {
   PAGE,
@@ -38,7 +39,7 @@ export const listRepositories: Read = {
     cache_ttl_seconds: 300,
 
     returns: [
-      many("names", "string", "Repositories", "Repositories", "Repositorios", "Dépôts"),
+      many(named("names", "string", "Repositories", "Repositories", "Repositorios", "Dépôts")),
       OWNER_OUT,
       COUNT_OUT,
       UNAVAILABLE,

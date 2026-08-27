@@ -398,12 +398,37 @@ describe("what an endpoint says about itself", () => {
     }
   });
 
-  it("labels every value it hands back", () => {
-    // Same reason a param is labelled: `html_url` is enough for a machine and
-    // leaves whoever is wiring up the next step guessing.
+  it("labels a return only where its key does not already say it", () => {
+    // A return's key IS the word a caller reads it by, so `title` labelled
+    // "Title" in four languages is four strings that say what `key` said — and
+    // a fifth language nobody wrote makes the set incomplete rather than the
+    // value unreadable. What earns a label is a fact the key does not carry:
+    // `head_ref` is a branch but not which end, `created_at` on an issue is
+    // when it was *opened*, `count` beside `total` is which of the two.
+    const echoes = (key: string) => key.replace(/_/g, " ").toLowerCase();
     for (const endpoint of endpoints()) {
       for (const value of endpoint.returns ?? []) {
-        expect(value.label?.en, `${endpoint.id}/${value.key}`).toBeTruthy();
+        const label = value.label?.en;
+        if (!label) continue;
+        expect(label.toLowerCase(), `${endpoint.id}/${value.key} is labelled with its own key`)
+          .not.toBe(echoes(value.key));
+      }
+    }
+  });
+
+  it("translates every label it does write", () => {
+    // The other half of the rule. A label is worth four languages or it is
+    // worth none; one written in English alone is the case a member in another
+    // language reads raw, which is worse than the key they could have read.
+    for (const endpoint of endpoints()) {
+      for (const value of endpoint.returns ?? []) {
+        if (!value.label) continue;
+        expect(Object.keys(value.label).sort(), `${endpoint.id}/${value.key}`).toEqual([
+          "de",
+          "en",
+          "es",
+          "fr",
+        ]);
       }
     }
   });
