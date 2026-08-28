@@ -36,10 +36,17 @@ const SCHEMA = [
      updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
    )`,
 
+  // `flow` is what this trip was started to do, decided here when the state is
+  // minted rather than inferred from what GitHub hands back. Both flows end at
+  // the same callback, and they end differently: one stores a member's own
+  // credential, the other records the installation an admin just made for the
+  // whole guild. Reading that off a parameter GitHub may or may not send would
+  // be guessing at our own intent.
   `CREATE TABLE IF NOT EXISTS oauth_states (
      state          TEXT PRIMARY KEY,
      connection_ref TEXT NOT NULL,
      guild_id       BIGINT,
+     flow           TEXT NOT NULL DEFAULT 'account',
      code_verifier  TEXT,
      return_url     TEXT,
      expires_at     TIMESTAMPTZ NOT NULL

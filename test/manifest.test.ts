@@ -16,7 +16,7 @@ import { appDocument, validateDocument, validateManifest } from "initiative-app-
 
 import { EMIT_ENDPOINTS, EMITTED, translate } from "../src/endpoints/emissions.js";
 import { WEBHOOK_EVENTS } from "../src/github/app.js";
-import { READ_IDS } from "../src/vocabulary.js";
+import { INSTALL_PATH, READ_IDS } from "../src/vocabulary.js";
 import { WRITES } from "../src/endpoints/index.js";
 import { PUBLIC_ID, manifest } from "../src/manifest.config.js";
 
@@ -199,9 +199,11 @@ describe("the choices this app makes", () => {
       for (const field of connection.fields) {
         expect(field.type).not.toBe("secret");
       }
-      // No vendor flow either: a static connection is typed, and only an
-      // interactive one may carry a connect_path.
-      expect(connection.connect_path).toBeUndefined();
+      // A guild connection may run a vendor flow of its own, and this one
+      // does. What it must not do is end by holding a person's credential: an
+      // install flow records an installation, and the only field kinds here
+      // are the facts GitHub reported about it.
+      expect(connection.access_hint).toBeUndefined();
     }
   });
 
@@ -267,20 +269,30 @@ describe("the choices this app makes", () => {
     expect(account?.fields.map((field) => field.key)).toEqual(["account_login"]);
   });
 
-  it("asks an admin to write the boundary down, both halves of it", () => {
-    // Two required fields, and together they are the whole of what this install
-    // is about. Required rather than optional on purpose: a blank repository
-    // list read as "everything the account has" would make the widest possible
-    // setting the one an admin gets by not typing.
+  it("has an admin install at GitHub rather than describe an install", () => {
+    // The boundary is still the whole of what this install is about, and it is
+    // no longer typed. An owner in a text box is a claim that some account
+    // somewhere installed this app; nothing checked it, and a typo was an
+    // install that looked configured and answered nothing.
+    //
+    // So: a `connect_path` that sends a guild admin to GitHub's own install
+    // page, and three fields that are all `managed` — written by this app from
+    // what GitHub said when they came back. Required, still, and for the same
+    // reason: a blank repository list read as "everything the account has"
+    // would make the widest possible setting the one nobody chose.
     const workspace = manifest.connections?.find((c) => c.id === "workspace");
     expect(workspace?.scope).toBe("static");
-    expect(workspace?.fields.map((field) => field.key)).toEqual(["owner", "repos"]);
+    expect(workspace?.connect_path).toBe(INSTALL_PATH);
+    expect(workspace?.fields.map((field) => field.key)).toEqual([
+      "owner",
+      "installation_id",
+      "repos",
+    ]);
 
-    const byKey = Object.fromEntries(
-      (workspace?.fields ?? []).map((field) => [field.key, field])
-    );
-    expect(byKey.owner.required).toBe(true);
-    expect(byKey.repos.required).toBe(true);
+    for (const field of workspace?.fields ?? []) {
+      expect(field.required, `${field.key} is optional`).toBe(true);
+      expect(field.managed, `${field.key} is typed`).toBe(true);
+    }
   });
 
   it("lets a dashboard say which repository a tile is about", () => {

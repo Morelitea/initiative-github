@@ -1,5 +1,85 @@
 # Changelog
 
+## [Unreleased]
+
+### The organization is installed, not typed
+
+An admin used to set this app up by typing an owner into a text box and a
+comma-separated list of repositories beside it. Neither was checked against
+anything. Somebody else, somewhere else, had to open GitHub's install page and
+grant the app access to that account, and the only thing joining the two halves
+was that the string matched — so a typo, a rename, or a repository nobody
+actually granted produced an install that looked configured and answered
+nothing.
+
+That is not how a GitHub App is installed. Somebody who owns the account opens
+GitHub's own page, chooses the account, ticks which repositories the app may
+see, and what exists afterwards is an *installation* with an id.
+
+So the workspace connection now declares a `connect_path`, and a guild admin
+presses **Connect** on it. They land on GitHub's install page, choose what to
+grant, and come back; this app writes down the account, the installation's id
+and the repositories it covers, and the settings page stops asking to be set up.
+All three fields are `managed` — there is nothing left to type, and nothing to
+keep matching by hand.
+
+### Bound to an installation rather than to a name
+
+The sync asked GitHub "does an account called this have an installation?" and
+wrote down the answer. It now asks "is *this installation* still there", by the
+id an admin's flow recorded, and only falls back to the account when there is no
+id — an install configured before the flow existed, or one removed and made
+again at GitHub, which is a new installation on the same account.
+
+A login is a name pointing at an installation today. An organization that
+renames itself keeps its installation and loses its name, and by name that reads
+as an uninstall; worse, a freed-up name taken by somebody else reads as this
+guild's install now living on an account it never agreed to.
+
+Silence is still not "gone": a lookup GitHub would not answer changes nothing and
+does not send a second question after the first went unanswered.
+
+### The private key still cannot act as the installation
+
+The repositories an installation covers are read with the **token of the admin
+who just authorized**, spent on that one question and then dropped — never
+stored, because that credential is theirs and this connection is the guild's.
+What gets written down is therefore what a person could see rather than
+everything the installation could reach, which is the same rule every read in
+this app already follows.
+
+`test/installation.test.ts` still greps `src/` for the route that mints a
+credential acting as the installation, and still finds nothing.
+
+### One callback, two endings, told apart by intent
+
+Both flows come back to the same address, and GitHub adds an `installation_id`
+to a member's return whenever they installed and authorized in one trip. Reading
+the ending off that parameter would be guessing at our own intent, so
+`oauth_states` records which flow was started when the state is minted. A
+member's flow stores a member's credential whatever GitHub sends back; an
+admin's records an installation and stores no credential at all.
+
+`beginInstall` no longer falls back to the ordinary authorize step when GitHub
+will not name this app's registration. That step ends by storing whoever
+completed it against the connection it was started for, which for an install
+flow is the wrong credential in the right slot. It answers "nothing to start"
+instead, and the route says so.
+
+### Needs a Postgres that has not been used
+
+`oauth_states` gained a column, so the schema fingerprint changed. There is no
+migration path here, as before: drop this app's database and let it be recreated.
+Members reconnect, and admins press **Connect** once.
+
+### Needs kit 0.11.0, and a deployment that allows it
+
+The contract used to say only an interactive connection may carry a
+`connect_path`. A guild-wide credential obtained through a vendor's own flow had
+nowhere to be declared, which is why this was two text boxes. Both halves —
+`initiative-app-kit` and the deployment that validates against it — have to be
+new enough to accept one on a `static` connection.
+
 ## [0.7.0] — 2026-08-27
 
 ### A vendor flow that ends on a page, not in a 500

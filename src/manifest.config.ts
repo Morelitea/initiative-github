@@ -12,7 +12,7 @@ import { PERMISSIONS } from "./github/app.js";
 import { PUBLIC_ID } from "./vocabulary.js";
 import { ENDPOINTS } from "./endpoints/index.js";
 import { WIDGETS } from "./widgets/index.js";
-import { CONNECT_PATH } from "./vocabulary.js";
+import { CONNECT_PATH, INSTALL_PATH } from "./vocabulary.js";
 
 export { READ_IDS, WRITE_IDS } from "./vocabulary.js";
 
@@ -63,20 +63,39 @@ export const manifest: Manifest = {
         scopes: ACCESS_HINT_SCOPES,
       },
     },
+    /**
+     * The half GitHub owns, written down rather than typed.
+     *
+     * This was two text boxes — an owner and a comma-separated list of
+     * repositories — and both of them were an admin restating, from memory,
+     * something that already existed at GitHub. Nothing checked that the name
+     * matched an account anybody had installed the app on, or that the
+     * repositories were among the ones that install was granted. A typo was an
+     * install that looked configured and answered nothing.
+     *
+     * A GitHub App is not installed by naming it. Somebody who owns the
+     * account opens GitHub's own install page, chooses the account and picks
+     * which repositories the app may see, and what exists afterwards is an
+     * *installation* with an id. `connect_path` is what sends a guild admin
+     * there; every field here is `managed`, because all three are things
+     * GitHub said and none is a thing to be typed.
+     */
     {
       id: "workspace",
       scope: "static",
+      connect_path: INSTALL_PATH,
       label: {
-        en: "Repository",
-        de: "Repository",
-        es: "Repositorio",
-        fr: "Dépôt",
+        en: "GitHub organization",
+        de: "GitHub-Organisation",
+        es: "Organización de GitHub",
+        fr: "Organisation GitHub",
       },
       fields: [
         {
           key: "owner",
           type: "string",
           required: true,
+          managed: true,
           label: {
             en: "Owner or organization",
             de: "Inhaber oder Organisation",
@@ -85,17 +104,34 @@ export const manifest: Manifest = {
           },
         },
         {
+          key: "installation_id",
+          type: "int",
+          required: true,
+          managed: true,
+          label: {
+            en: "Installation",
+            de: "Installation",
+            es: "Instalación",
+            fr: "Installation",
+          },
+        },
+        {
           key: "repos",
           type: "string",
           required: true,
+          managed: true,
           label: {
-            en: "Repositories (comma-separated)",
-            de: "Repositories (kommagetrennt)",
-            es: "Repositorios (separados por comas)",
-            fr: "Dépôts (séparés par des virgules)",
+            en: "Repositories",
+            de: "Repositories",
+            es: "Repositorios",
+            fr: "Dépôts",
           },
         },
       ],
+      // No `access_hint`. It exists so somebody about to mint a credential can
+      // mint the smallest one that works, and nobody mints anything here: the
+      // permissions are the ones GitHub's own install page lists, granted by
+      // whoever owns the account, on a page that says what they are.
     },
   ],
 

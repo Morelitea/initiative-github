@@ -101,18 +101,6 @@ function homeFrom(url: URL): string | null {
   return returnAddress({ secret: config.appSecret, params: url.searchParams });
 }
 
-function isOrganizationLogin(value: string): boolean {
-  if (!value || value.length > 39) return false;
-  for (const character of value) {
-    const alphanumeric =
-      (character >= "a" && character <= "z") ||
-      (character >= "A" && character <= "Z") ||
-      (character >= "0" && character <= "9");
-    if (!alphanumeric && character !== "-") return false;
-  }
-  return true;
-}
-
 function header(req: IncomingMessage, name: string): string | undefined {
   const found = req.headers[name];
   return Array.isArray(found) ? found[0] : found;
@@ -285,6 +273,20 @@ export const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && path === CALLBACK_PATH) {
       const result = await completeOAuth(url.searchParams);
+
+      // An admin just recorded the guild's organization. The poll would find
+      // it within the sync interval; syncing now is the difference between a
+      // dashboard that works when they get back and one that works in five
+      // minutes. A failure here is not the admin's problem — the workspace is
+      // written down, and the next poll rebuilds what this missed.
+      if (result.installedFor !== undefined) {
+        try {
+          await syncInstall(result.installedFor);
+        } catch (error) {
+          console.error(`could not sync guild ${result.installedFor} after an install`, error);
+        }
+      }
+
       const home = landingFor(result);
       if (home) {
         res.writeHead(302, { Location: home });
@@ -311,13 +313,18 @@ export const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && path === SETUP_PATH) {
+      // Where GitHub sends somebody who installed or reconfigured this app
+      // from GitHub's own pages rather than from Initiative. Nothing arrives
+      // here that says which guild it is for — that is what the connect flow
+      // carries — so this page has one job: say where the other half is.
       return sendPage(
         res,
         page(
-          "Installed",
-          "Now open this app's settings in Initiative and set the owner and " +
-            "repository you want it to watch. If you already have, it will " +
-            "start working within a few minutes."
+          "Installed at GitHub",
+          "That half is done. Now open this app's settings in Initiative and " +
+            "press <b>Connect</b> on the GitHub organization — that is what " +
+            "tells your guild which installation is its own. If you started " +
+            "from there, you are already finished."
         )
       );
     }

@@ -121,6 +121,95 @@ export async function installationForOwner(owner: string): Promise<InstallationL
   return { known: true, installationId: null };
 }
 
+/**
+ * Whether the installation a guild is bound to is still there.
+ *
+ * The same union as {@link installationForOwner}, and for the same reason: the
+ * caller writes the answer down, and "GitHub says this installation is gone"
+ * has to be told apart from "GitHub did not answer". The first stops
+ * deliveries; the second must change nothing.
+ *
+ * Asked by id rather than by owner wherever there is an id, because an id is
+ * the installation and a login is a name pointing at one. An organization that
+ * renames itself keeps its installation and loses its name — by name that
+ * reads as an uninstall, and worse, a name freed up and taken by somebody else
+ * reads as this guild's install now living somewhere it never agreed to.
+ */
+export async function installationById(
+  installationId: number
+): Promise<InstallationLookup> {
+  const answer = await fetchJson<{ id?: unknown }>(
+    `${config.github.apiBase}/app/installations/${installationId}`,
+    { headers: appHeaders() }
+  );
+
+  // Removed at GitHub, or never ours. Either way there is no installation
+  // behind this id, which is a fact worth recording.
+  if (!answer.ok && answer.reason === "http" && answer.status === 404) {
+    return { known: true, installationId: null };
+  }
+
+  if (!answer.ok) {
+    console.error(`could not look up installation ${installationId}: ${answer.detail}`);
+    return { known: false, detail: answer.detail };
+  }
+
+  return {
+    known: true,
+    installationId: typeof answer.body.id === "number" ? answer.body.id : null,
+  };
+}
+
+/** What GitHub says an installation is: whose it is, and how wide. */
+export interface InstallationAccount {
+  installationId: number;
+  owner: string;
+  /** `all` or `selected` — which of the account's repositories were granted. */
+  selection: string | null;
+}
+
+/**
+ * Who an installation belongs to, asked of the app's own key.
+ *
+ * A read and nothing more, which is the only thing the private key is for
+ * here: it names the account and never mints a credential inside it. The
+ * repositories are a separate question, and deliberately not this one — they
+ * are asked of the member's own token, so what gets written down is what a
+ * person could see rather than everything the installation could reach.
+ *
+ * `null` covers both "GitHub would not say" and "there is no such
+ * installation", because the caller does the same thing either way: a member
+ * is on a redirect, and the ending is a page rather than a decision about what
+ * to store.
+ */
+export async function installationAccount(
+  installationId: number
+): Promise<InstallationAccount | null> {
+  const answer = await fetchJson<{
+    account?: { login?: unknown };
+    repository_selection?: unknown;
+  }>(`${config.github.apiBase}/app/installations/${installationId}`, {
+    headers: appHeaders(),
+  });
+
+  if (!answer.ok) {
+    console.error(`GitHub would not describe installation ${installationId}: ${answer.detail}`);
+    return null;
+  }
+
+  const login = answer.body.account?.login;
+  if (typeof login !== "string" || !login) return null;
+
+  return {
+    installationId,
+    owner: login,
+    selection:
+      typeof answer.body.repository_selection === "string"
+        ? answer.body.repository_selection
+        : null,
+  };
+}
+
 function stripTrailingSlashes(value: string): string {
   let end = value.length;
   while (end > 0 && value[end - 1] === "/") end -= 1;

@@ -58,18 +58,26 @@ The widgets need nothing but this app. The writes and the announcements exist
 for an automation service to use, and a guild without one gets the same
 dashboard.
 
-## It is installed twice
+## It is installed twice, in one trip
 
-By two different people, in two different places, and neither half knows about
-the other. Both have to happen; either order works.
+Two places, and the second is reached from the first. A guild admin installs the
+app from the marketplace and presses **Connect** on its GitHub organization,
+which opens GitHub's own install page: they choose the account and tick which
+repositories the app may see, and come back to a guild that is set up.
 
 | | In Initiative | At GitHub |
 |---|---|---|
-| **Who** | a guild admin, from the marketplace | somebody who owns the account or organization |
-| **Says** | which repositories this guild cares about, and it is the boundary every call is checked against | what this app may do, and where deliveries come from |
+| **Who** | a guild admin, from the marketplace | the same admin, if they own the account — otherwise somebody who does |
+| **Says** | which installation is this guild's | what this app may do, which repositories it may see, and where deliveries come from |
 | **Undone by** | uninstalling in Initiative | uninstalling at GitHub |
 
-Steps 6 and 7 below are those two halves.
+The repositories are chosen once, at GitHub, on the page that grants them. This
+app writes down what came back — the account, the installation's id, and the
+repositories it covers — and that list is the boundary every call is checked
+against. Nothing about the arrangement is typed here, and nothing has to be kept
+matching by hand.
+
+Step 6 below is the whole of it.
 
 ---
 
@@ -289,34 +297,38 @@ Within a minute the registration verifies. `1 created` and nothing after it mean
 Initiative wrote the row and could not reach the app — check `base_url` matches
 the service name.
 
-## Step 6 — Install it in your guild
+## Step 6 — Install it in your guild, and at GitHub
 
 In Initiative: **guild settings → Apps**. *GitHub* is there; install it, then open
-its settings:
+its settings and press **Connect** on *GitHub organization*.
 
-- **Owner or organization** — your GitHub username, or the org's name. Just the
-  account: `octocat`, not `octocat/hello-world`.
-- **Repositories** — comma-separated. This list is the boundary: a call is
-  resolved against it and a delivery is matched against it, so a repository not
-  named here is one this install has nothing to say about.
+That opens GitHub's own install page in a new tab. Choose the account — yours or
+an organization's — and pick which repositories this app may see. Only somebody
+who owns that account can finish it; if that is not you, GitHub raises a request
+for an owner to approve.
+
+Come back to the tab and you are done. The app records the account, the
+installation and the repositories it covers, and the settings page stops asking
+to be set up. There is nothing to type: the repository list is the one you ticked
+at GitHub, and it is the boundary every call is checked against.
+
+> Pressing **Connect** again is how you change any of it — a different account,
+> or more repositories. GitHub's *Configure* page has the same effect, but come
+> back through **Connect** afterwards so this app is told what changed.
 
 Install **GitHub overview** the same way for the ready-made dashboard.
 
-## Step 7 — Install the GitHub App at GitHub
+## Step 7 — Connect your account
 
-The half GitHub owns. Visit `https://github-app.example.com/install/github`; it
-redirects to your app's install page, where you choose the account and which
-repositories it may see.
+Separate from step 6, and everybody does it for themselves: in the app's
+settings, **Your GitHub account → Connect**. You are sent to GitHub, you
+authorize, and Initiative tells you how it went — this app hands you back rather
+than writing that page itself, so you read it in your own language.
 
-Installing and authorizing are one trip, so you will likely come back already
-connected.
-
-## Step 8 — Connect your account
-
-If step 7 did not do it: in the app's settings, **Your GitHub account →
-Connect**. You are sent to GitHub, you authorize, and Initiative tells you how
-it went — this app hands you back rather than writing that page itself, so you
-read it in your own language.
+The admin who installed the app is not exempt. Installing grants what the app
+may reach; authorizing says who is asking. Nothing this app shows or does runs
+as the installation, so a member who has not connected has not yet given it
+anything to answer with.
 
 Every widget runs on your credential, so a member who has not connected is asked
 to rather than shown somebody else's numbers.
@@ -361,10 +373,10 @@ Optional:
 | Registration stuck `pending` | Initiative cannot reach `base_url`, or the two secrets differ. |
 | Every tile says *connect your account* | You have not connected, or the write-back failed — see the next row. |
 | *Nearly there* after authorizing | GitHub authorized you and Initiative did not record it. Connect again; nothing was lost. |
-| Tile says *not configured* | **Owner or organization** or **Repositories** is blank in step 6. Both are required. |
-| Tile says *repository-required* | **Repositories** names several and the tile does not say which. Set `repo` on the dashboard tile. |
-| Tile says *repository-not-listed* | The tile's `repo` is not in **Repositories**. Fix one or the other. |
-| Events never arrive | Step 7 is not done for the account named in step 6. Widgets work without it; deliveries do not. |
+| Tile says *not configured* | The install at GitHub was never finished, or was cleared. Press **Connect** on *GitHub organization* in step 6. |
+| Tile says *repository-required* | The installation covers several repositories and the tile does not say which. Set `repo` on the dashboard tile. |
+| Tile says *repository-not-listed* | The tile's `repo` is not one the installation covers. Add it at GitHub and press **Connect** again, or fix the tile. |
+| Events never arrive | The install at GitHub in step 6 did not finish, or was removed there. Widgets run on members' own credentials and work without it; deliveries do not. |
 | Redirect mismatch at GitHub | `APP_PUBLIC_URL` and the Callback URL disagree. They must match exactly, scheme and port included. |
 | GitHub's *Recent Deliveries* shows red | `401` is the webhook secret differing between the form and the container. A timeout is the proxy: the Webhook URL does not reach port 8080. |
 

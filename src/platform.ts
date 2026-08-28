@@ -13,7 +13,7 @@ import { config } from "./config.js";
 import { initiative } from "./initiative.js";
 import { pool, open, seal } from "./db.js";
 import { ENDPOINTS } from "./endpoints/index.js";
-import { installationForOwner } from "./github/app.js";
+import { installationById, installationForOwner } from "./github/app.js";
 import { PUBLIC_ID } from "./vocabulary.js";
 import {
   forgetInstallsExcept,
@@ -163,7 +163,29 @@ export async function spendToken(jti: string, expiresAt: number): Promise<boolea
   return true;
 }
 
-function readWorkspace(installConfig: InstallConfig): Workspace | null {
+/**
+ * What the guild's workspace connection holds, in this app's own words.
+ *
+ * Every value here was written by this app at the end of an admin's install
+ * flow rather than typed into a form, which is why the parsing stayed: the
+ * shape on the wire is the same one it has always been, and a value that
+ * arrived some other way — an install configured before the flow existed —
+ * still reads correctly.
+ */
+interface Configured {
+  workspace: Workspace;
+  /**
+   * The installation the connection names, or `null` where it names only an
+   * account — a workspace configured before the install flow existed.
+   *
+   * Kept beside the workspace rather than on it, because the row already has a
+   * field by that name holding a different fact: what GitHub last confirmed.
+   * This is what an admin's flow wrote down, and it is where a lookup starts.
+   */
+  installationId: number | null;
+}
+
+function readWorkspace(installConfig: InstallConfig): Configured | null {
   const values = installConfig.connections.workspace;
   if (!values) return null;
 
@@ -180,15 +202,40 @@ function readWorkspace(installConfig: InstallConfig): Workspace | null {
     .filter(Boolean);
   if (!repos.length) return null;
 
-  return { owner, repos };
+  const named = values.installation_id;
+  const installationId =
+    typeof named === "number" && Number.isSafeInteger(named) && named > 0 ? named : null;
+
+  return { workspace: { owner, repos }, installationId };
+}
+
+/**
+ * Which installation this guild is bound to, as GitHub currently has it.
+ *
+ * By id where the connection carries one, which every install that went
+ * through the flow does: the id *is* the installation, and a login is only a
+ * name pointing at one today. Falling back to the owner covers the install
+ * configured before the flow existed, and the one whose installation was
+ * removed and made again at GitHub — a new installation on the same account,
+ * which the owner lookup finds and the old id no longer names.
+ */
+async function currentInstallation(configured: Configured) {
+  if (configured.installationId === null) {
+    return installationForOwner(configured.workspace.owner);
+  }
+
+  const held = await installationById(configured.installationId);
+  if (!held.known || held.installationId !== null) return held;
+
+  return installationForOwner(configured.workspace.owner);
 }
 
 export async function syncInstall(guildId: number): Promise<boolean> {
   const installConfig = await initiative.config(guildId);
   const installId = installConfig.install_id;
 
-  const workspace = readWorkspace(installConfig);
-  if (!workspace) {
+  const configured = readWorkspace(installConfig);
+  if (!configured) {
     await forgetInstall(installId);
 
     if (!installConfig.needs_config) {
@@ -203,14 +250,18 @@ export async function syncInstall(guildId: number): Promise<boolean> {
   // `undefined` where GitHub would not answer, which leaves the stored id
   // alone. Recording "no installation" on a failed lookup would take the
   // guild-scoped sources down until a later sync happened to succeed.
-  const found = await installationForOwner(workspace.owner);
+  const found = await currentInstallation(configured);
   await rememberWorkspace(
     installId,
     guildId,
-    workspace,
+    configured.workspace,
     found.known ? found.installationId : undefined
   );
 
+  // `ok` even where GitHub named no installation, which is unchanged and
+  // deliberate: reads run on each member's own credential, so the tiles answer
+  // either way, and calling a working dashboard invalid would be false. What
+  // an absent installation costs is the webhook, and the poll keeps looking.
   await initiative.reportStatus(guildId, { state: "ok" });
   return true;
 }

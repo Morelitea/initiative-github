@@ -30,6 +30,7 @@ const {
   installs,
   reportStatus,
   installationForOwner,
+  installationById,
   rememberWorkspace,
   workspaceFor,
   forgetWorkspace,
@@ -39,6 +40,9 @@ const {
   installs: vi.fn(),
   reportStatus: vi.fn(async () => ({})),
   installationForOwner: vi.fn<(owner: string) => Promise<InstallationLookup>>(
+    async () => told(null)
+  ),
+  installationById: vi.fn<(id: number) => Promise<InstallationLookup>>(
     async () => told(null)
   ),
   rememberWorkspace: vi.fn(async () => {}),
@@ -66,7 +70,7 @@ vi.mock("../src/github/app.js", async () => {
   const actual = await vi.importActual<typeof import("../src/github/app.js")>(
     "../src/github/app.js"
   );
-  return { ...actual, installationForOwner };
+  return { ...actual, installationForOwner, installationById };
 });
 
 import { ChannelError } from "initiative-app-kit";
@@ -134,6 +138,84 @@ describe("finding the guild's access", () => {
       state: "invalid",
       detail: "no_repository",
     });
+  });
+
+  it("asks after the installation an admin actually made", async () => {
+    // The heart of it. What the connection holds is an installation id, put
+    // there by the flow that made the installation — so the question is "is
+    // that installation still there", not "does some account by this name
+    // have one". A login is a name pointing at an installation today, and a
+    // renamed organization or a name somebody else has since taken makes the
+    // two different questions with different answers.
+    configCall.mockResolvedValue(
+      installConfig({
+        connections: {
+          workspace: { owner: "acme", repos: "widgets", installation_id: 4242 },
+        },
+      })
+    );
+    installationById.mockResolvedValue(told(4242));
+
+    await expect(syncInstall(500)).resolves.toBe(true);
+
+    expect(installationById).toHaveBeenCalledWith(4242);
+    expect(installationForOwner).not.toHaveBeenCalled();
+    expect(rememberWorkspace).toHaveBeenCalledWith(
+      11,
+      500,
+      { owner: "acme", repos: ["widgets"] },
+      4242
+    );
+  });
+
+  it("looks the account up again when that installation is gone", async () => {
+    // Removed and made again at GitHub is a *new* installation on the same
+    // account, and the id in the connection names the old one. Falling back to
+    // the account is what finds the new one; without it the guild would sit
+    // with an id that names nothing until somebody reconnected.
+    configCall.mockResolvedValue(
+      installConfig({
+        connections: {
+          workspace: { owner: "acme", repos: "widgets", installation_id: 4242 },
+        },
+      })
+    );
+    installationById.mockResolvedValue(told(null));
+    installationForOwner.mockResolvedValue(told(5150));
+
+    await syncInstall(500);
+
+    expect(installationForOwner).toHaveBeenCalledWith("acme");
+    expect(rememberWorkspace).toHaveBeenCalledWith(
+      11,
+      500,
+      { owner: "acme", repos: ["widgets"] },
+      5150
+    );
+  });
+
+  it("asks nothing else when GitHub would not answer about the id", async () => {
+    // Silence is not "gone". Falling back on it would ask a second question
+    // whose answer would be written down as though the first had been
+    // answered — and the whole point of the union is that it was not.
+    configCall.mockResolvedValue(
+      installConfig({
+        connections: {
+          workspace: { owner: "acme", repos: "widgets", installation_id: 4242 },
+        },
+      })
+    );
+    installationById.mockResolvedValue(SILENT);
+
+    await syncInstall(500);
+
+    expect(installationForOwner).not.toHaveBeenCalled();
+    expect(rememberWorkspace).toHaveBeenCalledWith(
+      11,
+      500,
+      { owner: "acme", repos: ["widgets"] },
+      undefined
+    );
   });
 
   it("calls an install usable when the guild named its repositories", async () => {
