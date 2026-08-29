@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.9.0] — 2026-08-29
 
 ### An app that has not registered yet can register itself
 
