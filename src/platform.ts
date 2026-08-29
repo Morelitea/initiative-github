@@ -13,13 +13,13 @@ import { config } from "./config.js";
 import { initiative } from "./initiative.js";
 import { pool, open, seal } from "./db.js";
 import { ENDPOINTS } from "./endpoints/index.js";
-import { installationById, installationForOwner } from "./github/app.js";
+import { installationById, installationRepositories } from "./github/app.js";
 import { PUBLIC_ID } from "./vocabulary.js";
 import {
   forgetInstallsExcept,
   forgetWorkspace,
+  installsForInstallation,
   rememberWorkspace,
-  type Workspace,
 } from "./workspace.js";
 
 interface Row {
@@ -172,17 +172,18 @@ export async function spendToken(jti: string, expiresAt: number): Promise<boolea
  * arrived some other way — an install configured before the flow existed —
  * still reads correctly.
  */
+/**
+ * What the guild's workspace connection holds.
+ *
+ * The installation, and the account it is on. Both were written by this app
+ * when an admin's install was verified, and neither was typed — the account is
+ * kept because every repository URL is built from it, and re-reading it from
+ * GitHub on every sync would be a request to learn something that cannot
+ * change without the installation changing too.
+ */
 interface Configured {
-  workspace: Workspace;
-  /**
-   * The installation the connection names, or `null` where it names only an
-   * account — a workspace configured before the install flow existed.
-   *
-   * Kept beside the workspace rather than on it, because the row already has a
-   * field by that name holding a different fact: what GitHub last confirmed.
-   * This is what an admin's flow wrote down, and it is where a lookup starts.
-   */
-  installationId: number | null;
+  owner: string;
+  installationId: number;
 }
 
 function readWorkspace(installConfig: InstallConfig): Configured | null {
@@ -190,44 +191,14 @@ function readWorkspace(installConfig: InstallConfig): Configured | null {
   if (!values) return null;
 
   const owner = typeof values.owner === "string" ? values.owner.trim() : "";
-
   if (!owner || owner.includes("/")) return null;
 
-  const listed = typeof values.repos === "string" ? values.repos : "";
-  const repos = listed
-    .split(",")
-    .map((name) => name.trim())
-
-    .map((name) => (name.includes("/") ? name.slice(name.lastIndexOf("/") + 1) : name))
-    .filter(Boolean);
-  if (!repos.length) return null;
-
   const named = values.installation_id;
-  const installationId =
-    typeof named === "number" && Number.isSafeInteger(named) && named > 0 ? named : null;
-
-  return { workspace: { owner, repos }, installationId };
-}
-
-/**
- * Which installation this guild is bound to, as GitHub currently has it.
- *
- * By id where the connection carries one, which every install that went
- * through the flow does: the id *is* the installation, and a login is only a
- * name pointing at one today. Falling back to the owner covers the install
- * configured before the flow existed, and the one whose installation was
- * removed and made again at GitHub — a new installation on the same account,
- * which the owner lookup finds and the old id no longer names.
- */
-async function currentInstallation(configured: Configured) {
-  if (configured.installationId === null) {
-    return installationForOwner(configured.workspace.owner);
+  if (typeof named !== "number" || !Number.isSafeInteger(named) || named <= 0) {
+    return null;
   }
 
-  const held = await installationById(configured.installationId);
-  if (!held.known || held.installationId !== null) return held;
-
-  return installationForOwner(configured.workspace.owner);
+  return { owner, installationId: named };
 }
 
 export async function syncInstall(guildId: number): Promise<boolean> {
@@ -241,7 +212,7 @@ export async function syncInstall(guildId: number): Promise<boolean> {
     if (!installConfig.needs_config) {
       await initiative.reportStatus(guildId, {
         state: "invalid",
-        detail: "no_repository",
+        detail: "not_installed",
       });
     }
     return false;
@@ -250,20 +221,48 @@ export async function syncInstall(guildId: number): Promise<boolean> {
   // `undefined` where GitHub would not answer, which leaves the stored id
   // alone. Recording "no installation" on a failed lookup would take the
   // guild-scoped sources down until a later sync happened to succeed.
-  const found = await currentInstallation(configured);
-  await rememberWorkspace(
-    installId,
-    guildId,
-    configured.workspace,
-    found.known ? found.installationId : undefined
-  );
+  const found = await installationById(configured.installationId);
+  const installationId = found.known ? found.installationId : undefined;
 
-  // `ok` even where GitHub named no installation, which is unchanged and
-  // deliberate: reads run on each member's own credential, so the tiles answer
-  // either way, and calling a working dashboard invalid would be false. What
-  // an absent installation costs is the webhook, and the poll keeps looking.
+  // What the organization granted, asked of the installation rather than of a
+  // person. Every sync, because it is one request and it is the only way a
+  // repository added at GitHub reaches this guild without anybody coming back
+  // through Initiative to say so. `undefined` on a failure the same way the id
+  // is: an unanswered question is not an empty boundary.
+  const repos =
+    installationId === undefined || installationId === null
+      ? undefined
+      : ((await installationRepositories(installationId)) ?? undefined);
+
+  await rememberWorkspace(installId, guildId, configured.owner, installationId, repos);
+
+  // `ok` even where GitHub named no installation. Reads that can run as a
+  // member still answer, so calling a working dashboard invalid would be
+  // false; what an absent installation costs is the webhook and everything
+  // guild-wide, and the poll keeps looking.
   await initiative.reportStatus(guildId, { state: "ok" });
   return true;
+}
+
+/**
+ * Re-read every guild bound to one installation.
+ *
+ * For the changes nobody made from Initiative: a repository selection widened
+ * at GitHub, an approval that finally came through. There is no trip to bind
+ * and nothing to write down — the installation is already this guild's, and
+ * what it covers is read afresh.
+ */
+export async function resyncInstallation(installationId: number): Promise<number> {
+  let done = 0;
+  for (const install of await installsForInstallation(installationId)) {
+    try {
+      await syncInstall(install.guildId);
+      done += 1;
+    } catch (error) {
+      console.error(`could not re-sync guild ${install.guildId}`, error);
+    }
+  }
+  return done;
 }
 
 export async function forgetInstall(installId: number): Promise<void> {
@@ -305,6 +304,16 @@ export async function syncAllInstalls(): Promise<void> {
 }
 
 export function startSync(): { stop: () => void } {
+  // An unregistered app has no key to sign with, so every pass would throw on
+  // the first lookup. Said once, at boot, rather than every interval.
+  if (!config.github.registered) {
+    console.log(
+      "not registered at GitHub yet — no syncing until it is. " +
+        "Set INITIATIVE_APP_SETUP_TOKEN and open /setup/register?token=…"
+    );
+    return { stop: () => {} };
+  }
+
   const run = () =>
     syncAllInstalls().catch((error) => {
       if (error instanceof ChannelError) {

@@ -35,7 +35,7 @@ const TARGET = "https://auto.example.com/webhooks/initiative";
 
 /** A guild with this app installed, which is what makes it subscribable. */
 async function installed(guildId: number, appInstallId: number) {
-  await rememberWorkspace(appInstallId, guildId, { owner: "acme", repos: ["widgets"] }, 9011);
+  await rememberWorkspace(appInstallId, guildId, "acme", 9011, ["widgets"]);
 }
 
 const request = (overrides: Record<string, unknown> = {}) => ({

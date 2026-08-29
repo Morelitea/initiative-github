@@ -58,7 +58,7 @@ export const listProjects: Read = {
       "Les tableaux Projects v2 du compte de cette installation."
     ),
     group: "projects",
-    actors: ["member"],
+    actors: ["member", "installation"],
     visibility: "member",
     cache_ttl_seconds: 300,
 
@@ -136,7 +136,7 @@ export const listProjectFields: Read = {
       "Les champs à choix unique d'un tableau — ses colonnes, et tout autre du même type."
     ),
     group: "projects",
-    actors: ["member"],
+    actors: ["member", "installation"],
     visibility: "member",
     cache_ttl_seconds: 300,
 
@@ -245,7 +245,7 @@ export const listProjectOptions: Read = {
       "Ce à quoi un champ à choix unique d'un tableau peut être défini."
     ),
     group: "projects",
-    actors: ["member"],
+    actors: ["member", "installation"],
     visibility: "member",
     cache_ttl_seconds: 300,
 
@@ -305,7 +305,7 @@ export const findProjectItem: Read = {
       "La carte qu'un ticket ou une pull request a sur un tableau."
     ),
     group: "projects",
-    actors: ["member"],
+    actors: ["member", "installation"],
     visibility: "member",
     cache_ttl_seconds: 0,
     params: [PROJECT_ID, REPO, NUMBER],

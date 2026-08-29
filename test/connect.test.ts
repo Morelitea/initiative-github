@@ -17,7 +17,7 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-interface Write { values: Record<string, unknown>; status?: string; account_label?: string }
+interface Write { values: Record<string, unknown>; status?: string }
 
 const { writeConnection } = vi.hoisted(() => ({
   // Typed, so reading an argument back below is checked rather than asserted.
@@ -33,7 +33,6 @@ import { signReturnUrl } from "initiative-app-kit";
 import { config } from "../src/config.js";
 import { close, migrate, pool, seal } from "../src/db.js";
 import {
-  beginInstall,
   beginOAuth,
   completeOAuth,
   credentialFor,
@@ -60,65 +59,10 @@ function github(token = "ghu_member") {
   });
 }
 
-/** What GitHub says the installation an admin just made covers. */
-const INSTALLATION = 4242;
-const OWNER = "morelitea";
-const COVERS = ["initiative", "initiative-github"];
-
-/**
- * GitHub naming the registration, describing an installation, and answering
- * the exchange.
- *
- * The two installation reads are the install flow's whole substance: who the
- * account is, asked of the app's own key, and which repositories it covers,
- * asked of the token of the person who just authorized.
- */
-function githubWithApp(token = "ghu_member") {
-  return vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-    const at = String(url);
-    if (at.endsWith("/app")) {
-      return Response.json({ slug: "initiative-for-github", name: "Initiative" });
-    }
-    if (at.includes("access_token")) {
-      return Response.json({ access_token: token, expires_in: 28_800 });
-    }
-    if (at.includes(`/app/installations/${INSTALLATION}`)) {
-      return Response.json({
-        account: { login: OWNER },
-        repository_selection: "selected",
-      });
-    }
-    if (at.includes(`/user/installations/${INSTALLATION}/repositories`)) {
-      return Response.json({
-        repositories: COVERS.map((name) => ({ name, full_name: `${OWNER}/${name}` })),
-      });
-    }
-    return Response.json({ login: "alice" });
-  });
-}
-
-/** The callback GitHub sends after an install page, as it really arrives. */
-function installReturn(state: string, installationId: number | null = INSTALLATION) {
-  const params = new URLSearchParams({ state, code: "gh-code" });
-  if (installationId !== null) {
-    params.set("installation_id", String(installationId));
-    params.set("setup_action", "install");
-  }
-  return params;
-}
-
 /** Start a flow the way the route does, and read back the state GitHub gets. */
 async function started(guildId = GUILD, home: string | null = HOME) {
   const redirect = await beginOAuth(REF, guildId, home);
   return new URL(redirect).searchParams.get("state")!;
-}
-
-/** The same, through the install page rather than the authorize page. */
-async function installStarted(home: string | null = HOME) {
-  const redirect = await beginInstall(REF, GUILD, home);
-  // `null` is "GitHub would not name this app", which every caller here has
-  // stubbed away — reaching it means the stub stopped answering.
-  return new URL(redirect!);
 }
 
 /** The form the exchange put on the wire. */
@@ -133,9 +77,9 @@ function exchanged(fetching: ReturnType<typeof github>): URLSearchParams {
 async function holding(expiresInSeconds: number) {
   await pool.query(
     `INSERT INTO connections
-       (connection_ref, guild_id, access_token, refresh_token, expires_at, account_label)
-     VALUES ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval, $6)`,
-    [REF, GUILD, seal("ghu_held"), seal("ghr_held"), String(expiresInSeconds), "@alice"]
+       (connection_ref, guild_id, access_token, refresh_token, expires_at)
+     VALUES ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval)`,
+    [REF, GUILD, seal("ghu_held"), seal("ghr_held"), String(expiresInSeconds)]
   );
 }
 
@@ -210,13 +154,25 @@ describe("when they come back", () => {
 
     const held = await credentialFor(REF);
     expect(held?.accessToken).toBe("ghu_member");
-    expect(held?.accountLabel).toBe("@alice");
 
     // Sealed: a stray SELECT is not a GitHub token.
     const row = await pool.query<{ access_token: string }>(
       "SELECT access_token FROM connections"
     );
     expect(row.rows[0].access_token).not.toContain("ghu_member");
+  });
+
+  it("does not ask GitHub who they are, because nothing needs to know", async () => {
+    // Their account is theirs. The token is what every call is made with and
+    // the handle is what it is filed under, so the login was a fact this app
+    // fetched, wrote into Initiative in plaintext, and read back never.
+    const fetching = github();
+    const state = await started();
+
+    await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
+
+    const asked = fetching.mock.calls.map((made) => String(made[0]));
+    expect(asked.some((url) => url.endsWith("/user"))).toBe(false);
   });
 
   it("tells Initiative, which is what makes the connection usable", async () => {
@@ -227,11 +183,25 @@ describe("when they come back", () => {
 
     await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
 
+    // A yes, and nothing about who. Satisfaction is presence, so this is the
+    // smallest thing that can cross — and Initiative's own logins are what its
+    // side is for.
     expect(writeConnection).toHaveBeenCalledWith(GUILD, REF, {
-      values: { account_login: "alice" },
+      values: { authorized: true },
       status: "connected",
-      account_label: "@alice",
     });
+  });
+
+  it("tells Initiative nothing about the person behind it", async () => {
+    github();
+    const state = await started();
+
+    await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
+
+    // Asserted against the whole payload rather than the one field somebody
+    // remembered to leave out.
+    const written = JSON.stringify(writeConnection.mock.calls[0][2]);
+    expect(written).not.toContain("alice");
   });
 
   it("writes a value the platform can actually count", async () => {
@@ -379,188 +349,6 @@ describe("the address Initiative signed", () => {
   });
 });
 
-describe("a verifier is only sent for a challenge that travelled", () => {
-  // PKCE is real on GitHub's authorize step, and the install page is not that
-  // step: it preserves `state` and starts the authorization itself, with its
-  // own parameters. A challenge put on it is dropped, and a verifier stored
-  // against that would be sent at exchange time for a binding GitHub never
-  // recorded — which is at best ignored and at worst refused, on a path
-  // nothing here would be able to tell apart from a member declining.
-
-  it("starts nothing when there is no install page to use", async () => {
-    // First, deliberately: `appIdentity` caches the registration it resolves,
-    // and a test that has to fail to resolve one cannot run after a test that
-    // succeeded.
-    //
-    // The old answer here was to fall back to the ordinary authorize step. It
-    // cannot be: that step ends by storing the credential of whoever completed
-    // it, and this flow was started for the connection holding the *guild's*
-    // organization. Satisfying it with an admin's personal token would be the
-    // wrong credential in the right slot, which is worse than no answer.
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
-      Response.json({ message: "Bad credentials" }, { status: 401 })
-    );
-
-    expect(await beginInstall(REF, GUILD, HOME)).toBeNull();
-    expect((await pool.query("SELECT 1 FROM oauth_states")).rowCount).toBe(0);
-  });
-
-  it("binds the member's own flow, and says so on the wire", async () => {
-    const fetching = github();
-    const state = await started();
-
-    await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
-
-    const stored = await pool.query("SELECT code_verifier FROM oauth_states");
-    expect(stored.rowCount).toBe(0);
-    expect(exchanged(fetching).get("code_verifier")).toBeTruthy();
-  });
-
-  it("sends the install page only the state it keeps", async () => {
-    githubWithApp();
-
-    const redirect = await installStarted();
-
-    expect(redirect.pathname).toBe("/apps/initiative-for-github/installations/new");
-    expect([...redirect.searchParams.keys()]).toEqual(["state"]);
-  });
-
-  it("stores no verifier for a flow that sent no challenge", async () => {
-    githubWithApp();
-
-    await installStarted();
-
-    const stored = await pool.query<{ code_verifier: string | null }>(
-      "SELECT code_verifier FROM oauth_states"
-    );
-    expect(stored.rows[0].code_verifier).toBeNull();
-  });
-
-  it("claims nothing at exchange time that GitHub did not record", async () => {
-    const fetching = githubWithApp();
-    const state = (await installStarted()).searchParams.get("state")!;
-
-    const result = await completeOAuth(installReturn(state));
-
-    expect(result.outcome).toBe("connected");
-    expect(exchanged(fetching).has("code_verifier")).toBe(false);
-  });
-
-});
-
-describe("what an admin's install flow writes down", () => {
-  /**
-   * The other half of this file, and the newer one.
-   *
-   * A member's flow ends holding a credential. An admin's install flow ends
-   * holding *nothing* — the token it exchanged is spent on one question and
-   * dropped — and what it writes down is the installation: whose account it is
-   * on, its id, and the repositories it covers. That is the whole of what used
-   * to be two text boxes an admin filled in from memory.
-   */
-
-  it("records the installation and stores no credential", async () => {
-    githubWithApp();
-    const state = (await installStarted()).searchParams.get("state")!;
-
-    const result = await completeOAuth(installReturn(state));
-
-    expect(result.outcome).toBe("connected");
-    expect(writeConnection).toHaveBeenCalledWith(GUILD, REF, {
-      values: {
-        owner: OWNER,
-        installation_id: INSTALLATION,
-        repos: COVERS.join(","),
-      },
-      status: "connected",
-    });
-
-    // The admin's own token was spent on reading what the installation covers
-    // and then dropped. This connection is the guild's, and a personal
-    // credential stored against it would be the wrong thing in the right slot.
-    expect((await pool.query("SELECT 1 FROM connections")).rowCount).toBe(0);
-  });
-
-  it("hands the guild back so the caller can sync it", async () => {
-    // The poll would find this within the sync interval. Naming the guild is
-    // what lets the route close the gap, so an admin who finishes the flow
-    // finds a dashboard rather than a wait.
-    githubWithApp();
-    const state = (await installStarted()).searchParams.get("state")!;
-
-    expect((await completeOAuth(installReturn(state))).installedFor).toBe(GUILD);
-  });
-
-  it("writes nothing when no installation came back", async () => {
-    // An authorization and not an install: an admin who reached GitHub and
-    // backed out of choosing an account. GitHub sends an installation id from
-    // its install page and from nowhere else, so its absence is the answer.
-    githubWithApp();
-    const state = (await installStarted()).searchParams.get("state")!;
-
-    const result = await completeOAuth(installReturn(state, null));
-
-    expect(result.outcome).toBe("refused");
-    expect(writeConnection).not.toHaveBeenCalled();
-  });
-
-  it("says so rather than claiming success when GitHub would not describe it", async () => {
-    // Same situation as a member whose account GitHub would not name: the trip
-    // happened and there is nothing that satisfies the connection. "Connected"
-    // would send an admin back to a settings page still asking to be set up,
-    // with nothing to explain the difference.
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
-      const at = String(url);
-      if (at.endsWith("/app")) {
-        return Response.json({ slug: "initiative-for-github", name: "Initiative" });
-      }
-      if (at.includes("access_token")) {
-        return Response.json({ access_token: "ghu_admin", expires_in: 28_800 });
-      }
-      return Response.json({ message: "Server Error" }, { status: 500 });
-    });
-    const state = (await installStarted()).searchParams.get("state")!;
-
-    const result = await completeOAuth(installReturn(state));
-
-    expect(result.outcome).toBe("not_recorded");
-    expect(writeConnection).not.toHaveBeenCalled();
-  });
-
-  it("does not claim an install Initiative refused to record", async () => {
-    githubWithApp();
-    writeConnection.mockRejectedValueOnce(new Error("channel down"));
-    const state = (await installStarted()).searchParams.get("state")!;
-
-    const result = await completeOAuth(installReturn(state));
-
-    expect(result.outcome).toBe("not_recorded");
-    expect(result.installedFor).toBeUndefined();
-  });
-
-  it("keeps a member's flow ending as a member's flow", async () => {
-    // The two share a callback and are told apart by what was written down
-    // when the state was minted, never by what GitHub happened to send back.
-    // An `installation_id` on a member's return — which GitHub does add when
-    // somebody installs and authorizes in one trip — must not turn their
-    // credential into a workspace.
-    github();
-    const state = await started();
-
-    const result = await completeOAuth(
-      new URLSearchParams({ state, code: "gh-code", installation_id: "77" })
-    );
-
-    expect(result.outcome).toBe("connected");
-    expect(writeConnection).toHaveBeenCalledWith(GUILD, REF, {
-      values: { account_login: "alice" },
-      status: "connected",
-      account_label: "@alice",
-    });
-    expect((await pool.query("SELECT 1 FROM connections")).rowCount).toBe(1);
-  });
-});
-
 describe("when GitHub does not answer", () => {
   // The app has a page written for a flow that did not complete, and an
   // unguarded `fetch` routes around it: the exception reaches the server's last
@@ -601,11 +389,11 @@ describe("when GitHub does not answer", () => {
     expect(result.outcome).toBe("refused");
   });
 
-  it("keeps a credential it cannot put a name to, and says so", async () => {
-    // The token is real; the lookup that says whose it is did not answer, and
-    // that lookup produces the only field the connection is satisfied by. So
-    // this is the ending that means "held here, not recorded there" — the same
-    // one a failed write gets, and the same remedy.
+  it("connects on the exchange alone, with nothing else to go wrong", async () => {
+    // There used to be a second call here — GitHub asked whose token this is,
+    // producing the field the connection was satisfied by — and a whole ending
+    // for it failing. Nothing needs that answer, so neither the call nor the
+    // ending it could produce exists any more.
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       if (String(url).includes("access_token")) {
         return Response.json({ access_token: "ghu_member", expires_in: 28_800 });
@@ -616,7 +404,7 @@ describe("when GitHub does not answer", () => {
 
     const result = await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
 
-    expect(result.outcome).toBe("not_recorded");
+    expect(result.outcome).toBe("connected");
     expect((await credentialFor(REF))?.accessToken).toBe("ghu_member");
   });
 });
@@ -635,7 +423,7 @@ describe("renewing a credential that is nearly out", () => {
     // And Initiative is told, so the member is asked to connect rather than
     // shown a tile that fails.
     expect(writeConnection).toHaveBeenCalledWith(GUILD, REF, {
-      values: { account_login: null },
+      values: { authorized: null },
       status: "pending",
     });
   });

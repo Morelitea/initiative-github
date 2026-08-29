@@ -33,7 +33,7 @@ export const listRepositories: Read = {
       "Les dépôts couverts par cette installation que vous pouvez voir."
     ),
     group: "repositories",
-    actors: ["member"],
+    actors: ["member", "installation"],
     visibility: "member",
 
     cache_ttl_seconds: 300,

@@ -24,7 +24,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { parseInvoke } from "initiative-app-kit";
 
 import { close, migrate, pool } from "../src/db.js";
-import { chooseActor, failed, type Actor } from "../src/github/api.js";
+import { chooseActor, failed, resolveActor, type Actor } from "../src/github/api.js";
 import {
   READS,
   READ_HANDLERS,
@@ -32,6 +32,7 @@ import {
   WRITE_HANDLERS,
   type Caller,
 } from "../src/endpoints/index.js";
+import { invoke } from "../src/invoke.js";
 import { rememberWorkspace, workspaceFor } from "../src/workspace.js";
 import { seal } from "../src/db.js";
 import { READ_IDS, WRITE_IDS } from "../src/vocabulary.js";
@@ -97,7 +98,7 @@ function github(answer: (url: string) => { status: number; body?: unknown }) {
 
 /** A guild with the app installed on one repository. */
 async function installed() {
-  await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
+  await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
   return workspaceFor(11);
 }
 
@@ -109,7 +110,7 @@ beforeEach(async () => {
 
 /** A guild with one repository written down, and a member who has connected. */
 async function connected(repos = ["widgets"]) {
-  await rememberWorkspace(11, 500, { owner: "acme", repos }, 9011);
+  await rememberWorkspace(11, 500, "acme", 9011, repos);
   await pool.query(
     "INSERT INTO connections (connection_ref, guild_id, access_token) VALUES ($1, $2, $3)",
     ["ref-a", 500, seal("member-token")]
@@ -386,7 +387,7 @@ describe("what it does at GitHub", () => {
 
 describe("what it refuses", () => {
   it("a call naming no repository when the install covers several", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets", "gadgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets", "gadgets"]);
     const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, await workspaceFor(11), {
       title: "which one?",
     });
@@ -558,11 +559,59 @@ describe("who a read is answered for", () => {
     ).toEqual({ unavailable: "not-configured" });
   });
 
-  it("runs on the member's own credential, never the installation's", async () => {
+  it("prefers the member's own credential whenever they have one", async () => {
+    // The order matters more than the fallback does. Answered as themselves,
+    // somebody sees exactly what they can see at GitHub — so the app's own
+    // credential is what happens when there is no better answer, never what
+    // happens by default.
     await connected();
     graph({ data: { repository: { labels: { totalCount: 0, nodes: [] } } } });
-    await READ_HANDLERS[READ_IDS.listLabels](CONNECTED, new URLSearchParams());
+
+    const asking: Caller = { ...CONNECTED, actors: ["member", "installation"] };
+    asking.resolved = await resolveActor(asking);
+    await READ_HANDLERS[READ_IDS.listLabels](asking, new URLSearchParams());
+
     expect(sent[0].auth).toBe("Bearer member-token");
+  });
+
+  it("answers a member who has connected nothing as the installation", async () => {
+    // What the organization granted is a fact about the repository, and it is
+    // true whether or not the person looking has ever signed in. Before this,
+    // a guild could be fully set up and every tile still said "connect your
+    // account" to everybody.
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
+    graph({ data: { repository: { labels: { totalCount: 0, nodes: [] } } } });
+
+    const asking: Caller = { ...STRANGER, actors: ["member", "installation"] };
+    asking.resolved = await resolveActor(asking);
+    await READ_HANDLERS[READ_IDS.listLabels](asking, new URLSearchParams());
+
+    expect(sent[0].auth).toBe("Bearer ghs_installation");
+  });
+
+  it("will not answer `@me` as the app, which has no me", async () => {
+    // `@me` is GitHub's word for whoever the token belongs to, and an
+    // installation token belongs to nobody — so a search carrying one runs as
+    // a person or does not run. Narrowed off the value rather than the
+    // parameter name, because it is a convention of the search syntax.
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
+    graph({ data: {} });
+
+    const asked = parseInvoke(
+      {
+        endpoint: READ_IDS.findPullRequests,
+        guild_id: 500,
+        params: { review_requested: "@me" },
+      },
+      READ_DECLARATIONS
+    );
+    expect(asked.ok).toBe(true);
+    const outcome = await invoke(STRANGER, asked.ok ? asked.request : ({} as never));
+
+    expect(failed(outcome) ? null : outcome.result).toEqual({
+      unavailable: "not-connected",
+    });
+    expect(sent).toHaveLength(0);
   });
 });
 

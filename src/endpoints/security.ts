@@ -47,7 +47,7 @@ export const listAlerts: Read = {
       "Alertes de dépendances ouvertes, avec la gravité et le paquet de chacune."
     ),
     group: "security",
-    actors: ["member"],
+    actors: ["member", "installation"],
     visibility: "member",
 
     cache_ttl_seconds: 300,

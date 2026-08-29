@@ -38,6 +38,7 @@ import {
   CONNECT_PATH,
   INSTALL_PATH,
   SETUP_PATH,
+  VERIFY_PATH,
   WEBHOOK_PATH,
 } from "../src/vocabulary.js";
 
@@ -124,7 +125,10 @@ describe("the registration this app needs at GitHub", () => {
   it("names the routes this app serves, not ones it might", () => {
     expect(registration.hook_attributes.url).toBe(`${PUBLIC_URL}${WEBHOOK_PATH}`);
     expect(registration.setup_url).toBe(`${PUBLIC_URL}${SETUP_PATH}`);
-    expect(registration.callback_urls).toEqual([`${PUBLIC_URL}${CALLBACK_PATH}`]);
+    expect(registration.callback_urls).toEqual([
+      `${PUBLIC_URL}${CALLBACK_PATH}`,
+      `${PUBLIC_URL}${VERIFY_PATH}`,
+    ]);
   });
 
   it("keeps its two redirects apart", () => {
@@ -145,11 +149,37 @@ describe("the registration this app needs at GitHub", () => {
     expect(registration.callback_urls[0]).toBe(`${PUBLIC_URL}${CALLBACK_PATH}`);
   });
 
-  it("makes installing and connecting one trip", () => {
-    // Without this an org owner installs the app and is then asked, separately
-    // and later, to authorize it — and most of them do not.
-    expect(registration.request_oauth_on_install).toBe(true);
+  it("keeps installing and authorizing apart, because they are", () => {
+    // With this on, GitHub sends an installation through the authorization
+    // step and returns it to the callback carrying a code — one trip, and an
+    // app left re-deriving from a query parameter which of the two it had
+    // started. Off, GitHub keeps them apart itself: an installation goes to
+    // the setup URL and a person authorizing goes to the callback.
+    //
+    // Installing is not a login. Nobody is authorized by it, and the
+    // credential it implies is minted from this app's own key.
+    expect(registration.request_oauth_on_install).toBe(false);
+    expect(registration.setup_url).toContain(SETUP_PATH);
+    expect(registration.callback_urls[0]).toContain(CALLBACK_PATH);
     expect(INSTALL_PATH.startsWith("/")).toBe(true);
+  });
+
+  it("does not send somebody back for a change GitHub already reports", () => {
+    // A repository ticked at GitHub arrives as an `installation_repositories`
+    // delivery, which every app receives whether or not it subscribes. Sending
+    // the person here as well would be a second telling of the same thing, on
+    // a trip carrying no state to bind it to a guild.
+    expect(registration.setup_on_update).toBe(false);
+  });
+
+  it("registers a callback for each question it asks", () => {
+    // One for a member signing in, one for an installer proving the
+    // installation they claimed is theirs. GitHub matches whichever
+    // `redirect_uri` a request names against this list, so neither route ever
+    // sees the other's traffic — and neither has to work out which it is
+    // looking at.
+    expect(new Set(registration.callback_urls).size).toBe(2);
+    expect(registration.callback_urls).toContain(`${PUBLIC_URL}${VERIFY_PATH}`);
   });
 
   it("is installable by organizations that did not deploy it", () => {

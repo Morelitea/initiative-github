@@ -97,7 +97,7 @@ export const listLabels: Read = {
       "Toutes les étiquettes qui existent dans le dépôt."
     ),
     group: "issues",
-    actors: ["member"],
+    actors: ["member", "installation"],
     visibility: "member",
     cache_ttl_seconds: 300,
     params: [REPO],
@@ -153,7 +153,7 @@ export const getIssue: Read = {
       "Un ticket par numéro — son état, ses étiquettes et à qui il est assigné."
     ),
     group: "issues",
-    actors: ["member"],
+    actors: ["member", "installation"],
     visibility: "member",
 
     cache_ttl_seconds: 0,
@@ -239,7 +239,7 @@ export const findIssues: Read = {
       "Les tickets correspondant à une question, sous forme des numéros sur lesquels agir."
     ),
     group: "issues",
-    actors: ["member"],
+    actors: ["member", "installation"],
     visibility: "member",
     cache_ttl_seconds: 60,
     params: [

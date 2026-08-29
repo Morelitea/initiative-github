@@ -16,6 +16,11 @@ export function envContract(): string {
       service: "initiative-github",
       public_id: PUBLIC_ID,
       required: [...SETTINGS.required],
+      // What GitHub issues when this app is registered there. Not required to
+      // boot — an app cannot hold credentials for a registration it has not
+      // made — and required for it to do anything. Published as its own class
+      // so a deployment check can say which of the two a missing one is.
+      registration: [...SETTINGS.registration],
       optional: [...SETTINGS.optional],
     },
     null,

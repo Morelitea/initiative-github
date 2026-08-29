@@ -43,16 +43,28 @@ export const manifest: Manifest = {
         fr: "Votre compte GitHub",
       },
 
+      /**
+       * That they authorized, and nothing about who they are.
+       *
+       * A connection is satisfied by the presence of a value, and this is the
+       * smallest thing that can be present. It used to be their GitHub login,
+       * written here in plaintext and read back by nothing — Initiative held a
+       * username it had no use for, and this app already knew it.
+       *
+       * Who somebody is at GitHub is this app's business, and it keeps it: the
+       * credential is sealed in this app's own store and the account behind it
+       * is never asked for. What crosses the channel is a yes.
+       */
       fields: [
         {
-          key: "account_login",
-          type: "string",
+          key: "authorized",
+          type: "bool",
           managed: true,
           label: {
-            en: "GitHub login",
-            de: "GitHub-Anmeldename",
-            es: "Usuario de GitHub",
-            fr: "Identifiant GitHub",
+            en: "Authorized at GitHub",
+            de: "Bei GitHub autorisiert",
+            es: "Autorizado en GitHub",
+            fr: "Autorisé sur GitHub",
           },
         },
       ],
@@ -77,8 +89,14 @@ export const manifest: Manifest = {
      * account opens GitHub's own install page, chooses the account and picks
      * which repositories the app may see, and what exists afterwards is an
      * *installation* with an id. `connect_path` is what sends a guild admin
-     * there; every field here is `managed`, because all three are things
-     * GitHub said and none is a thing to be typed.
+     * there; both fields are `managed`, because both are things GitHub said
+     * and neither is a thing to be typed.
+     *
+     * The repositories are not among them, and their absence is the point.
+     * They are what the installation covers, which the installation itself
+     * answers — so this app reads them on every sync rather than keeping a
+     * copy here that somebody would have to correct by hand the next time an
+     * organization ticked another box.
      */
     {
       id: "workspace",
@@ -113,18 +131,6 @@ export const manifest: Manifest = {
             de: "Installation",
             es: "Instalación",
             fr: "Installation",
-          },
-        },
-        {
-          key: "repos",
-          type: "string",
-          required: true,
-          managed: true,
-          label: {
-            en: "Repositories",
-            de: "Repositories",
-            es: "Repositorios",
-            fr: "Dépôts",
           },
         },
       ],

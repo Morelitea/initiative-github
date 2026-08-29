@@ -17,35 +17,41 @@ export interface WatchingInstall {
 /**
  * Write down what this install watches, and what routes deliveries to it.
  *
+ * Two of these are the same shape of answer and are passed the same way.
  * `installationId` is what GitHub said: a number, or `null` for "there is no
  * installation", which has to be recorded so an app that was uninstalled stops
- * being found. Pass `undefined` when GitHub did not say — the row keeps the id
- * it already had rather than recording an absence nobody established.
+ * being found. `repos` is what that installation covers. Pass `undefined` for
+ * either where GitHub did not say — the row keeps what it had rather than
+ * recording an absence nobody established, because an empty boundary is not a
+ * narrower guess, it is every tile in the guild going dark.
  */
 export async function rememberWorkspace(
   appInstallId: number,
   guildId: number,
-  workspace: Workspace,
-  installationId: number | null | undefined
+  owner: string,
+  installationId: number | null | undefined,
+  repos: string[] | undefined
 ): Promise<void> {
-  const learned = installationId !== undefined;
+  const learnedInstall = installationId !== undefined;
+  const learnedRepos = repos !== undefined;
   await pool.query(
     `INSERT INTO workspaces (app_install_id, guild_id, owner, repos, installation_id)
-     VALUES ($1, $2, $3, $4, $5)
+     VALUES ($1, $2, $3, COALESCE($4, ARRAY[]::text[]), $5)
      ON CONFLICT (app_install_id) DO UPDATE
         SET guild_id = EXCLUDED.guild_id,
             owner = EXCLUDED.owner,
-            repos = EXCLUDED.repos,
+            repos = CASE WHEN $7 THEN EXCLUDED.repos ELSE workspaces.repos END,
             installation_id = CASE WHEN $6 THEN EXCLUDED.installation_id
                                    ELSE workspaces.installation_id END,
             updated_at = now()`,
     [
       appInstallId,
       guildId,
-      workspace.owner,
-      workspace.repos,
+      owner,
+      repos ?? null,
       installationId ?? null,
-      learned,
+      learnedInstall,
+      learnedRepos,
     ]
   );
 }
@@ -100,16 +106,6 @@ export async function installsForInstallation(
   const found = await pool.query<{ app_install_id: string; guild_id: string }>(
     "SELECT app_install_id, guild_id FROM workspaces WHERE installation_id = $1",
     [installationId]
-  );
-  return watching(found.rows);
-}
-
-export async function installsAwaiting(owner: string): Promise<WatchingInstall[]> {
-  const found = await pool.query<{ app_install_id: string; guild_id: string }>(
-    `SELECT app_install_id, guild_id
-       FROM workspaces
-      WHERE lower(owner) = lower($1) AND installation_id IS NULL`,
-    [owner]
   );
   return watching(found.rows);
 }

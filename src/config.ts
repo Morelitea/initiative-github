@@ -5,6 +5,19 @@ export const SETTINGS = {
     "APP_PUBLIC_URL",
     "DATABASE_URL",
     "APP_ENCRYPTION_KEY",
+  ],
+  /**
+   * What GitHub gives you when the app is registered there.
+   *
+   * Not required at boot, and that is the whole point: an app cannot be asked
+   * to hold the credentials for a registration it has not made yet. Without
+   * them this one starts, answers nothing GitHub-shaped, and serves the single
+   * route that creates the registration — see `INITIATIVE_APP_SETUP_TOKEN`.
+   *
+   * Every one of them is checked before anything reaches GitHub, so the state
+   * is "not registered" rather than "half configured".
+   */
+  registration: [
     "GITHUB_CLIENT_ID",
     "GITHUB_CLIENT_SECRET",
     "GITHUB_APP_PRIVATE_KEY",
@@ -15,10 +28,14 @@ export const SETTINGS = {
     "GITHUB_API_BASE",
     "GITHUB_WEB_BASE",
     "SYNC_INTERVAL_SECONDS",
+    // Opens the registration route, and is the only thing that does. Set it to
+    // register, then take it away.
+    "INITIATIVE_APP_SETUP_TOKEN",
   ],
 } as const;
 
 type Required = (typeof SETTINGS.required)[number];
+type Registration = (typeof SETTINGS.registration)[number];
 type Optional = (typeof SETTINGS.optional)[number];
 
 function required(name: Required): string {
@@ -33,14 +50,19 @@ function optional(name: Optional): string | undefined {
   return process.env[name] || undefined;
 }
 
+function given(name: Registration): string {
+  return (process.env[name] ?? "").trim();
+}
+
 function withoutTrailingSlash(value: string): string {
   let end = value.length;
   while (end > 0 && value[end - 1] === "/") end -= 1;
   return value.slice(0, end);
 }
 
-function privateKey(name: Required): string {
-  const raw = required(name).trim();
+function privateKey(name: Registration): string {
+  const raw = given(name);
+  if (!raw) return "";
 
   const pem = raw.includes("-----BEGIN")
     ? raw.split("\\n").join("\n")
@@ -69,12 +91,24 @@ function read() {
         encryptionKey: required("APP_ENCRYPTION_KEY"),
 
     github: {
-            clientId: required("GITHUB_CLIENT_ID"),
-      clientSecret: required("GITHUB_CLIENT_SECRET"),
+            clientId: given("GITHUB_CLIENT_ID"),
+      clientSecret: given("GITHUB_CLIENT_SECRET"),
 
             privateKey: privateKey("GITHUB_APP_PRIVATE_KEY"),
 
-            webhookSecret: required("GITHUB_WEBHOOK_SECRET"),
+            webhookSecret: given("GITHUB_WEBHOOK_SECRET"),
+
+      /**
+       * Whether this deployment has a registration at all.
+       *
+       * All four or none: a deployment holding three of them cannot sign, and
+       * an app that discovered that one route at a time would fail differently
+       * on each. Read once, so every GitHub-shaped route can refuse in the
+       * same words and point at the one that fixes it.
+       */
+      registered:
+        SETTINGS.registration.every((name) => given(name) !== "") &&
+        privateKey("GITHUB_APP_PRIVATE_KEY") !== "",
 
             apiBase: withoutTrailingSlash(optional("GITHUB_API_BASE") ?? "https://api.github.com"),
 

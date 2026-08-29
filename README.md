@@ -4,8 +4,15 @@ Brings a repository's issues, reviews and dependency alerts into
 [Initiative](https://github.com/Morelitea/initiative) as dashboard widgets, and
 lets an automation act on that repository as the person whose automation it is.
 
-Everything it shows and everything it does runs on **your own GitHub
-credential**, so you see exactly what you can see at GitHub and nothing else.
+An organization grants it twice, on GitHub's own pages: **which permissions**
+it has, and **which repositories** they apply to — all of them, or a list you
+pick. That grant is the boundary, and this app cannot widen it from here.
+
+Inside it, two credentials do two jobs. Anything about *you* — your review
+queue, an issue you open — runs on **your own GitHub credential**, so it shows
+exactly what you can see and is attributed to you. Anything about the
+repository runs on the installation, so a dashboard answers for everyone in the
+guild without each person having to sign in first.
 
 ```
 ghcr.io/morelitea/initiative-github:latest
@@ -71,13 +78,23 @@ repositories the app may see, and come back to a guild that is set up.
 | **Says** | which installation is this guild's | what this app may do, which repositories it may see, and where deliveries come from |
 | **Undone by** | uninstalling in Initiative | uninstalling at GitHub |
 
-The repositories are chosen once, at GitHub, on the page that grants them. This
-app writes down what came back — the account, the installation's id, and the
-repositories it covers — and that list is the boundary every call is checked
-against. Nothing about the arrangement is typed here, and nothing has to be kept
-matching by hand.
+The repositories are chosen at GitHub, on the page that grants them, and they
+stay GitHub's answer: this app writes down the account and the installation, and
+asks the installation itself what it covers. So the boundary every call is
+checked against is the set of boxes somebody ticked, and adding one later needs
+nothing here at all.
 
-Step 6 below is the whole of it.
+There are two credentials in play and they do different jobs, which is why both
+halves exist:
+
+| | comes from | answers |
+|---|---|---|
+| **the installation** | this app's own key, no authorization anywhere | what the organization granted — which repositories, and where deliveries come from |
+| **a member's account** | that person authorizing, in step 7 | who is asking, so a tile shows *your* review queue and a write is attributed to you |
+
+Neither substitutes for the other. An installation token acts as the app and
+never as a person, so it cannot resolve *your* anything; a member's token
+reaches only what that member reaches. Step 6 below is the first half.
 
 ---
 
@@ -110,69 +127,93 @@ permissions an organization approves when it installs, and one webhook covering
 every organization that ever does. You register one per deployment, because
 GitHub matches every URL on it against a live host.
 
-Open **<https://github.com/settings/apps/new>**. For an organization use
-`https://github.com/organizations/YOUR-ORG/settings/apps/new` instead.
+You do not fill in a form. GitHub takes the registration as a document, and this
+app generates it from the same constants the code runs on — so the callbacks,
+the setup URL, the webhook, the permissions and the events cannot disagree with
+what the code expects.
 
-| Field | Value |
-| --- | --- |
-| GitHub App name | anything unique — GitHub App names are global |
-| Homepage URL | `https://github.com/Morelitea/initiative-github` |
-| Callback URL | `https://github-app.example.com/connect/github/callback` |
-| Expire user authorization tokens | **checked** |
-| Request user authorization (OAuth) during installation | **checked** |
-| Setup URL | `https://github-app.example.com/setup/github` |
-| Webhook → Active | **checked** |
-| Webhook URL | `https://github-app.example.com/webhooks/github` |
-| Webhook secret | `openssl rand -hex 32` — keep it |
-| Where can this be installed | Any account |
+**From the running app.** Set one variable and open one link:
 
-**Repository permissions**: Issues → *Read and write*, Pull requests → *Read and
-write*, Dependabot alerts → *Read-only*. **Organization permissions**: Projects →
-*Read and write*.
+```bash
+INITIATIVE_APP_SETUP_TOKEN=$(openssl rand -hex 32)
+```
 
-> Two of those have a near neighbour on the same form. Dependabot alerts is
-> spelled `vulnerability_alerts` in the API and *Dependabot alerts* on the page.
-> And Projects appears twice: take the **organization** one, which covers
-> Projects v2 boards — the repository one covers classic project boards.
+The app starts with no GitHub credentials at all, refuses every GitHub-shaped
+route, and serves exactly one thing:
 
-Under **Subscribe to events**, tick **Issues** and **Pull request**.
+```
+https://github-app.example.com/setup/register?token=THE-TOKEN
+```
 
-Create it, then collect four things from the page that follows:
+Add `&org=your-org` to register it in an organization instead of your own
+account. GitHub shows you the registration with every field already filled in;
+press **Create GitHub App**, and the four values appear on the page.
 
-1. **Client ID** — shown at the top.
-2. **Client secret** — *Generate a new client secret*, copy it now.
-3. **Private key** — *Generate a private key*. A `.pem` downloads.
-4. **Webhook secret** — the value you generated above.
+**Or from a checkout**, if you would rather not put a token on the workload:
+
+```bash
+APP_PUBLIC_URL=https://github-app.example.com npm run register
+```
+
+Same flow, same document, redirected to a listener on localhost. `GITHUB_APP_ORG`
+targets an organization.
+
+Either way you end up with:
+
+```
+GITHUB_CLIENT_ID=…
+GITHUB_CLIENT_SECRET=…
+GITHUB_WEBHOOK_SECRET=…
+GITHUB_APP_PRIVATE_KEY=…
+```
+
+Put them where this deployment reads its settings and restart it. **GitHub will
+not show them again**, and the app has not kept a copy — they are what it reads
+at boot, so there is nowhere for it to keep one.
+
+> **Then take the token away.** For as long as `INITIATIVE_APP_SETUP_TOKEN` is
+> set, whoever holds it can create a GitHub App in the account they are signed
+> into. The route 404s without it — not 403, so it does not advertise itself —
+> and an app that has registered has no further use for it.
+
+Registering by hand still works if you want to see what is being asked for:
+`npm run github-app` prints the same registration as a form. The two that catch
+people out are on that path only — *Request user authorization during
+installation* must be **off**, and there are **two** callback URLs.
 
 ## Step 2 — Generate the shared secrets
+
+Four came from step 1. These are the ones this deployment makes for itself:
 
 ```bash
 openssl rand -hex 32                          # → GITHUB_APP_SECRET
 openssl rand -base64 32                       # → GITHUB_ENCRYPTION_KEY
 openssl rand -hex 16                          # → GITHUB_DB_PASSWORD
 openssl genrsa 2048 > platform-signing.pem    # Initiative's app-platform key
-base64 -w0 your-app.private-key.pem           # → GITHUB_APP_PRIVATE_KEY
 ```
 
-That last one matters: a PEM has newlines and an environment variable is one
-line, so this app reads the key as base64 of the whole file. (A real PEM, or one
-with `\n` typed literally, also work.)
-
-Put them in the `.env` beside your `docker-compose.yml`:
+Put all of it in the `.env` beside your `docker-compose.yml`:
 
 ```bash
 GITHUB_APP_SECRET=REPLACE-with-the-first-openssl-output
 GITHUB_ENCRYPTION_KEY=REPLACE-with-the-second-openssl-output
 GITHUB_DB_PASSWORD=REPLACE-with-the-third-openssl-output
-GITHUB_CLIENT_ID=REPLACE-with-the-client-id-github-showed-you
-GITHUB_CLIENT_SECRET=REPLACE-with-the-client-secret-you-generated
-GITHUB_APP_PRIVATE_KEY=REPLACE-with-the-base64-of-your-pem
-GITHUB_WEBHOOK_SECRET=REPLACE-with-the-webhook-secret-you-generated
 GITHUB_APP_PUBLIC_URL=https://github-app.example.com
+
+# these four came out of `npm run register`, ready to paste
+GITHUB_CLIENT_ID=…
+GITHUB_CLIENT_SECRET=…
+GITHUB_WEBHOOK_SECRET=…
+GITHUB_APP_PRIVATE_KEY=…
 ```
 
-Every `REPLACE-…` is a value only you have. Nothing in this repository ships a
+Every value here is one only you have. Nothing in this repository ships a
 working secret.
+
+> If you registered by hand instead, the private key downloads as a `.pem` and
+> an environment variable is one line — `base64 -w0 your-app.private-key.pem`
+> is what goes in `GITHUB_APP_PRIVATE_KEY`. A real PEM, or one with `\n` typed
+> literally, also work.
 
 ## Step 3 — Tell Initiative the app exists
 
@@ -305,16 +346,24 @@ its settings and press **Connect** on *GitHub organization*.
 That opens GitHub's own install page in a new tab. Choose the account — yours or
 an organization's — and pick which repositories this app may see. Only somebody
 who owns that account can finish it; if that is not you, GitHub raises a request
-for an owner to approve.
+for an owner to approve, and the tab says so rather than reporting a failure.
 
-Come back to the tab and you are done. The app records the account, the
-installation and the repositories it covers, and the settings page stops asking
-to be set up. There is nothing to type: the repository list is the one you ticked
-at GitHub, and it is the boundary every call is checked against.
+GitHub then asks you to authorize, which looks like a second step and is a
+different question: the first said *what may this app reach*, and this one says
+*who is claiming it*. GitHub hands an app the installation's id in a URL and
+documents that it must not be believed, so this checks the claim against the
+installations GitHub says you actually hold. The token that answers is spent on
+that one question and dropped — nothing about you is stored, and this is not
+the same as connecting your account in step 7.
 
-> Pressing **Connect** again is how you change any of it — a different account,
-> or more repositories. GitHub's *Configure* page has the same effect, but come
-> back through **Connect** afterwards so this app is told what changed.
+Then you are done, and there is nothing to type. The app writes down the
+account and the installation; what that installation covers it reads from
+GitHub, every time it syncs, so the boundary is the repositories you ticked and
+stays that way without anybody maintaining a copy.
+
+> Pressing **Connect** again is how you move to a different account. Adding or
+> removing repositories does not need it — do that at GitHub, on the app's
+> *Configure* page, and it arrives here on its own.
 
 Install **GitHub overview** the same way for the ready-made dashboard.
 
@@ -325,13 +374,29 @@ settings, **Your GitHub account → Connect**. You are sent to GitHub, you
 authorize, and Initiative tells you how it went — this app hands you back rather
 than writing that page itself, so you read it in your own language.
 
+What Initiative is told is that you authorized, and nothing else. Your GitHub
+account is not asked for and not written down: the credential is sealed in this
+app's own database, filed under a handle that says nothing about you, and the
+connection is satisfied by a yes. A guild admin can see that you connected and
+can end it; they cannot see which GitHub account you connected as, because
+nothing on that side holds it.
+
 The admin who installed the app is not exempt. Installing grants what the app
 may reach; authorizing says who is asking. Nothing this app shows or does runs
 as the installation, so a member who has not connected has not yet given it
 anything to answer with.
 
-Every widget runs on your credential, so a member who has not connected is asked
-to rather than shown somebody else's numbers.
+You do not have to, and the dashboard works either way. A tile about the
+repository — open issues, Dependabot alerts, throughput — is answered on the
+installation, so it says the same thing to everyone in the guild whether or not
+they have connected. Connecting changes two things: a tile about *you* becomes
+possible at all (your review queue has no answer without a you), and everything
+is answered as you instead — so you see exactly what you can see at GitHub,
+which for a guild whose installation covers repositories you cannot open is a
+narrower and more honest number.
+
+Writes are always yours. Nothing this app does to a repository is ever
+attributed to the app.
 
 ---
 
@@ -374,8 +439,10 @@ Optional:
 | Every tile says *connect your account* | You have not connected, or the write-back failed — see the next row. |
 | *Nearly there* after authorizing | GitHub authorized you and Initiative did not record it. Connect again; nothing was lost. |
 | Tile says *not configured* | The install at GitHub was never finished, or was cleared. Press **Connect** on *GitHub organization* in step 6. |
+| *Waiting on an owner* after installing | You do not own that account, so GitHub raised a request instead. Nothing is wrong; press **Connect** again once an owner approves it. |
+| *Not connected* right after choosing an account | GitHub did not agree the installation you came back naming is one you hold. Start again from **Connect** rather than reusing the link. |
 | Tile says *repository-required* | The installation covers several repositories and the tile does not say which. Set `repo` on the dashboard tile. |
-| Tile says *repository-not-listed* | The tile's `repo` is not one the installation covers. Add it at GitHub and press **Connect** again, or fix the tile. |
+| Tile says *repository-not-listed* | The tile's `repo` is not one the installation covers. Add it at GitHub and it arrives within a sync, or fix the tile. |
 | Events never arrive | The install at GitHub in step 6 did not finish, or was removed there. Widgets run on members' own credentials and work without it; deliveries do not. |
 | Redirect mismatch at GitHub | `APP_PUBLIC_URL` and the Callback URL disagree. They must match exactly, scheme and port included. |
 | GitHub's *Recent Deliveries* shows red | `401` is the webhook secret differing between the form and the container. A timeout is the proxy: the Webhook URL does not reach port 8080. |

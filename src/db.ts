@@ -24,6 +24,10 @@ export const pool: Pool = new Proxy({} as Pool, {
 
 const SCHEMA = [
 
+  // One member's credential at GitHub, sealed. Their account is not written
+  // down anywhere — not here and not in Initiative — because nothing reads it:
+  // the token is what every call is made with, and the connection handle is
+  // what it is filed under.
   `CREATE TABLE IF NOT EXISTS connections (
      connection_ref     TEXT PRIMARY KEY,
      guild_id           BIGINT,
@@ -31,25 +35,26 @@ const SCHEMA = [
      refresh_token      TEXT,
      expires_at         TIMESTAMPTZ,
      refresh_expires_at TIMESTAMPTZ,
-     account_label      TEXT,
      created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
      updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
    )`,
 
-  // `flow` is what this trip was started to do, decided here when the state is
-  // minted rather than inferred from what GitHub hands back. Both flows end at
-  // the same callback, and they end differently: one stores a member's own
-  // credential, the other records the installation an admin just made for the
-  // whole guild. Reading that off a parameter GitHub may or may not send would
-  // be guessing at our own intent.
+  // A browser trip this app started and expects back. Nothing here says which
+  // kind, because nothing has to: each ends at a route of its own, so whichever
+  // one claims a row already knows what it is looking at.
+  //
+  // `claimed_installation` is the exception, and it is a claim rather than a
+  // fact. GitHub returns an installation to the setup URL with an id anybody
+  // can type, so it is written down unverified and checked at the end of the
+  // authorization that follows, against what GitHub says that person holds.
   `CREATE TABLE IF NOT EXISTS oauth_states (
-     state          TEXT PRIMARY KEY,
-     connection_ref TEXT NOT NULL,
-     guild_id       BIGINT,
-     flow           TEXT NOT NULL DEFAULT 'account',
-     code_verifier  TEXT,
-     return_url     TEXT,
-     expires_at     TIMESTAMPTZ NOT NULL
+     state                TEXT PRIMARY KEY,
+     connection_ref       TEXT NOT NULL,
+     guild_id             BIGINT,
+     code_verifier        TEXT,
+     return_url           TEXT,
+     claimed_installation BIGINT,
+     expires_at           TIMESTAMPTZ NOT NULL
    )`,
 
   `CREATE INDEX IF NOT EXISTS oauth_states_expires_at ON oauth_states (expires_at)`,

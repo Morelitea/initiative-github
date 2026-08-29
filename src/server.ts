@@ -25,8 +25,11 @@ import {
   CONNECT_PATH,
   ENDPOINTS_PATH,
   INSTALL_PATH,
+  REGISTER_DONE_PATH,
+  REGISTER_PATH,
   SETUP_PATH,
   SUBSCRIPTIONS_PATH,
+  VERIFY_PATH,
   WEBHOOK_PATH,
 } from "./vocabulary.js";
 import {
@@ -45,7 +48,20 @@ import {
   invoke,
 } from "./invoke.js";
 import { installUrl } from "./github/app.js";
-import { beginInstall, beginOAuth, completeOAuth, landingFor } from "./github/oauth.js";
+import {
+  convert,
+  escapeHtml,
+  permitted,
+  registrationForm,
+  returnedFromUs,
+} from "./github/registration.js";
+import { beginOAuth, completeOAuth, landingFor } from "./github/oauth.js";
+import {
+  beginInstall,
+  completeInstall,
+  completeVerify,
+  type SetupResult,
+} from "./github/install.js";
 import {
   DELIVERY_HEADER,
   EVENT_HEADER,
@@ -95,7 +111,138 @@ const ENDINGS: Record<ConnectOutcome, string> = {
     "GitHub authorized this app, but Initiative did not record it. Try " +
       "connecting again from the app's settings — nothing was lost."
   ),
+
+  awaiting_approval: page(
+    "Waiting on an owner",
+    "You do not own that organization, so GitHub has asked somebody who does " +
+      "to approve this app. Nothing went wrong and nothing is set up yet — " +
+      "once they approve it, press <b>Connect</b> again from the app's " +
+      "settings in Initiative."
+  ),
 };
+
+const NO_TRIP = page(
+  "Nothing to finish here",
+  "This is where GitHub sends somebody back at the end of an install this app " +
+    "started. Nothing started here, so there is nothing to record. Open the " +
+    "app's settings in Initiative and press <b>Connect</b> on the GitHub " +
+    "organization."
+);
+
+/**
+ * Hand somebody back, or say it here if there is nowhere to hand them.
+ *
+ * Initiative renders the ending: this app knows a connection handle and a guild
+ * id and has never been told what language the person reads. The pages below
+ * are the fallback for a trip that arrived without a signed return address,
+ * which is the only case where this app has to write a sentence itself.
+ */
+async function ending(res: ServerResponse, result: SetupResult): Promise<void> {
+  if (result.installedFor !== undefined) {
+    try {
+      await syncInstall(result.installedFor);
+    } catch (error) {
+      console.error(`could not sync guild ${result.installedFor} after an install`, error);
+    }
+  }
+
+  // Not an ending: they are on their way to prove the claim they came back
+  // with, which is the one thing this route cannot settle by itself.
+  if (result.outcome === "verifying" && result.authorize) {
+    return redirect(res, result.authorize);
+  }
+
+  // Nothing this app started, so there is no signed address to hand them to.
+  if (result.outcome === "elsewhere") return sendPage(res, NO_TRIP);
+
+  // Every remaining outcome is one Initiative has copy for, and `requested` is
+  // the app's word for the one the kit calls `awaiting_approval`.
+  const outcome: ConnectOutcome =
+    result.outcome === "requested" || result.outcome === "verifying"
+      ? "awaiting_approval"
+      : result.outcome;
+
+  const home = landingFor({ outcome, home: result.home });
+  if (home) return redirect(res, home);
+
+  sendPage(res, ENDINGS[outcome]);
+}
+
+function redirect(res: ServerResponse, location: string): void {
+  res.writeHead(302, { Location: location });
+  res.end();
+}
+
+const NO_ROUTE = { error: "no such route" };
+
+/** Which routes cannot answer without a registration behind them. */
+const GITHUB_ROUTES = new Set<string>([
+  CONNECT_PATH,
+  CALLBACK_PATH,
+  INSTALL_PATH,
+  SETUP_PATH,
+  VERIFY_PATH,
+  WEBHOOK_PATH,
+  ENDPOINTS_PATH,
+]);
+
+const REGISTRATION_ABANDONED = page(
+  "Nothing was registered",
+  "GitHub sent you back without creating the app. Nothing changed — open the " +
+    "registration link again to have another go."
+);
+
+const REGISTRATION_FAILED = page(
+  "GitHub did not finish it",
+  "The registration came back without its credentials, so there is nothing to " +
+    "show you. Check this app's log, then open the registration link again. " +
+    "An app may have been created at GitHub — delete it there before retrying."
+);
+
+/**
+ * The four values, once and never again.
+ *
+ * GitHub will not show these a second time and this app does not keep them:
+ * it cannot, since they are what it reads at boot. So they are rendered, with
+ * no way to get back to them, which is the honest shape of a one-time secret.
+ */
+function registered(app: {
+  slug: string;
+  htmlUrl: string;
+  clientId: string;
+  clientSecret: string;
+  webhookSecret: string;
+  privateKey: string;
+}): string {
+  const block = [
+    `GITHUB_CLIENT_ID=${app.clientId}`,
+    `GITHUB_CLIENT_SECRET=${app.clientSecret}`,
+    `GITHUB_WEBHOOK_SECRET=${app.webhookSecret}`,
+    `GITHUB_APP_PRIVATE_KEY=${app.privateKey}`,
+  ].join("\n");
+
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Registered at GitHub</title>
+<style>
+body{font:16px/1.5 system-ui,sans-serif;margin:4rem auto;max-width:52rem;padding:0 1rem}
+pre{background:#f4f4f5;padding:1rem;border-radius:.5rem;overflow-x:auto;font-size:13px}
+</style>
+</head><body>
+<h1>Registered</h1>
+<p><b>${escapeHtml(app.slug)}</b> now exists at GitHub${
+    app.htmlUrl ? ` — <a href="${escapeHtml(app.htmlUrl)}">its page is here</a>` : ""
+  }.</p>
+<p>Put these four values where this deployment reads its settings, and restart
+it. <b>GitHub will not show them again</b>, and this app has not kept a copy:
+they are what it reads at boot, so there is nowhere for it to keep one.</p>
+<pre>${escapeHtml(block)}</pre>
+<p>Then remove <code>INITIATIVE_APP_SETUP_TOKEN</code>. It exists to open this
+one route, and an app that has registered has no further use for it.</p>
+<p>Nothing else on the registration needs touching: the callbacks, the setup
+URL, the webhook, the permissions and the events all came from the same
+constants this app runs on.</p>
+</body></html>`;
+}
 
 function homeFrom(url: URL): string | null {
   return returnAddress({ secret: config.appSecret, params: url.searchParams });
@@ -228,6 +375,35 @@ export const server = createServer(async (req, res) => {
       }
     }
 
+    // Registering, which is the one thing an app with no registration can do.
+    // Behind the setup token and nothing else: for as long as that is set,
+    // whoever holds it can create a GitHub App in the account they are signed
+    // into, which is why the README says to take it away afterwards.
+    if (req.method === "GET" && path === REGISTER_PATH) {
+      if (!permitted(url.searchParams.get("token"))) return send(res, 404, NO_ROUTE);
+
+      const form = registrationForm(url.searchParams.get("org"));
+      if (!form) return send(res, 503, { error: "no setup token" });
+      return sendPage(res, form);
+    }
+
+    if (req.method === "GET" && path === REGISTER_DONE_PATH) {
+      // GitHub carries the state back and nothing else this app can check, so
+      // the state is the check: signed with the setup token when it went out.
+      if (!returnedFromUs(url.searchParams.get("state"))) {
+        return send(res, 404, NO_ROUTE);
+      }
+
+      const code = url.searchParams.get("code");
+      if (!code) return sendPage(res, REGISTRATION_ABANDONED);
+
+      const app = await convert(code);
+      if (!app) return sendPage(res, REGISTRATION_FAILED);
+
+      console.log(`registered at GitHub as ${app.slug}`);
+      return sendPage(res, registered(app));
+    }
+
     if (req.method === "GET" && path === "/.well-known/initiative-app.json") {
       return sendBytes(res, 200, MANIFEST_DOCUMENT);
     }
@@ -259,6 +435,16 @@ export const server = createServer(async (req, res) => {
       return send(res, 204, null);
     }
 
+    // Nothing below reaches GitHub without one, and they all refuse in the
+    // same words rather than each failing in its own way further in.
+    if (!config.github.registered && GITHUB_ROUTES.has(path)) {
+      return send(res, 503, {
+        error:
+          "this app is not registered at GitHub yet — set INITIATIVE_APP_SETUP_TOKEN " +
+          `and open ${config.publicUrl}${REGISTER_PATH}?token=…`,
+      });
+    }
+
     if (req.method === "GET" && path === CONNECT_PATH) {
       const connectionRef = url.searchParams.get("connection_ref");
       if (!connectionRef) return send(res, 400, { error: "no connection_ref" });
@@ -273,20 +459,6 @@ export const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && path === CALLBACK_PATH) {
       const result = await completeOAuth(url.searchParams);
-
-      // An admin just recorded the guild's organization. The poll would find
-      // it within the sync interval; syncing now is the difference between a
-      // dashboard that works when they get back and one that works in five
-      // minutes. A failure here is not the admin's problem — the workspace is
-      // written down, and the next poll rebuilds what this missed.
-      if (result.installedFor !== undefined) {
-        try {
-          await syncInstall(result.installedFor);
-        } catch (error) {
-          console.error(`could not sync guild ${result.installedFor} after an install`, error);
-        }
-      }
-
       const home = landingFor(result);
       if (home) {
         res.writeHead(302, { Location: home });
@@ -313,20 +485,19 @@ export const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && path === SETUP_PATH) {
-      // Where GitHub sends somebody who installed or reconfigured this app
-      // from GitHub's own pages rather than from Initiative. Nothing arrives
-      // here that says which guild it is for — that is what the connect flow
-      // carries — so this page has one job: say where the other half is.
-      return sendPage(
-        res,
-        page(
-          "Installed at GitHub",
-          "That half is done. Now open this app's settings in Initiative and " +
-            "press <b>Connect</b> on the GitHub organization — that is what " +
-            "tells your guild which installation is its own. If you started " +
-            "from there, you are already finished."
-        )
-      );
+      // Where GitHub returns an *installation*. Not a login: nothing was
+      // authorized and no credential is stored. What arrives is a state this
+      // app minted, saying which guild the trip was for, and an installation
+      // id GitHub documents as untrustworthy — so this route settles nothing
+      // and sends the person on to prove the claim.
+      return ending(res, await completeInstall(url.searchParams));
+    }
+
+    if (req.method === "GET" && path === VERIFY_PATH) {
+      // The second registered callback, and the only place an installation is
+      // written down. A member signing in never reaches it, and an install
+      // never reaches theirs.
+      return ending(res, await completeVerify(url.searchParams));
     }
 
     if (path === ENDPOINTS_PATH && (req.method === "GET" || req.method === "POST")) {
@@ -442,7 +613,7 @@ export const server = createServer(async (req, res) => {
       return send(res, 200, { resynced: result.resynced, published: result.published });
     }
 
-    return send(res, 404, { error: "no such route" });
+    return send(res, 404, NO_ROUTE);
   } catch (error) {
     console.error("request failed", error);
     return send(res, 500, { error: "internal error" });

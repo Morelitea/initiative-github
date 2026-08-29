@@ -4,17 +4,22 @@ import { config } from "../config.js";
 import { publish, syncInstall } from "../platform.js";
 
 import { translate } from "../endpoints/emissions.js";
-import {
-  installsAwaiting,
-  installsForInstallation,
-  installsWatching,
-} from "../workspace.js";
+import { installsForInstallation, installsWatching } from "../workspace.js";
 
 export const EVENT_HEADER = "x-github-event";
 export const SIGNATURE_HEADER = "x-hub-signature-256";
 export const DELIVERY_HEADER = "x-github-delivery";
 
-const LIFECYCLE_EVENTS = new Set(["installation"]);
+/**
+ * What GitHub tells every app about its own installations, subscribed or not.
+ *
+ * `installation` is one being made, suspended or removed;
+ * `installation_repositories` is the boundary changing — an organization
+ * ticking another repository, which is how that reaches a guild without
+ * anybody coming back through Initiative to say so. Neither can be subscribed
+ * to and neither has to be: GitHub sends both to every app.
+ */
+const LIFECYCLE_EVENTS = new Set(["installation", "installation_repositories"]);
 
 export function verifySignature(body: Uint8Array, header: string | undefined): boolean {
   if (!header || !header.startsWith("sha256=")) return false;
@@ -43,40 +48,26 @@ export async function handleDelivery(
     return publishActivity(event, payload, deliveryId);
   }
 
-  const installation = payload.installation as
-    | { id?: unknown; account?: { login?: unknown } }
-    | undefined;
+  const installation = payload.installation as { id?: unknown } | undefined;
   const installationId = typeof installation?.id === "number" ? installation.id : null;
-  const owner =
-    typeof installation?.account?.login === "string"
-      ? installation.account.login
-      : null;
 
-  if (installationId === null && owner === null) {
+  if (installationId === null) {
     return { resynced: 0, published: 0, reason: "no-installation" };
   }
 
-  const guilds = new Map<number, number>();
-
-  if (installationId !== null) {
-    for (const install of await installsForInstallation(installationId)) {
-      guilds.set(install.appInstallId, install.guildId);
-    }
-  }
-
-  if (owner) {
-    for (const install of await installsAwaiting(owner)) {
-      guilds.set(install.appInstallId, install.guildId);
-    }
-  }
-
+  // By id, because that is what a guild is bound to. The account it is on is
+  // in the payload too and is not a way to find anybody: a login names an
+  // installation only until somebody renames the organization.
   let resynced = 0;
-  for (const guildId of guilds.values()) {
+  for (const install of await installsForInstallation(installationId)) {
     try {
-      await syncInstall(guildId);
+      await syncInstall(install.guildId);
       resynced += 1;
     } catch (error) {
-      console.error(`could not re-sync guild ${guildId} after an install change`, error);
+      console.error(
+        `could not re-sync guild ${install.guildId} after an install change`,
+        error
+      );
     }
   }
   return { resynced, published: 0 };

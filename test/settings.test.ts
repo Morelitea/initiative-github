@@ -56,12 +56,33 @@ describe("the published contract", () => {
     }
   });
 
-  it("requires the key that makes this a GitHub App", () => {
+  it("names the key that makes this a GitHub App, as a registration setting", () => {
     // The one this whole arrangement exists for. Everything the app does as
     // itself is signed with it — installation discovery, installation tokens,
     // the install page — so a deployment without it serves routes that can
-    // answer nothing, and it must not be possible for that to go unnoticed
-    // again.
-    expect(SETTINGS.required).toContain("GITHUB_APP_PRIVATE_KEY");
+    // answer nothing, and it must not be possible for that to go unnoticed.
+    //
+    // It is not required at *boot*, and that is deliberate rather than a
+    // loosening: an app cannot be asked to hold the credentials for a
+    // registration it has not made yet, and the route that makes one is the
+    // only thing an unregistered app serves. So it is published in its own
+    // class, and a deployment check can tell "cannot start" from "cannot work
+    // until somebody registers it".
+    expect(SETTINGS.registration).toContain("GITHUB_APP_PRIVATE_KEY");
+    expect(SETTINGS.required).not.toContain("GITHUB_APP_PRIVATE_KEY");
+  });
+
+  it("publishes all three classes, because the deployment check reads them", () => {
+    const published = JSON.parse(envContract()) as Record<string, string[]>;
+    expect(published.required).toEqual([...SETTINGS.required]);
+    expect(published.registration).toEqual([...SETTINGS.registration]);
+    expect(published.optional).toEqual([...SETTINGS.optional]);
+  });
+
+  it("opens the registration route with one setting, and only that one", () => {
+    // Set to register, then taken away. It is optional because the state it
+    // describes is temporary, and it is the only thing that makes an
+    // unregistered app willing to do anything.
+    expect(SETTINGS.optional).toContain("INITIATIVE_APP_SETUP_TOKEN");
   });
 });

@@ -1,4 +1,5 @@
 import type {
+  ActorKind,
   ContextClaims,
   DelegationClaims,
   Endpoint,
@@ -19,6 +20,7 @@ import {
   chooseActor,
   fail,
   failed,
+  resolveActor,
   type OperationFailure,
 } from "./github/api.js";
 import { workspaceFor } from "./workspace.js";
@@ -68,6 +70,26 @@ export async function callerFromDelegate(
   return { guildId: claims.guildId, appInstallId, connectionRef };
 }
 
+/**
+ * Which credentials this call may run on, best first.
+ *
+ * What the endpoint declared, narrowed where the parameters make the call
+ * personal. `@me` is GitHub's word for "whoever this token belongs to", and an
+ * installation token belongs to nobody — so a search carrying one has to run
+ * as a person or not run at all. Read off the values rather than off a
+ * parameter name, because it is a convention of GitHub's search syntax and not
+ * a property of any one field this app declares.
+ */
+function actorsFor(
+  endpoint: Endpoint,
+  params: Record<string, unknown>
+): readonly ActorKind[] {
+  const personal = Object.values(params).some(
+    (value) => typeof value === "string" && value.trim() === "@me"
+  );
+  return personal ? ["member"] : (endpoint.actors ?? ["member"]);
+}
+
 async function memberToken(caller: Caller): Promise<string | null> {
   const account = await credentialFor(caller.connectionRef ?? undefined);
   return account?.accessToken ?? null;
@@ -82,8 +104,23 @@ export async function invoke(
   const endpoint = ENDPOINTS.find((candidate) => candidate.id === request.endpoint)!;
 
   if (endpoint.direction === "read") {
-    const result = await READ_HANDLERS[endpoint.id](caller, searchParams(request.params));
-    return { endpoint: endpoint.id, actor: "member", result };
+    // Resolved once here and handed down, so every helper the endpoint reaches
+    // runs on the same credential and the answer below is the one that ran
+    // rather than the one that would have.
+    const asking: Caller = { ...caller, actors: actorsFor(endpoint, request.params) };
+    asking.resolved = await resolveActor(asking);
+
+    const result = await READ_HANDLERS[endpoint.id](asking, searchParams(request.params));
+
+    // Reported rather than assumed. Which credential answered decides what the
+    // numbers mean — a member sees their own view of the repository, the
+    // installation sees the organization's — and a caller is entitled to know
+    // which it got.
+    return {
+      endpoint: endpoint.id,
+      actor: "unavailable" in asking.resolved ? "member" : asking.resolved.actor,
+      result,
+    };
   }
 
   const workspace = await workspaceFor(caller.appInstallId);

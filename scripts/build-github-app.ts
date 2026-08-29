@@ -19,15 +19,22 @@ const permissions = Object.entries(manifest.default_permissions)
 
 process.stdout.write(
   [
+    "`npm run register` does all of this for you — it sends this document to",
+    "GitHub, and the credentials come back without anybody typing them. What",
+    "follows is the same registration as a form to fill in by hand.",
+    "",
     "Register it at:  https://github.com/settings/apps/new",
     "",
     `  GitHub App name       ${manifest.name}`,
     `  Homepage URL          ${manifest.url}`,
     "                        (a link for a reader — not an address this app serves)",
     `  Callback URL          ${manifest.callback_urls[0]}`,
+    `  Callback URL (2nd)    ${manifest.callback_urls[1]}`,
+    "                        (where an installer proves the installation is theirs)",
     "  Expire user tokens    yes",
-    "  Request user auth     yes  (installing and connecting become one trip)",
+    `  Request user auth     ${manifest.request_oauth_on_install ? "yes" : "no  (an install is not a sign-in)"}`,
     `  Setup URL             ${manifest.setup_url}`,
+    `  Redirect on update    ${manifest.setup_on_update ? "yes" : "no  (GitHub reports that by webhook)"}`,
     `  Webhook URL           ${manifest.hook_attributes.url}`,
     "  Webhook secret        openssl rand -hex 32  → GITHUB_WEBHOOK_SECRET",
     `  Permissions           ${permissions}`,

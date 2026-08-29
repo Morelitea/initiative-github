@@ -29,8 +29,8 @@ const {
   config: configCall,
   installs,
   reportStatus,
-  installationForOwner,
   installationById,
+  installationRepositories,
   rememberWorkspace,
   workspaceFor,
   forgetWorkspace,
@@ -39,11 +39,11 @@ const {
   config: vi.fn(),
   installs: vi.fn(),
   reportStatus: vi.fn(async () => ({})),
-  installationForOwner: vi.fn<(owner: string) => Promise<InstallationLookup>>(
-    async () => told(null)
-  ),
   installationById: vi.fn<(id: number) => Promise<InstallationLookup>>(
     async () => told(null)
+  ),
+  installationRepositories: vi.fn<(id: number) => Promise<string[] | null>>(
+    async () => ["widgets"]
   ),
   rememberWorkspace: vi.fn(async () => {}),
   workspaceFor: vi.fn(async () => null as unknown),
@@ -64,13 +64,14 @@ vi.mock("../src/workspace.js", () => ({
   forgetInstallsExcept,
 }));
 
-// GitHub is stubbed at the one call that matters: "have you been installed on
-// this repository?". Everything the sync decides hangs off its answer.
+// GitHub is stubbed at the two calls that matter: "is that installation still
+// there?" and "what does it cover?". Everything the sync decides hangs off
+// those answers.
 vi.mock("../src/github/app.js", async () => {
   const actual = await vi.importActual<typeof import("../src/github/app.js")>(
     "../src/github/app.js"
   );
-  return { ...actual, installationForOwner, installationById };
+  return { ...actual, installationById, installationRepositories };
 });
 
 import { ChannelError } from "initiative-app-kit";
@@ -88,7 +89,7 @@ function installConfig(overrides: Record<string, unknown> = {}) {
     config_state: "ok",
     config_state_detail: null,
     needs_config: false,
-    connections: { workspace: { owner: "acme", repos: "widgets" } },
+    connections: { workspace: { owner: "acme", installation_id: 4242 } },
     member_connections: [],
     ...overrides,
   };
@@ -98,46 +99,56 @@ beforeEach(() => {
   vi.clearAllMocks();
   reportStatus.mockResolvedValue({});
   workspaceFor.mockResolvedValue(null);
+  // `clearAllMocks` forgets the calls and keeps the implementations, so a
+  // boundary one test set would otherwise be the boundary every later one saw.
+  installationRepositories.mockResolvedValue(["widgets"]);
 });
 
 describe("finding the guild's access", () => {
-  it("finds the installation from the repository an admin typed", async () => {
-    // The whole point of the change: nobody pastes a credential. An admin fills
-    // in the repository they were always going to fill in, and the app asks
-    // GitHub whether it has been installed there.
-    configCall.mockResolvedValue(installConfig());
-    installationForOwner.mockResolvedValue(told(4242));
+  it("reads the boundary off the installation rather than off the form", async () => {
+    // The repository list is not configuration any more. An organization ticks
+    // boxes at GitHub, the installation is what those boxes produced, and this
+    // reads it — so a repository added there arrives on the next sync with
+    // nobody coming back through Initiative to retype anything.
+    configCall.mockResolvedValue(
+      installConfig({
+        connections: {
+          workspace: { owner: "acme", installation_id: 4242 },
+        },
+      })
+    );
+    installationById.mockResolvedValue(told(4242));
+    installationRepositories.mockResolvedValue(["widgets", "gadgets"]);
 
-    await expect(syncInstall(500)).resolves.toBe(true);
+    await syncInstall(500);
 
-    // Asked of the account, not of a repository: one grant covers every
-    // repository the organization chose, so asking per repository would be one
-    // call per repository to learn the same id.
-    expect(installationForOwner).toHaveBeenCalledWith("acme");
+    expect(installationRepositories).toHaveBeenCalledWith(4242);
     expect(rememberWorkspace).toHaveBeenCalledWith(
       11,
       500,
-      { owner: "acme", repos: ["widgets"] },
-      4242
+      "acme",
+      4242,
+      ["widgets", "gadgets"]
     );
-    expect(reportStatus).toHaveBeenCalledWith(500, { state: "ok" });
   });
 
-  it("says so when the form names an account and no repository", async () => {
-    // An empty list is an unfinished form, and this app reads it as one — it is
-    // never "every repository the account has". So the reason names the field
-    // that is blank, and nothing goes looking for an installation to fill it.
+  it("keeps the boundary it had when GitHub would not restate it", async () => {
+    // The same rule the id follows, and a costlier one to get wrong: an
+    // unanswered question written down as an empty boundary is every tile in
+    // the guild going dark until a later sync happens to succeed.
     configCall.mockResolvedValue(
-      installConfig({ connections: { workspace: { owner: "acme", repos: "" } } })
+      installConfig({
+        connections: {
+          workspace: { owner: "acme", installation_id: 4242 },
+        },
+      })
     );
+    installationById.mockResolvedValue(told(4242));
+    installationRepositories.mockResolvedValue(null);
 
-    await expect(syncInstall(500)).resolves.toBe(false);
+    await syncInstall(500);
 
-    expect(installationForOwner).not.toHaveBeenCalled();
-    expect(reportStatus).toHaveBeenCalledWith(500, {
-      state: "invalid",
-      detail: "no_repository",
-    });
+    expect(rememberWorkspace).toHaveBeenCalledWith(11, 500, "acme", 4242, undefined);
   });
 
   it("asks after the installation an admin actually made", async () => {
@@ -150,7 +161,7 @@ describe("finding the guild's access", () => {
     configCall.mockResolvedValue(
       installConfig({
         connections: {
-          workspace: { owner: "acme", repos: "widgets", installation_id: 4242 },
+          workspace: { owner: "acme", installation_id: 4242 },
         },
       })
     );
@@ -159,49 +170,22 @@ describe("finding the guild's access", () => {
     await expect(syncInstall(500)).resolves.toBe(true);
 
     expect(installationById).toHaveBeenCalledWith(4242);
-    expect(installationForOwner).not.toHaveBeenCalled();
     expect(rememberWorkspace).toHaveBeenCalledWith(
       11,
       500,
-      { owner: "acme", repos: ["widgets"] },
-      4242
+      "acme",
+      4242,
+      ["widgets"]
     );
   });
 
-  it("looks the account up again when that installation is gone", async () => {
-    // Removed and made again at GitHub is a *new* installation on the same
-    // account, and the id in the connection names the old one. Falling back to
-    // the account is what finds the new one; without it the guild would sit
-    // with an id that names nothing until somebody reconnected.
+  it("writes nothing down when GitHub would not answer about the id", async () => {
+    // Silence is not "gone". Written down as an absence it would stop every
+    // delivery this guild routes, to fix nothing.
     configCall.mockResolvedValue(
       installConfig({
         connections: {
-          workspace: { owner: "acme", repos: "widgets", installation_id: 4242 },
-        },
-      })
-    );
-    installationById.mockResolvedValue(told(null));
-    installationForOwner.mockResolvedValue(told(5150));
-
-    await syncInstall(500);
-
-    expect(installationForOwner).toHaveBeenCalledWith("acme");
-    expect(rememberWorkspace).toHaveBeenCalledWith(
-      11,
-      500,
-      { owner: "acme", repos: ["widgets"] },
-      5150
-    );
-  });
-
-  it("asks nothing else when GitHub would not answer about the id", async () => {
-    // Silence is not "gone". Falling back on it would ask a second question
-    // whose answer would be written down as though the first had been
-    // answered — and the whole point of the union is that it was not.
-    configCall.mockResolvedValue(
-      installConfig({
-        connections: {
-          workspace: { owner: "acme", repos: "widgets", installation_id: 4242 },
+          workspace: { owner: "acme", installation_id: 4242 },
         },
       })
     );
@@ -209,11 +193,11 @@ describe("finding the guild's access", () => {
 
     await syncInstall(500);
 
-    expect(installationForOwner).not.toHaveBeenCalled();
     expect(rememberWorkspace).toHaveBeenCalledWith(
       11,
       500,
-      { owner: "acme", repos: ["widgets"] },
+      "acme",
+      undefined,
       undefined
     );
   });
@@ -226,7 +210,7 @@ describe("finding the guild's access", () => {
     // What is still missing is the webhook, which is why the poll keeps
     // looking rather than treating this as settled.
     configCall.mockResolvedValue(installConfig());
-    installationForOwner.mockResolvedValue(told(null));
+    installationById.mockResolvedValue(told(null));
 
     await expect(syncInstall(500)).resolves.toBe(true);
     expect(reportStatus).toHaveBeenCalledWith(500, { state: "ok" });
@@ -236,15 +220,16 @@ describe("finding the guild's access", () => {
     // Written down as null rather than left at whatever it was. An install that
     // was working and has been uninstalled at GitHub has to stop working here.
     configCall.mockResolvedValue(installConfig());
-    installationForOwner.mockResolvedValue(told(null));
+    installationById.mockResolvedValue(told(null));
 
     await syncInstall(500);
 
     expect(rememberWorkspace).toHaveBeenCalledWith(
       11,
       500,
-      { owner: "acme", repos: ["widgets"] },
-      null
+      "acme",
+      null,
+      undefined
     );
   });
 
@@ -254,14 +239,15 @@ describe("finding the guild's access", () => {
     // one, and recording it as "none" takes every guild-scoped source down —
     // the alerts widget included — until a later sync happens to succeed.
     configCall.mockResolvedValue(installConfig());
-    installationForOwner.mockResolvedValue(SILENT);
+    installationById.mockResolvedValue(SILENT);
 
     await expect(syncInstall(500)).resolves.toBe(true);
 
     expect(rememberWorkspace).toHaveBeenCalledWith(
       11,
       500,
-      { owner: "acme", repos: ["widgets"] },
+      "acme",
+      undefined,
       undefined
     );
     // And the install is still usable: the reads that run as a member never
@@ -274,17 +260,18 @@ describe("finding the guild's access", () => {
     // under the same name. Every delivery is routed by that id, so a stale one
     // is events silently ceasing to arrive.
     configCall.mockResolvedValue(installConfig());
-    installationForOwner.mockResolvedValueOnce(told(4242)).mockResolvedValueOnce(told(7))
+    installationById.mockResolvedValueOnce(told(4242)).mockResolvedValueOnce(told(7));
 
     await syncInstall(500);
     await syncInstall(500);
 
-    expect(installationForOwner).toHaveBeenCalledTimes(2);
+    expect(installationById).toHaveBeenCalledTimes(2);
     expect(rememberWorkspace).toHaveBeenLastCalledWith(
       11,
       500,
-      { owner: "acme", repos: ["widgets"] },
-      7
+      "acme",
+      7,
+      ["widgets"]
     );
   });
 
@@ -294,7 +281,7 @@ describe("finding the guild's access", () => {
     // next delivery for that installation finds nobody rather than finding a
     // guild that has not been in it for a week.
     configCall.mockResolvedValue(installConfig());
-    installationForOwner.mockResolvedValueOnce(told(4242)).mockResolvedValueOnce(told(null));
+    installationById.mockResolvedValueOnce(told(4242)).mockResolvedValueOnce(told(null));
 
     await syncInstall(500);
     await syncInstall(500);
@@ -302,8 +289,9 @@ describe("finding the guild's access", () => {
     expect(rememberWorkspace).toHaveBeenLastCalledWith(
       11,
       500,
-      { owner: "acme", repos: ["widgets"] },
-      null
+      "acme",
+      null,
+      undefined
     );
   });
 
@@ -314,7 +302,7 @@ describe("finding the guild's access", () => {
 
     await expect(syncInstall(500)).resolves.toBe(false);
 
-    expect(installationForOwner).not.toHaveBeenCalled();
+    expect(installationById).not.toHaveBeenCalled();
     // `needs_config` already says an admin has not finished; reporting
     // `invalid` as well would call an unfinished form a fault.
     expect(reportStatus).not.toHaveBeenCalled();
@@ -331,7 +319,7 @@ describe("finding the guild's access", () => {
 
     expect(reportStatus).toHaveBeenCalledWith(500, {
       state: "invalid",
-      detail: "no_repository",
+      detail: "not_installed",
     });
   });
 });
@@ -347,24 +335,24 @@ describe("what the private key can do", () => {
       const actual = await vi.importActual<typeof import("../src/github/app.js")>(
         "../src/github/app.js"
       );
-      await expect(actual.installationForOwner("acme")).resolves.toEqual(told(4242));
+      await expect(actual.installationById(4242)).resolves.toEqual(told(4242));
 
       const asked = fetching.mock.calls.map((call) => String(call[0]));
-      expect(asked).toEqual([expect.stringContaining("/orgs/acme/installation")]);
+      expect(asked).toEqual([expect.stringContaining("/app/installations/4242")]);
     } finally {
       fetching.mockRestore();
     }
   });
 
-  it("never asks GitHub for a token that acts as the installation", async () => {
-    // The claim the whole permission model rests on, checked against the source
-    // rather than against one path through it: a call this app cannot make is
-    // stronger than one it happens not to make today.
+  it("mints a token that acts as the installation in exactly one place", async () => {
+    // This app used to refuse that token outright, and a grep over `src/`
+    // enforced it. It mints one now, because the boundary an organization
+    // granted is a question only the installation can answer and asking a
+    // person to restate it is what this whole flow removed.
     //
-    // `POST /app/installations/{id}/access_tokens` is the only route that turns
-    // the private key into something that can read and write inside every
-    // repository an organization granted. Nothing here calls it, so a stolen
-    // key yields the list of organizations and no way into one.
+    // What is worth keeping is where it can come from. One module holds the
+    // private key and one function spends it, so a reader has one place to
+    // look rather than a habit to trust.
     const { readdirSync, readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
 
@@ -380,7 +368,25 @@ describe("what the private key can do", () => {
     };
     walk("src");
 
-    expect(found).toEqual([]);
+    expect(found).toEqual(["src/github/app.ts"]);
+  });
+
+  it("never lets a write run as the installation", async () => {
+    // The rule that replaced the refusal, and the one that has to survive
+    // every later change: a write is somebody doing something, and one
+    // attributed to the app is one nobody can be held to. Read from the
+    // declarations rather than from a code path, so an endpoint added later
+    // cannot join the exception quietly.
+    const { manifest } = await import("../src/manifest.config.js");
+
+    const writes = (manifest.endpoints ?? []).filter(
+      (endpoint) => endpoint.direction === "write"
+    );
+    expect(writes.length).toBeGreaterThan(0);
+
+    for (const write of writes) {
+      expect(write.actors, `${write.id} may act as the app`).toEqual(["member"]);
+    }
   });
 });
 
@@ -410,59 +416,33 @@ describe("what a failed lifecycle sync means", () => {
 });
 
 describe("asking GitHub which installation covers an owner", () => {
-  it("tries the user route when the account is not an organization", async () => {
-    // A 404 is an answer, and not the one being asked for. Concluding "no
-    // installation" from it would leave every personal account unrouted.
-    const fetching = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
-      String(url).includes("/orgs/")
-        ? Response.json({ message: "Not Found" }, { status: 404 })
-        : Response.json({ id: 4242 })
-    );
-    try {
-      const actual = await vi.importActual<typeof import("../src/github/app.js")>(
-        "../src/github/app.js"
-      );
+  it("reads a removed installation as gone, and a fault as nothing", async () => {
+    // The distinction the return type exists for, and the reason it is a union
+    // rather than a number. A 404 is GitHub saying the installation is not
+    // there, which stops deliveries; unreachable, or a 500, is GitHub saying
+    // nothing, which must change none of that.
+    const cases: Array<[() => Promise<Response>, unknown]> = [
+      [async () => Response.json({ message: "Not Found" }, { status: 404 }), told(null)],
+      [async () => Response.json({ message: "unavailable" }, { status: 503 }), null],
+      [
+        async () => {
+          throw new TypeError("fetch failed");
+        },
+        null,
+      ],
+    ];
 
-      await expect(actual.installationForOwner("alice")).resolves.toEqual(told(4242));
-      expect(fetching.mock.calls.map((made) => String(made[0]))).toEqual([
-        expect.stringContaining("/orgs/alice/installation"),
-        expect.stringContaining("/users/alice/installation"),
-      ]);
-    } finally {
-      fetching.mockRestore();
-    }
-  });
-
-  it("says there is none when both routes say so", async () => {
-    const fetching = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
-      Response.json({ message: "Not Found" }, { status: 404 })
-    );
-    try {
-      const actual = await vi.importActual<typeof import("../src/github/app.js")>(
-        "../src/github/app.js"
-      );
-      await expect(actual.installationForOwner("acme")).resolves.toEqual(told(null));
-    } finally {
-      fetching.mockRestore();
-    }
-  });
-
-  it("does not turn a failed lookup into an answer", async () => {
-    // The distinction the return type exists for. Unreachable, and a 500, are
-    // GitHub not saying — which is not the same as GitHub saying "none".
-    for (const failing of [
-      async () => {
-        throw new TypeError("fetch failed");
-      },
-      async () => Response.json({ message: "unavailable" }, { status: 503 }),
-    ]) {
-      const fetching = vi.spyOn(globalThis, "fetch").mockImplementation(failing as never);
+    for (const [answering, expected] of cases) {
+      const fetching = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(answering as never);
       try {
         const actual = await vi.importActual<typeof import("../src/github/app.js")>(
           "../src/github/app.js"
         );
-        const looked = await actual.installationForOwner("acme");
-        expect(looked.known).toBe(false);
+        const looked = await actual.installationById(4242);
+        if (expected === null) expect(looked.known).toBe(false);
+        else expect(looked).toEqual(expected);
       } finally {
         fetching.mockRestore();
       }

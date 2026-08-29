@@ -39,11 +39,7 @@ import { close, migrate, pool } from "../src/db.js";
 import { handleDelivery } from "../src/github/webhooks.js";
 import { EMITTED } from "../src/endpoints/emissions.js";
 import { seal } from "../src/db.js";
-import {
-  installsAwaiting,
-  installsForInstallation,
-  rememberWorkspace,
-} from "../src/workspace.js";
+import { installsForInstallation, rememberWorkspace } from "../src/workspace.js";
 
 beforeEach(async () => {
   await migrate();
@@ -57,7 +53,7 @@ afterAll(async () => {
 
 describe("turning an installation back into guilds", () => {
   it("finds the installs it answers for", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
 
     expect(await installsForInstallation(9011)).toEqual([
       { appInstallId: 11, guildId: 500 },
@@ -65,20 +61,6 @@ describe("turning an installation back into guilds", () => {
     expect(await installsForInstallation(9999)).toEqual([]);
   });
 
-  it("finds the installs still waiting for one", async () => {
-    // The row an `installation.created` delivery is about, and the only handle
-    // it has is the account an admin typed.
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, null);
-
-    expect(await installsAwaiting("acme")).toEqual([
-      { appInstallId: 11, guildId: 500 },
-    ]);
-    // Matched the way GitHub treats account names, since an admin types them.
-    expect(await installsAwaiting("ACME")).toHaveLength(1);
-    // And not the ones that already found an installation.
-    await rememberWorkspace(12, 600, { owner: "acme", repos: ["widgets"] }, 9012);
-    expect(await installsAwaiting("acme")).toHaveLength(1);
-  });
 });
 
 describe("what a delivery does", () => {
@@ -95,7 +77,7 @@ describe("what a delivery does", () => {
   };
 
   it("re-syncs the installs an installation answered for", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
 
     expect(await handleDelivery("installation", REMOVED, "d-1")).toEqual({
       resynced: 1,
@@ -104,32 +86,16 @@ describe("what a delivery does", () => {
     expect(syncInstall).toHaveBeenCalledWith(500);
   });
 
-  it("re-syncs the guild that was waiting, when the installation is new", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, null);
-
-    expect(await handleDelivery("installation", ADDED, "d-2")).toEqual({
-      resynced: 1,
-      published: 0,
-    });
-    expect(syncInstall).toHaveBeenCalledWith(500);
-  });
-
-  it("re-syncs a guild once when both handles find it", async () => {
-    // Named by the installation and matched by the account would be two hits on
-    // one guild; a run per handle would re-sync it twice.
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 7000);
-
-    await handleDelivery("installation", ADDED, "d-3");
-
-    expect(syncInstall).toHaveBeenCalledTimes(1);
-  });
-
-  it("leaves a change to the installation's own grant alone", async () => {
+  it("re-reads the guilds an installation's own grant just changed for", async () => {
     // GitHub sends this whenever an organization widens or narrows what an
-    // installation covers. Nothing here reads that grant — a call is resolved
-    // against the list a guild admin wrote down — so there is no boundary to
-    // move and no reason to re-sync every guild in the organization.
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 7000);
+    // installation covers, and that grant *is* the boundary now — a call is
+    // resolved against what this app last read off the installation, not
+    // against a list anybody typed. So the change has to land, and this is how
+    // it lands without waiting for the next poll.
+    //
+    // Every app receives this delivery whether or not it subscribes, which is
+    // why nothing in the registration asks for it.
+    await rememberWorkspace(11, 500, "acme", 7000, ["widgets"]);
 
     const result = await handleDelivery(
       "installation_repositories",
@@ -141,8 +107,8 @@ describe("what a delivery does", () => {
       "d-4"
     );
 
-    expect(result).toEqual({ resynced: 0, published: 0, reason: "nothing-to-say" });
-    expect(syncInstall).not.toHaveBeenCalled();
+    expect(result).toEqual({ resynced: 1, published: 0 });
+    expect(syncInstall).toHaveBeenCalledWith(500);
   });
 
   it("says so when the change touches nobody here", async () => {
@@ -158,7 +124,7 @@ describe("what a delivery does", () => {
     // publishes four of them. `edited`, `labeled` and a dozen more arrive and
     // stop here. Failing them would fill an organization's webhook log with red
     // for something working exactly as intended.
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
 
     for (const payload of [
       { action: "labeled", installation: { id: 9011 } },
@@ -237,7 +203,7 @@ describe("republishing what a repository did", () => {
   }
 
   it("tells the guild whose repository it was", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
     await subscriber(500);
 
     expect(await handleDelivery("issues", OPENED, "gh-delivery-1")).toEqual({
@@ -252,7 +218,7 @@ describe("republishing what a repository did", () => {
     // The whole reason the shapes come from the kit: one receiver, two kinds of
     // producer. The outer fields and the integer resource id are what an
     // existing parser checks before it reaches anything app-specific.
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
     await subscriber(500);
     await handleDelivery("issues", OPENED, "gh-delivery-1");
 
@@ -273,7 +239,7 @@ describe("republishing what a repository did", () => {
   });
 
   it("carries what a trigger narrows itself by, and not the whole delivery", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
     await subscriber(500);
     await handleDelivery("issues", OPENED, "gh-delivery-1");
 
@@ -295,7 +261,7 @@ describe("republishing what a repository did", () => {
     // GitHub signs the body and not a timestamp, so a delivery it re-sends
     // verifies again. The envelope id is derived from GitHub's delivery id, so
     // the subscriber recognises the second copy rather than acting twice.
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
     await subscriber(500);
 
     await handleDelivery("issues", OPENED, "gh-delivery-1");
@@ -309,8 +275,8 @@ describe("republishing what a repository did", () => {
   });
 
   it("tells two guilds watching the same repository, and each independently", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
-    await rememberWorkspace(12, 600, { owner: "acme", repos: ["widgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
+    await rememberWorkspace(12, 600, "acme", 9011, ["widgets"]);
     await subscriber(500);
     await subscriber(600);
 
@@ -325,7 +291,7 @@ describe("republishing what a repository did", () => {
   });
 
   it("says nothing to a guild that narrowed itself to another repository", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["gadgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["gadgets"]);
     await subscriber(500);
 
     expect(await handleDelivery("issues", OPENED, "gh-delivery-1")).toEqual({
@@ -337,7 +303,7 @@ describe("republishing what a repository did", () => {
   });
 
   it("says nothing to a subscriber that did not ask for that type", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
     await subscriber(500, ["app.morelitea.github.issue-closed"]);
 
     expect(await handleDelivery("issues", OPENED, "gh-delivery-1")).toEqual({
@@ -353,7 +319,7 @@ describe("republishing what a repository did", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
       throw new Error("econnrefused");
     });
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
     await subscriber(500);
 
     expect(await handleDelivery("issues", OPENED, "gh-delivery-1")).toEqual({
@@ -363,7 +329,7 @@ describe("republishing what a repository did", () => {
   });
 
   it("republishes a review request with whose review was asked for", async () => {
-    await rememberWorkspace(11, 500, { owner: "acme", repos: ["widgets"] }, 9011);
+    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
     await subscriber(500);
 
     await handleDelivery(

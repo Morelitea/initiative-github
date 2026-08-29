@@ -11,7 +11,29 @@ export const CALLBACK_PATH = "/connect/github/callback";
 
 export const SETUP_PATH = "/setup/github";
 
+/**
+ * Where an installer proves the installation they just claimed is theirs.
+ *
+ * A second registered callback rather than the one a member signs in at.
+ * GitHub returns an installation to the setup URL with an `installation_id`
+ * anybody can type, so that trip ends by asking the person to authorize — and
+ * *that* answer comes back here, where the claim is checked against what
+ * GitHub says they actually hold. Two callbacks, one for each question, so
+ * neither route has to work out which of the two it is looking at.
+ */
+export const VERIFY_PATH = "/install/github/verify";
+
 export const INSTALL_PATH = "/install/github";
+
+/**
+ * Where an operator registers this app at GitHub, and where GitHub answers.
+ *
+ * Reachable only while `INITIATIVE_APP_SETUP_TOKEN` is set, which is the only
+ * thing that makes an unregistered app willing to do anything at all.
+ */
+export const REGISTER_PATH = "/setup/register";
+
+export const REGISTER_DONE_PATH = "/setup/register/done";
 
 export const WEBHOOK_PATH = "/webhooks/github";
 

@@ -1,5 +1,174 @@
 # Changelog
 
+## [Unreleased]
+
+### An app that has not registered yet can register itself
+
+The four GitHub settings are no longer required at boot. An app cannot be asked
+to hold the credentials for a registration nobody has made yet, and requiring
+them meant the only way to get one was the form.
+
+So a deployment with none of them starts, refuses every GitHub-shaped route with
+a sentence naming the one that fixes it, and serves that one:
+`/setup/register`, behind `INITIATIVE_APP_SETUP_TOKEN` and nothing else. Open
+it, press **Create GitHub App** at GitHub, and the client id, client secret,
+webhook secret and private key are on the page. Put them in the deployment's
+settings, restart, and remove the token.
+
+The token's name belongs to the kit rather than to GitHub, so an operator learns
+one name however many integrations they run — and it is genuinely a door: while
+it is set, whoever holds it can create a GitHub App in the account they are
+signed into. The route answers `404` without it rather than `403`, so it does
+not advertise itself, and the state carried through GitHub is signed with the
+token rather than stored, so a restart mid-registration costs nothing and a
+state nobody signed cannot be presented.
+
+`env-contract.json` publishes a third class, `registration`, for exactly this:
+settings a vendor issues once the app is registered there. A deployment check
+can now tell *"will not start"* from *"will not work until somebody registers
+it"*, which are different sentences with different remedies.
+
+### Registering it is one command and one button
+
+`npm run register`. It sends this app's registration to GitHub as the document
+GitHub asks for, you press **Create GitHub App**, and the client id, client
+secret, webhook secret and private key come back to your terminal ready to
+paste. Nothing is copied off a web page and no `.pem` is downloaded and
+re-encoded.
+
+The registration was always generated — `githubAppManifest` builds it from the
+same constants the code runs on — and the operator was then told to retype it
+into a form. Every field on that form is one that can silently stop matching the
+code, which is the entire premise of `test/github-app.test.ts`, and the two that
+catch people out are invisible until somebody tries to use them: a callback URL
+typed one character wrong is a redirect mismatch at the moment a member
+connects, and *Request user authorization during installation* left ticked sends
+an install down the sign-in route.
+
+`npm run github-app` still prints the same registration as a form, for anyone
+who would rather see what is being asked for. It had gone stale — it named one
+callback URL and told you to tick the box that must now be off.
+
+### Installing is not signing in, and no longer travels as though it were
+
+0.8.0 brought an install back through `/connect/github/callback` — the route a
+member returns to after authorizing — because GitHub's *Request user
+authorization during installation* was on and that is where it sends them. Two
+different trips arriving at one address, told apart by a column in
+`oauth_states` recording which one this app had started.
+
+That setting is off now. GitHub keeps them apart itself: an installation returns
+to the setup URL, a person authorizing returns to a callback, and the route that
+receives a trip already knows what it is looking at. The column is gone with it.
+
+### An installation id is a claim, and it was being believed
+
+GitHub is explicit about the parameter it puts on the setup URL: *"Bad actors
+can hit this URL with a spoofed `installation_id` … you should not rely on the
+validity of the `installation_id` parameter. Instead, you should generate a user
+access token for the user who installed the GitHub App and then check that the
+installation is associated with that user."*
+
+This app was relying on it. A guild admin with a legitimate state of their own
+could have come back naming an installation belonging to an organization they
+had nothing to do with, and this would have written it down as their guild's —
+and then minted a credential for it, because the credential behind an
+installation comes from this app's key and would have been minted just the same.
+That is another organization's private repositories on somebody else's
+dashboard.
+
+So the id is carried as a claim and the person is sent to authorize, and *that*
+answer is what settles it: `GET /user/installations` has to agree the
+installation is one they hold. The account comes out of the same answer, so
+nothing else has to be asked. The token is spent on that one question and
+dropped — it is theirs, and this connection is the guild's.
+
+The authorization lands on a **second registered callback**, `/install/github/verify`,
+rather than the member's. GitHub App registrations take a list, and one route
+per question means neither ever sees the other's traffic. **Existing
+registrations need it added by hand.**
+
+### The app acts as itself for what an organization granted
+
+The private key used only to ask which account had installed the app. It mints
+an installation token now, from the key alone — no authorization step, no code,
+no secret shared with anybody. An owner granted the app access at GitHub, and
+that grant is the whole of the authority.
+
+That is what let the repository list leave the connection. It was a
+comma-separated string an admin typed and then had to keep correct by hand; it
+is read from the installation on every sync now — `GET /installation/repositories`
+answers whether the organization picked repositories or granted all of them — so
+a repository ticked at GitHub arrives on its own. `installation_repositories`,
+which GitHub sends to every app whether or not it subscribes, brings it in
+seconds rather than minutes.
+
+The rule that replaced *"this app never mints an installation token"* is the one
+that always mattered, and it is enforced from the manifest now: **no write ever
+runs as the installation.** A write attributed to the app is a write nobody can
+be held to.
+
+### A dashboard that works when the guild installs it
+
+Every read resolved one credential — the credential of whoever was looking — so
+a guild could be fully set up at GitHub and every tile still said *connect your
+account* to everybody, forever, until each person signed in individually.
+
+Reads declare `["member", "installation"]` now, and are answered in that order.
+Somebody who has connected is still answered as themselves and still sees
+exactly what they can see at GitHub; somebody who has not gets the
+installation's answer, which is a fact about the repository and true either way.
+Which one ran is reported back rather than assumed — it decides what the numbers
+mean.
+
+Two things are deliberately outside it. **Writes stay `["member"]`**: a write
+attributed to the app reaches whatever the organization granted rather than what
+the person whose automation fired it may touch. And a call carrying **`@me`** is
+narrowed back to the member for that call, because `@me` is GitHub's word for
+whoever the token belongs to and an installation token belongs to nobody. That
+is read off the values rather than a parameter name, since it is a convention of
+GitHub's search syntax.
+
+### Bound to an installation, and to nothing else
+
+The lookup by account name is gone, along with the rows that waited to be
+matched by one. A login is a name pointing at an installation today: an
+organization that renames itself keeps its installation and loses its name, and
+a freed-up name taken by somebody else reads as this guild's install having
+moved to an account it never agreed to.
+
+### A member's GitHub account stays here
+
+Finishing a member's connection used to mean asking GitHub `GET /user` for their
+login and writing it into Initiative, in plaintext, as the value that marks the
+connection satisfied. Nothing read it back — not this app, which already knew
+it, and not the platform, which only ever needed to know whether *something* was
+present. A username crossed a boundary and sat there for no reason, alongside
+`@alice` as a display label.
+
+The connection declares `authorized`, a bool, and what crosses is a yes. The
+lookup that produced the name is gone with it, and so is the ending that existed
+for it failing: there is one call in that flow now, and one way for it to end.
+The credential is sealed here, under a handle that says nothing about anybody.
+
+The cost is real and worth stating: a guild admin can see that a member
+connected and can end it, and can no longer see which GitHub account they
+connected as.
+
+### Needs kit 0.12.0, and a database that has not been used
+
+`ConnectOutcome` gained `awaiting_approval` there, so a member of an
+organization who cannot install apps — GitHub raises a request for an owner
+instead — is handed back to Initiative with a word for it rather than to a page
+this app wrote in one language. Nothing failed, and there is nothing to retry
+until somebody else acts. The kit also owns `INITIATIVE_APP_SETUP_TOKEN`, the
+switch above, because it belongs to no one vendor.
+
+`oauth_states` and `connections` both changed shape, so the schema fingerprint
+moved. There is no migration path here: drop this app's database and let it be
+recreated.
+
+
 ## [0.8.0] — 2026-08-28
 
 ### The organization is installed, not typed

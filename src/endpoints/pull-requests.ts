@@ -119,7 +119,7 @@ export const findPullRequests: Read = {
       "Les pull requests correspondant à une question, y compris celles en attente de revue."
     ),
     group: "reviews",
-    actors: ["member"],
+    actors: ["member", "installation"],
     visibility: "member",
     cache_ttl_seconds: 60,
 
@@ -213,7 +213,7 @@ export const getPullRequest: Read = {
       "Une pull request par numéro — si c'est un brouillon, et si elle a été fusionnée."
     ),
     group: "reviews",
-    actors: ["member"],
+    actors: ["member", "installation"],
     visibility: "member",
     cache_ttl_seconds: 0,
     params: [REPO, NUMBER],

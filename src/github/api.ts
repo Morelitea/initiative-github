@@ -4,6 +4,7 @@ import { isDigits } from "initiative-app-kit";
 import { config } from "../config.js";
 import type { Caller } from "../endpoints/index.js";
 import { resolveRepository, workspaceFor, type StoredWorkspace } from "../workspace.js";
+import { installationToken } from "./app.js";
 import { credentialFor } from "./oauth.js";
 
 const NOT_CONNECTED = { unavailable: "not-connected" } as const;
@@ -30,18 +31,70 @@ export interface Access {
 
 export interface Connected {
   token: string;
+  /** Which of the two answered. Reported back, never assumed. */
+  actor: ActorKind;
   workspace: StoredWorkspace;
 }
 
+/**
+ * The credential this read runs on, and which one it turned out to be.
+ *
+ * Two exist and they answer different questions. A **member's** token reaches
+ * exactly what that person reaches at GitHub, which is the only honest way to
+ * answer anything about *them*. The **installation's** reaches what the
+ * organization granted, which is the honest way to answer anything about the
+ * repository — and it is available whether or not the person looking has ever
+ * connected anything.
+ *
+ * Tried in the order the endpoint declared, so a member who has connected is
+ * always answered as themselves and sees exactly what they can see. The app's
+ * own credential is the fallback, not the preference.
+ *
+ * Resolved once per call and kept on the caller: every helper below reaches
+ * this, and the invoker reads it back to report which one ran.
+ */
 export async function connected(caller: Caller): Promise<Connected | Unavailable> {
-  const account = await credentialFor(caller.connectionRef ?? undefined);
-  if (!account) return NOT_CONNECTED;
+  return caller.resolved ?? resolveActor(caller);
+}
 
+/**
+ * Do the resolving. The invoker calls this once and hands the answer down.
+ *
+ * Deliberately not cached onto the caller it was passed: every helper here
+ * reaches `connected`, and a function that writes to its own argument works
+ * until two calls share one — which is exactly what a caller built once and
+ * reused looks like.
+ */
+export async function resolveActor(caller: Caller): Promise<Connected | Unavailable> {
   const workspace = await workspaceFor(caller.appInstallId);
 
+  let found: { token: string; actor: ActorKind } | null = null;
+  for (const actor of caller.actors ?? ["member"]) {
+    if (actor === "member") {
+      const account = await credentialFor(caller.connectionRef ?? undefined);
+      if (account) {
+        found = { token: account.accessToken, actor };
+        break;
+      }
+    }
+
+    if (actor === "installation" && workspace && workspace.installationId !== null) {
+      const token = await installationToken(workspace.installationId);
+      if (token) {
+        found = { token, actor };
+        break;
+      }
+    }
+  }
+
+  // Whether there is a credential is settled before whether there is a
+  // workspace, and that order is the point: somebody this app cannot answer
+  // for at all is told that, and learns nothing about how the guild is set up
+  // from the refusal.
+  if (!found) return NOT_CONNECTED;
   if (!workspace || !workspace.repos.length) return NOT_CONFIGURED;
 
-  return { token: account.accessToken, workspace };
+  return { ...found, workspace };
 }
 
 export async function access(

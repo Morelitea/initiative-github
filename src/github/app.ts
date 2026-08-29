@@ -7,6 +7,7 @@ import { SUBSCRIBED_EVENTS } from "../endpoints/emissions.js";
 import {
   CALLBACK_PATH,
   SETUP_PATH,
+  VERIFY_PATH,
   WEBHOOK_PATH,
 } from "../vocabulary.js";
 
@@ -95,45 +96,17 @@ export type InstallationLookup =
   | { known: true; installationId: number | null }
   | { known: false; detail: string };
 
-export async function installationForOwner(owner: string): Promise<InstallationLookup> {
-  const name = encodeURIComponent(owner);
-  for (const path of [`/orgs/${name}/installation`, `/users/${name}/installation`]) {
-    const answer = await fetchJson<{ id?: unknown }>(
-      `${config.github.apiBase}${path}`,
-      { headers: appHeaders() }
-    );
-
-    // Not that kind of account. An answer, and not the one being asked for —
-    // so ask about the other kind before concluding anything.
-    if (!answer.ok && answer.reason === "http" && answer.status === 404) continue;
-
-    if (!answer.ok) {
-      console.error(`could not look up the installation for ${owner}: ${answer.detail}`);
-      return { known: false, detail: answer.detail };
-    }
-
-    if (typeof answer.body.id === "number") {
-      return { known: true, installationId: answer.body.id };
-    }
-  }
-
-  // Both routes answered, and neither named an installation.
-  return { known: true, installationId: null };
-}
-
 /**
  * Whether the installation a guild is bound to is still there.
  *
- * The same union as {@link installationForOwner}, and for the same reason: the
- * caller writes the answer down, and "GitHub says this installation is gone"
- * has to be told apart from "GitHub did not answer". The first stops
- * deliveries; the second must change nothing.
+ * A union rather than a boolean because the caller writes the answer down, and
+ * "GitHub says this installation is gone" has to be told apart from "GitHub did
+ * not answer". The first stops deliveries; the second must change nothing.
  *
- * Asked by id rather than by owner wherever there is an id, because an id is
- * the installation and a login is a name pointing at one. An organization that
- * renames itself keeps its installation and loses its name — by name that
- * reads as an uninstall, and worse, a name freed up and taken by somebody else
- * reads as this guild's install now living somewhere it never agreed to.
+ * By id, and only by id. A login is a name pointing at an installation today:
+ * an organization that renames itself keeps its installation and loses its
+ * name, and a name freed up and taken by somebody else would read as this
+ * guild's install having moved to an account it never agreed to.
  */
 export async function installationById(
   installationId: number
@@ -159,6 +132,131 @@ export async function installationById(
     installationId: typeof answer.body.id === "number" ? answer.body.id : null,
   };
 }
+
+/**
+ * A credential that acts as this app inside one installation.
+ *
+ * Minted from the private key and nothing else — a JWT this app signs as
+ * itself, spent for a token the organization's own grant bounds. There is no
+ * authorization step, no code, no redirect and no secret shared with anybody:
+ * an owner granted this at GitHub, and that grant is the whole of the
+ * authority. It is the one credential in this app that Initiative neither
+ * holds, mediates, nor could revoke.
+ *
+ * What it may reach is what the organization ticked and no more, and it lapses
+ * in an hour. Kept in memory until just before it does, because minting one per
+ * call would spend a request on every tile.
+ */
+interface Minted {
+  token: string;
+  lapsesAt: number;
+}
+
+const minted = new Map<number, Minted>();
+
+/** Renew this far ahead of expiry, so a token never lapses mid-call. */
+const TOKEN_SKEW_MS = 60_000;
+
+export async function installationToken(installationId: number): Promise<string | null> {
+  const held = minted.get(installationId);
+  if (held && held.lapsesAt > Date.now() + TOKEN_SKEW_MS) return held.token;
+
+  const answer = await fetchJson<{ token?: unknown; expires_at?: unknown }>(
+    `${config.github.apiBase}/app/installations/${installationId}/access_tokens`,
+    { method: "POST", headers: appHeaders() }
+  );
+
+  if (!answer.ok) {
+    console.error(
+      `could not mint a token for installation ${installationId}: ${answer.detail}`
+    );
+    minted.delete(installationId);
+    return null;
+  }
+
+  const token = answer.body.token;
+  if (typeof token !== "string" || !token) return null;
+
+  const lapsesAt =
+    typeof answer.body.expires_at === "string"
+      ? Date.parse(answer.body.expires_at)
+      : Number.NaN;
+
+  minted.set(installationId, {
+    token,
+    // An hour is what GitHub gives; an unparseable expiry is treated as the
+    // shortest thing it could have been rather than as forever.
+    lapsesAt: Number.isFinite(lapsesAt) ? lapsesAt : Date.now() + TOKEN_SKEW_MS,
+  });
+  return token;
+}
+
+/** Stop holding a token for an installation that is gone. */
+export function forgetInstallationToken(installationId: number): void {
+  minted.delete(installationId);
+}
+
+/**
+ * Every repository one installation covers, as GitHub has it now.
+ *
+ * The boundary, asked of the party that set it. An organization granting all
+ * of its repositories and one ticking four are the same question here — the
+ * route answers both, which is why nothing in this app has to guess at what
+ * `repository_selection: "all"` covers or wait for a webhook to be told.
+ *
+ * `null` is "GitHub would not say", which is never written down as an empty
+ * boundary: a bad minute at GitHub would otherwise narrow a guild to nothing.
+ */
+export async function installationRepositories(
+  installationId: number
+): Promise<string[] | null> {
+  const token = await installationToken(installationId);
+  if (!token) return null;
+
+  const names: string[] = [];
+  for (let page = 1; page <= REPOSITORY_PAGES; page += 1) {
+    const answer = await fetchJson<{ repositories?: unknown }>(
+      `${config.github.apiBase}/installation/repositories?per_page=${PER_PAGE}&page=${page}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+      }
+    );
+
+    if (!answer.ok) {
+      console.error(
+        `could not read what installation ${installationId} covers: ${answer.detail}`
+      );
+      return null;
+    }
+
+    const listed = answer.body.repositories;
+    if (!Array.isArray(listed)) return null;
+
+    for (const entry of listed) {
+      const name = (entry as { name?: unknown } | null)?.name;
+      if (typeof name === "string" && name) names.push(name);
+    }
+
+    if (listed.length < PER_PAGE) break;
+  }
+
+  return names;
+}
+
+const PER_PAGE = 100;
+
+/**
+ * How far this will page.
+ *
+ * An install covering more than this many repositories is one whose boundary
+ * is better described as "the account", and walking it on every sync would
+ * spend more requests than the answer is worth.
+ */
+const REPOSITORY_PAGES = 5;
 
 /** What GitHub says an installation is: whose it is, and how wide. */
 export interface InstallationAccount {
@@ -231,6 +329,14 @@ export const HOMEPAGE = "https://github.com/Morelitea/initiative-github";
 export interface GithubAppManifest {
   name: string;
   url: string;
+  /**
+   * Where GitHub sends the temporary code after somebody creates the app.
+   *
+   * Only for the manifest flow, and absent otherwise: it is not an address
+   * this app serves in production. The registration script runs a listener on
+   * localhost for the length of one registration and names it here.
+   */
+  redirect_url?: string;
   hook_attributes: { url: string; active: boolean };
   callback_urls: string[];
   setup_url: string;
@@ -249,16 +355,23 @@ export function githubAppManifest(
     description?: string;
     homepage?: string;
     public?: boolean;
+    redirectUrl?: string;
   } = {}
 ): GithubAppManifest {
   const base = stripTrailingSlashes(publicUrl);
   return {
     name: options.name ?? "Initiative for GitHub",
 
+    ...(options.redirectUrl ? { redirect_url: options.redirectUrl } : {}),
+
     url: options.homepage ?? HOMEPAGE,
     hook_attributes: { url: `${base}${WEBHOOK_PATH}`, active: true },
 
-    callback_urls: [`${base}${CALLBACK_PATH}`],
+    // Two, one per question. A member signing in comes back to the first; an
+    // installer proving the installation they claimed is theirs comes back to
+    // the second. GitHub matches whichever `redirect_uri` the request names
+    // against this list, so neither route ever sees the other's traffic.
+    callback_urls: [`${base}${CALLBACK_PATH}`, `${base}${VERIFY_PATH}`],
     setup_url: `${base}${SETUP_PATH}`,
     description:
       options.description ??
@@ -268,7 +381,16 @@ export function githubAppManifest(
     public: options.public ?? true,
     default_events: [...WEBHOOK_EVENTS],
     default_permissions: { ...PERMISSIONS },
-    request_oauth_on_install: true,
+    // Off, so GitHub keeps the two returns apart on its own. An installation
+    // comes back to the setup URL and a person authorizing comes back to the
+    // callback, which is what each is for — with this on, an install arrives
+    // at the callback carrying a code, and the app is left re-deriving from a
+    // parameter which of the two it started.
+    request_oauth_on_install: false,
+    // A repository added or removed at GitHub arrives as an
+    // `installation_repositories` delivery, which every app receives whether
+    // or not it subscribes. Sending the person here as well would be a second
+    // telling of the same thing, on a trip that carries no state to bind.
     setup_on_update: false,
   };
 }

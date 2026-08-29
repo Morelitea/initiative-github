@@ -258,41 +258,51 @@ describe("the choices this app makes", () => {
     }
   });
 
-  it("stores a name against the connection, never a credential", () => {
-    // What the platform holds for a member is a login. The token stays sealed
-    // in this app's own database — Initiative learns that somebody connected
-    // and as whom, and holds nothing that could act for them.
+  it("stores a yes against the connection, and nothing about who", () => {
+    // A connection is satisfied by the presence of a value, and this is the
+    // smallest thing that can be present. It used to be the member's GitHub
+    // login, held in plaintext by a party that read it back never — while the
+    // one party with any use for it, this app, already knew it.
+    //
+    // So Initiative learns that somebody connected and not as whom, and holds
+    // nothing that could act for them: the token stays sealed here.
     const account = manifest.connections?.find((c) => c.id === "account");
     for (const field of account?.fields ?? []) {
       expect(field.type, `${field.key} is a secret`).not.toBe("secret");
     }
-    expect(account?.fields.map((field) => field.key)).toEqual(["account_login"]);
+    expect(account?.fields.map((field) => field.key)).toEqual(["authorized"]);
+    expect(account?.fields[0].type).toBe("bool");
   });
 
   it("has an admin install at GitHub rather than describe an install", () => {
-    // The boundary is still the whole of what this install is about, and it is
-    // no longer typed. An owner in a text box is a claim that some account
-    // somewhere installed this app; nothing checked it, and a typo was an
-    // install that looked configured and answered nothing.
+    // An owner in a text box is a claim that some account somewhere installed
+    // this app; nothing checked it, and a typo was an install that looked
+    // configured and answered nothing.
     //
     // So: a `connect_path` that sends a guild admin to GitHub's own install
-    // page, and three fields that are all `managed` — written by this app from
-    // what GitHub said when they came back. Required, still, and for the same
-    // reason: a blank repository list read as "everything the account has"
-    // would make the widest possible setting the one nobody chose.
+    // page, and two fields that are both `managed` — written by this app from
+    // what GitHub said when they came back.
     const workspace = manifest.connections?.find((c) => c.id === "workspace");
     expect(workspace?.scope).toBe("static");
     expect(workspace?.connect_path).toBe(INSTALL_PATH);
     expect(workspace?.fields.map((field) => field.key)).toEqual([
       "owner",
       "installation_id",
-      "repos",
     ]);
 
     for (const field of workspace?.fields ?? []) {
       expect(field.required, `${field.key} is optional`).toBe(true);
       expect(field.managed, `${field.key} is typed`).toBe(true);
     }
+  });
+
+  it("does not ask anybody to write down what the installation covers", () => {
+    // The repositories were a field here, and a comma-separated string an
+    // admin kept correct by hand. They are what the installation covers, the
+    // installation answers that itself, and a copy of it kept anywhere else is
+    // a copy that goes stale the next time an organization ticks a box.
+    const workspace = manifest.connections?.find((c) => c.id === "workspace");
+    expect(workspace?.fields.map((field) => field.key)).not.toContain("repos");
   });
 
   it("lets a dashboard say which repository a tile is about", () => {
