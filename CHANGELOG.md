@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.10.1] — 2026-08-29
+
+### The widgets speak the shape the dashboard actually reads
+
+All four modules were written against a shape nothing supplies: a default export
+taking `{ data }`, keyed by the endpoint's own id, holding that endpoint's
+returns as parallel columns. A widget is handed the one source its guild bound
+it to — so there is no id to key by, and a module that looked one up drew zeros
+with no error anywhere, which is the quietest way a widget can be wrong.
+
+What arrives is that endpoint's returns projected: `data.rows`, one object per
+index across the returns marked `list`, and `data.values` for the ones holding a
+single value — a total, a reason there is nothing. What goes back is
+`{ v: 1, scene }`.
+
+So: **Open issues** is a metric off `values.total`. **Review queue** is a table
+of the pull requests waiting on you. **Issue throughput** is a line series of
+opened against closed per day. **Dependabot alerts** is a bar series by
+severity, worst first and only the severities that occurred. Each of them
+answers `{ kind: "empty", message }` when there is nothing, rather than drawing
+an empty chart.
+
+`test/manifest.test.ts` now asserts the shape rather than the old lookup: every
+module defines a top-level `render`, reads `rows` or `values`, returns the
+envelope, and names no endpoint id at all.
+
 ## [0.10.0] — 2026-08-29
 
 ### The parameters people were typing are now picked
