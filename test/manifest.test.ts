@@ -343,18 +343,28 @@ describe("the choices this app makes", () => {
     }
   });
 
-  it("draws from the ids it binds, in the module itself", () => {
-    // The id is spelled three times — the binding, the sample rows, and the
-    // module's own lookup — and only the first two are data this file can
-    // cross-check. The third is a string inside a string, so it is asserted
-    // here: a module reading a key nothing supplies draws zeros with no error
-    // anywhere, which is the quietest way a widget can be wrong.
+  it("reads the source it was handed, and returns a scene", () => {
+    // A widget draws the endpoint a guild bound it to, and is handed that one
+    // source — so a module names no id at all. What it reads is the projection
+    // of that endpoint's own returns: `rows` for the returns holding several,
+    // `values` for the ones holding a single value. A module is a string inside
+    // a string, so the shape it speaks is asserted here or nowhere.
     for (const widget of manifest.widgets ?? []) {
+      const source = widget.module_source;
+      expect(
+        source.includes("data.rows") || source.includes("data.values"),
+        `${widget.id} reads neither rows nor values`
+      ).toBe(true);
+      expect(
+        source.includes("function render("),
+        `${widget.id} defines no top-level render`
+      ).toBe(true);
+      expect(source.includes("v: 1"), `${widget.id} returns no scene envelope`).toBe(true);
       for (const id of widget.endpoints ?? []) {
         expect(
-          widget.module_source.includes(JSON.stringify(id)),
-          `${widget.id} does not read ${id}`
-        ).toBe(true);
+          source.includes(JSON.stringify(id)),
+          `${widget.id} keys its data by ${id}, which it is never handed`
+        ).toBe(false);
       }
     }
   });

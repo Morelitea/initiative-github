@@ -22,20 +22,24 @@ export const reviewQueueWidget: Widget = {
   },
   endpoints: [SOURCE],
   module_source: `
-export default function render({ data }) {
-  const rows = data[${JSON.stringify(SOURCE)}] ?? {};
-  const numbers = rows.numbers ?? [];
-  if (!numbers.length) {
-    return { kind: "empty", label: "Nothing is waiting on you" };
+function render(data) {
+  const rows = data.rows ?? [];
+  if (!rows.length) {
+    return { v: 1, scene: { kind: "empty", message: "Nothing is waiting on you" } };
   }
-  const titles = rows.titles ?? [];
-  const urls = rows.urls ?? [];
   return {
-    kind: "list",
-    items: numbers.slice(0, 10).map((number, index) => ({
-      label: "#" + number + " " + (titles[index] ?? ""),
-      href: urls[index] ?? "",
-    })),
+    v: 1,
+    scene: {
+      kind: "table",
+      columns: [
+        { key: "number", label: "#", align: "end" },
+        { key: "title", label: "Pull request" },
+      ],
+      rows: rows.slice(0, 10).map((row) => ({
+        number: row.numbers ?? "",
+        title: row.titles ?? "",
+      })),
+    },
   };
 }
 `.trim(),

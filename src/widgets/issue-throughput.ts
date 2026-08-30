@@ -22,31 +22,43 @@ export const issueThroughputWidget: Widget = {
   },
   endpoints: [SOURCE],
   module_source: `
-export default function render({ data }) {
-  const rows = data[${JSON.stringify(SOURCE)}] ?? {};
+function render(data) {
   const days = new Map();
   const bucket = (iso) => {
-    const day = iso.slice(0, 10);
+    const day = String(iso).slice(0, 10);
     if (!days.has(day)) days.set(day, { opened: 0, closed: 0 });
     return days.get(day);
   };
-  for (const iso of rows.created_at ?? []) {
-    if (iso) bucket(iso).opened += 1;
-  }
-  for (const iso of rows.closed_at ?? []) {
-    if (iso) bucket(iso).closed += 1;
+  for (const row of data.rows ?? []) {
+    if (row.created_at) bucket(row.created_at).opened += 1;
+    if (row.closed_at) bucket(row.closed_at).closed += 1;
   }
   // ISO dates sort as text, which is the one thing that makes this cheap.
-  const points = [...days.entries()].sort((left, right) =>
+  const ordered = [...days.entries()].sort((left, right) =>
     left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0
   );
+  if (!ordered.length) {
+    return {
+      v: 1,
+      scene: { kind: "empty", message: "Nothing opened or closed in this window" },
+    };
+  }
   return {
-    kind: "series",
-    x: points.map((point) => point[0]),
-    series: [
-      { label: "Opened", values: points.map((point) => point[1].opened) },
-      { label: "Closed", values: points.map((point) => point[1].closed) },
-    ],
+    v: 1,
+    scene: {
+      kind: "series",
+      mark: "line",
+      series: [
+        {
+          name: "Opened",
+          points: ordered.map((entry) => ({ x: entry[0], y: entry[1].opened })),
+        },
+        {
+          name: "Closed",
+          points: ordered.map((entry) => ({ x: entry[0], y: entry[1].closed })),
+        },
+      ],
+    },
   };
 }
 `.trim(),

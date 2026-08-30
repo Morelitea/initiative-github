@@ -22,25 +22,32 @@ export const dependabotAlertsWidget: Widget = {
   },
   endpoints: [SOURCE],
   module_source: `
-export default function render({ data }) {
-  const rows = data[${JSON.stringify(SOURCE)}] ?? {};
-  const severities = rows.severities ?? [];
+function render(data) {
   const counts = {};
-  for (const severity of severities) {
-    counts[severity] = (counts[severity] ?? 0) + 1;
+  for (const row of data.rows ?? []) {
+    const severity = row.severities;
+    if (severity) counts[severity] = (counts[severity] ?? 0) + 1;
   }
-  // Worst first, and only the ones that happened — an empty "Low" line is noise.
+  // Worst first, and only the ones that happened — an empty "Low" bar is noise.
   const shown = ["critical", "high", "medium", "low"].filter((s) => counts[s]);
   if (!shown.length) {
-    return { kind: "empty", label: "No open Dependabot alerts" };
+    return { v: 1, scene: { kind: "empty", message: "No open Dependabot alerts" } };
   }
   return {
-    kind: "list",
-    items: shown.map((severity) => ({
-      label: severity.charAt(0).toUpperCase() + severity.slice(1)
-        + " \\u00b7 " + counts[severity],
-      href: rows.url,
-    })),
+    v: 1,
+    scene: {
+      kind: "series",
+      mark: "bar",
+      series: [
+        {
+          name: "Alerts",
+          points: shown.map((severity) => ({
+            x: severity.charAt(0).toUpperCase() + severity.slice(1),
+            y: counts[severity],
+          })),
+        },
+      ],
+    },
   };
 }
 `.trim(),

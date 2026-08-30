@@ -23,12 +23,15 @@ export const openIssuesWidget: Widget = {
   endpoints: [SOURCE],
 
   module_source: `
-export default function render({ data }) {
-  const rows = data[${JSON.stringify(SOURCE)}] ?? {};
+function render(data) {
+  const values = data.values ?? {};
   return {
-    kind: "metric",
-    value: String(rows.total ?? 0),
-    label: "Open issues",
+    v: 1,
+    scene: {
+      kind: "metric",
+      value: typeof values.total === "number" ? values.total : (data.rows ?? []).length,
+      label: "Open issues",
+    },
   };
 }
 `.trim(),
