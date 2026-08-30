@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.10.2] — 2026-08-30
+
+### A tile says which repository it is about
+
+Nothing infers one any more. `resolveRepository` used to fill a blank `repo` in
+with the only repository an installation covered, and refuse only when there
+were several. The refusal was right; the fill-in was the bug, and it was the
+harder one to see, because it is the one that works.
+
+It works until it does not. A tile placed on a one-repository install answered
+correctly for as long as that install stayed one repository — and the day
+somebody ticked a second box on GitHub's *Configure* page, four tiles that had
+not been touched stopped answering. Nothing in the dashboard had changed;
+nothing in the dashboard had ever said what it was about. The same trap sat
+under every automation step written without a `repo`.
+
+So every read and every write that resolves a repository is told which one, on
+every call. Absent, blank or spaces all answer `repository-required` — one
+reason, so a widget has one branch to draw. The parameter already knew where
+its values come from (`list-repositories`, since 0.10.0), which is what makes
+this one choice on a form rather than a name typed from memory.
+
+**The widgets now draw the reason.** All four fell through to their ordinary
+path when a read refused, so `{ unavailable }` arrived as `rows: []` and was
+drawn as data — "Open issues: 0" for a tile that had never been told which
+repository. A zero is the worst of the available lies, because it is a number.
+Each module now takes that branch first and names the missing thing: *Choose a
+repository for this tile*, *Connect your GitHub account*, *No GitHub
+organization is connected yet*. The reasons live in one place
+(`src/widgets/unavailable.ts`) rather than in four copies.
+
+**The bundled *GitHub overview* ships its four tiles pointed nowhere**, which is
+the only honest thing a manifest can do: a repository name is a fact about one
+guild's installation, and this document is identical on every deployment. Each
+tile is pointed at one where it sits, independently — so one canvas can put two
+repositories side by side, which was not previously expressible at all.
+
+Upgrading: a tile or automation step that named a repository is unaffected. One
+that relied on the fill-in now says *Choose a repository for this tile*, and the
+fix is to set `repo` on it.
+
 ## [0.10.1] — 2026-08-29
 
 ### The widgets speak the shape the dashboard actually reads
