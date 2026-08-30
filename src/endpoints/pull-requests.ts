@@ -3,6 +3,7 @@ import type { Read, Write } from "./index.js";
 import {
   ASSIGNEES_OUT,
   AUTHOR_OUT,
+  chosenFrom,
   CLOSED_OUT,
   COMMENTS_OUT,
   CREATED_OUT,
@@ -18,6 +19,7 @@ import {
   NUMBER_OUT,
   OWNER_OUT,
   param,
+  PEOPLE_OF,
   pick,
   READ_IDS,
   REPO,
@@ -137,13 +139,16 @@ export const findPullRequests: Read = {
       param("base_ref", "string", "Into branch", "Nach Branch", "Hacia la rama", "Vers la branche"),
       param("head_ref", "string", "From branch", "Von Branch", "Desde la rama", "Depuis la branche"),
 
-      param(
-        "review_requested",
-        "string",
-        "Waiting on",
-        "Wartet auf",
-        "Esperando a",
-        "En attente de"
+      chosenFrom(
+        param(
+          "review_requested",
+          "string",
+          "Waiting on",
+          "Wartet auf",
+          "Esperando a",
+          "En attente de"
+        ),
+        PEOPLE_OF
       ),
       SORT_IN,
       DIRECTION_IN,
@@ -315,7 +320,10 @@ export const requestReview: Write = {
     params: [
       REPO,
       NUMBER,
-      several(param("reviewers", "string", "Reviewers", "Reviewer", "Revisores", "Relecteurs")),
+      chosenFrom(
+        several(param("reviewers", "string", "Reviewers", "Reviewer", "Revisores", "Relecteurs")),
+        PEOPLE_OF
+      ),
       several(
         param("team_reviewers", "string", "Team reviewers", "Team-Reviewer", "Equipos revisores", "Équipes relectrices")
       ),

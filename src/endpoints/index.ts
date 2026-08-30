@@ -10,6 +10,7 @@ import {
   getIssue,
   label,
   listLabels,
+  listMilestones,
   openIssue,
   reopenIssue,
 } from "./issues.js";
@@ -21,7 +22,7 @@ import {
   moveProjectItem,
 } from "./projects.js";
 import { findPullRequests, getPullRequest, requestReview } from "./pull-requests.js";
-import { listRepositories } from "./repositories.js";
+import { listAssignees, listRepositories } from "./repositories.js";
 import { listAlerts } from "./security.js";
 
 export interface Caller {
@@ -64,6 +65,8 @@ export interface Write {
 export const READS: readonly Read[] = [
   listRepositories,
   listLabels,
+  listAssignees,
+  listMilestones,
   getIssue,
   findIssues,
   getPullRequest,

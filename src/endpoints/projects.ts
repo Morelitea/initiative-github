@@ -1,7 +1,9 @@
 import type { Caller } from "./index.js";
 import type { Read, Write } from "./index.js";
 import {
+  chosenFrom,
   COUNT_OUT,
+  FIELDS_OF,
   many,
   named,
   NUMBER,
@@ -249,7 +251,10 @@ export const listProjectOptions: Read = {
     visibility: "member",
     cache_ttl_seconds: 300,
 
-    params: [PROJECT_ID, param("field", "string", "Field", "Feld", "Campo", "Champ")],
+    params: [
+      PROJECT_ID,
+      chosenFrom(param("field", "string", "Field", "Feld", "Campo", "Champ"), FIELDS_OF),
+    ],
     returns: [
       value("field_id", "string"),
       value("field_name", "string"),
@@ -389,9 +394,20 @@ export const moveProjectItem: Write = {
     // answer those; arranging them into a form is the caller's.
     params: [
       PROJECT_ID,
+      // A board, that board's fields, that field's values. `item_id` is left
+      // plain on purpose: a card comes from `find-project-item`, and a menu of
+      // every card on a board would be the wrong gesture even if it fit.
       param("item_id", "string", "Card", "Karte", "Tarjeta", "Carte"),
-      param("field_id", "string", "Field", "Feld", "Campo", "Champ"),
-      param("option_id", "string", "Value", "Wert", "Valor", "Valeur"),
+      chosenFrom(param("field_id", "string", "Field", "Feld", "Campo", "Champ"), FIELDS_OF),
+      chosenFrom(param("option_id", "string", "Value", "Wert", "Valor", "Valeur"), {
+        endpoint: READ_IDS.listProjectOptions,
+        key: "option_ids",
+        label_key: "option_names",
+        // Two deep: which board, and which of ITS fields. `list-project-options`
+        // takes the field under the name `field` and matches an id or a name,
+        // so the id this step already holds is what goes across.
+        needs: { project_id: "project_id", field: "field_id" },
+      }),
     ],
 
     returns: [named("item_id", "string", "Card", "Karte", "Tarjeta", "Carte")],

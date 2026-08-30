@@ -51,6 +51,8 @@ export function declare(name: string): string {
 export const READ_IDS = {
   listRepositories: declare("list-repositories"),
   listLabels: declare("list-labels"),
+  listAssignees: declare("list-assignees"),
+  listMilestones: declare("list-milestones"),
   listProjectFields: declare("list-project-fields"),
   getIssue: declare("get-issue"),
   findIssues: declare("find-issues"),
@@ -155,26 +157,106 @@ export const ISSUE_IDENTITY: EndpointIdentity = {
 /**
  * Which repository, on thirteen of this app's endpoints.
  *
- * A plain `string`, and this manifest says nothing about how a caller should
- * ask for one — because it is not this app's place to. A consumer that wants a
- * repository picker calls `list-repositories`, which exists for exactly that
- * and answers the guild's list narrowed to what the caller can see.
+ * A plain `string` naming the read that answers which ones there are. What a
+ * consumer draws for it is still a consumer's business; which values are
+ * permitted is this app's, and only this app can know them.
  *
  * `resolveRepository` accepts a bare name and falls back to the workspace's
  * single repository when the parameter is absent, so a one-repository install
  * can leave it blank.
  */
-export const REPO = param("repo", "string", "Repository", "Repository", "Repositorio", "Dépôt");
+export const REPO: EndpointParam = {
+  ...param("repo", "string", "Repository", "Repository", "Repositorio", "Dépôt"),
+  // Which repositories exist is a fact about one guild's installation: known
+  // only once it is made, changed without anybody telling this app, and
+  // different for every guild. So it cannot be a list written down here, and
+  // this names the read that answers it instead.
+  //
+  // `list-repositories` already answered it — what was missing was any way to
+  // say so. A consumer had the endpoint and the parameter and nothing joining
+  // them, so it offered a text box and every automation step reading a
+  // repository was one somebody had to type correctly from memory.
+  options_from: { endpoint: READ_IDS.listRepositories, key: "names" },
+};
 
 export const NUMBER = param("number", "int", "Number", "Nummer", "Número", "Numéro");
 
 /**
+ * Where a parameter's values come from, named once and used where they belong.
+ *
+ * Every one of these is a fact about ONE guild's installation — which labels
+ * that repository has, who can be assigned to it, which boards that account
+ * owns. None of them can be written down here, which is the whole reason the
+ * manifest has to name a read instead of listing values.
+ *
+ * `needs` is what makes them usable past the first: a repository's labels are
+ * that repository's, and a source that could not be told which repository had
+ * been chosen could only offer the whole account's worth. The named sibling is
+ * always `repo` or `project_id`, and always one the same endpoint collects.
+ */
+type OptionSource = NonNullable<EndpointParam["options_from"]>;
+
+/** That repository's labels. */
+export const LABELS_OF: OptionSource = {
+  endpoint: READ_IDS.listLabels,
+  key: "names",
+  needs: { repo: "repo" },
+};
+
+/**
+ * Who can be assigned there — and so who can be asked for a review.
+ *
+ * GitHub's own answer to both questions is the same list, which is why one
+ * read serves `assignees`, `assignee`, `reviewers` and `review_requested`.
+ *
+ * `@me` is not on it and cannot be: it is this app's word, not GitHub's. A
+ * source that will not resolve leaves a parameter enterable, and so does one
+ * that resolves without the value somebody wanted — the menu is an offer.
+ */
+export const PEOPLE_OF: OptionSource = {
+  endpoint: READ_IDS.listAssignees,
+  key: "logins",
+  needs: { repo: "repo" },
+};
+
+/** That repository's open milestones, by number, read by title. */
+export const MILESTONES_OF: OptionSource = {
+  endpoint: READ_IDS.listMilestones,
+  key: "numbers",
+  label_key: "titles",
+  needs: { repo: "repo" },
+};
+
+/** The account's boards. Needs nothing: a board is not inside a repository. */
+export const BOARDS: OptionSource = {
+  endpoint: READ_IDS.listProjects,
+  key: "ids",
+  label_key: "titles",
+};
+
+/** That board's single-select fields. */
+export const FIELDS_OF: OptionSource = {
+  endpoint: READ_IDS.listProjectFields,
+  key: "ids",
+  label_key: "names",
+  needs: { project_id: "project_id" },
+};
+
+/** The same parameter, filled from one of this app's reads. */
+export function chosenFrom(base: EndpointParam, source: OptionSource): EndpointParam {
+  return { ...base, options_from: source };
+}
+
+/**
  * Which Projects v2 board, as an opaque GraphQL node id.
  *
- * `list-projects` answers the ids beside their titles, which is what anybody
- * offering a menu of these needs — a column of base64 names nothing.
+ * Read by title rather than by id, which is what {@link BOARDS} is for: a
+ * column of base64 names nothing to the person choosing from it.
  */
-export const PROJECT_ID = param("project_id", "string", "Project", "Projekt", "Proyecto", "Projet");
+export const PROJECT_ID = chosenFrom(
+  param("project_id", "string", "Project", "Projekt", "Proyecto", "Projet"),
+  BOARDS
+);
 
 export function pick(
   key: string,
@@ -277,10 +359,10 @@ export const ROWS_OUT: EndpointReturn[] = [
   UNAVAILABLE,
 ];
 
-/** Several labels. `list-labels` answers a repository's, for anyone offering
- *  a menu of them. */
-export const LABELS_IN = several(
-  param("labels", "string", "Labels", "Labels", "Etiquetas", "Étiquettes")
+/** Several labels, from the ones that repository has. */
+export const LABELS_IN = chosenFrom(
+  several(param("labels", "string", "Labels", "Labels", "Etiquetas", "Étiquettes")),
+  LABELS_OF
 );
 
 export const SORT_IN = pick(

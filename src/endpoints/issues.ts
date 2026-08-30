@@ -4,6 +4,7 @@ import type { Read, Write } from "./index.js";
 import {
   ASSIGNEES_OUT,
   AUTHOR_OUT,
+  chosenFrom,
   CLOSED_OUT,
   COMMENTS_OUT,
   COUNT_OUT,
@@ -12,16 +13,19 @@ import {
   DIRECTION_IN,
   ISSUE_IDENTITY,
   LABELS_IN,
+  LABELS_OF,
   LABELS_OUT,
   LIMIT_IN,
   LINK_OUT,
   many,
   MILESTONE_OUT,
+  MILESTONES_OF,
   named,
   NUMBER,
   NUMBER_OUT,
   OWNER_OUT,
   param,
+  PEOPLE_OF,
   pick,
   READ_IDS,
   REPO,
@@ -141,6 +145,75 @@ export const listLabels: Read = {
   },
 };
 
+export const listMilestones: Read = {
+  declaration: {
+    id: READ_IDS.listMilestones,
+    direction: "read",
+    label: text("Milestones", "Meilensteine", "Hitos", "Jalons"),
+    description: text(
+      "The milestones a repository is still working towards.",
+      "Die Meilensteine, auf die ein Repository noch hinarbeitet.",
+      "Los hitos hacia los que un repositorio todavía trabaja.",
+      "Les jalons vers lesquels un dépôt travaille encore."
+    ),
+    group: "issues",
+    actors: ["member", "installation"],
+    visibility: "member",
+    cache_ttl_seconds: 300,
+
+    params: [REPO],
+    returns: [
+      many(named("numbers", "int", "Milestones", "Meilensteine", "Hitos", "Jalons")),
+      many(named("titles", "string", "Names", "Namen", "Nombres", "Noms")),
+      COUNT_OUT,
+      TOTAL_OUT,
+      UNAVAILABLE,
+    ],
+    requires: { all_of: ["workspace", "account"] },
+  },
+
+  async run(caller: Caller, params: URLSearchParams) {
+    const where = await access(caller, params);
+    if ("unavailable" in where) return where;
+    const { token, owner, repo } = where;
+
+    // Open ones, soonest first: what somebody is planning against. A closed
+    // milestone is still a valid filter and is still typable — a menu narrows
+    // what is offered, never what is accepted.
+    const answer = await graphql<{
+      repository: { milestones: Connection<{ number?: number; title?: string }> } | null;
+    }>(
+      token,
+      `query Milestones($owner: String!, $repo: String!, $first: Int!) {
+         repository(owner: $owner, name: $repo) {
+           milestones(
+             first: $first
+             states: [OPEN]
+             orderBy: { field: DUE_DATE, direction: ASC }
+           ) {
+             totalCount
+             nodes { number title }
+           }
+         }
+       }`,
+      { owner, repo, first: PAGE }
+    );
+    if (empty(answer)) return answer;
+    if (!answer.body.repository) return NOT_FOUND;
+
+    const found = rows(answer.body.repository.milestones).filter(
+      (milestone): milestone is { number: number; title?: string } =>
+        typeof milestone.number === "number"
+    );
+    return {
+      numbers: found.map((milestone) => milestone.number),
+      titles: found.map((milestone) => milestone.title ?? ""),
+      count: found.length,
+      total: answer.body.repository.milestones.totalCount ?? found.length,
+    };
+  },
+};
+
 export const getIssue: Read = {
   declaration: {
     id: READ_IDS.getIssue,
@@ -253,8 +326,14 @@ export const findIssues: Read = {
         "État"
       ),
       LABELS_IN,
-      param("assignee", "string", "Assignee", "Zuständige Person", "Persona asignada", "Personne assignée"),
-      param("milestone", "int", "Milestone number", "Meilenstein-Nummer", "Número de hito", "Numéro de jalon"),
+      chosenFrom(
+        param("assignee", "string", "Assignee", "Zuständige Person", "Persona asignada", "Personne assignée"),
+        PEOPLE_OF
+      ),
+      chosenFrom(
+        param("milestone", "int", "Milestone", "Meilenstein", "Hito", "Jalon"),
+        MILESTONES_OF
+      ),
       SINCE_IN,
       SINCE_DAYS_IN,
       SORT_IN,
@@ -357,7 +436,10 @@ export const openIssue: Write = {
       { ...param("title", "string", "Title", "Titel", "Título", "Titre"), required: true },
       param("body", "string", "Body", "Text", "Cuerpo", "Corps"),
       LABELS_IN,
-      several(param("assignees", "string", "Assignees", "Zuständige", "Asignados", "Assignés")),
+      chosenFrom(
+        several(param("assignees", "string", "Assignees", "Zuständige", "Asignados", "Assignés")),
+        PEOPLE_OF
+      ),
     ],
 
     // `repository` rides along so the identity below can be built. It costs a
@@ -556,11 +638,19 @@ export const label: Write = {
     params: [
       REPO,
       NUMBER,
-      several(
-        param("add", "string", "Labels to add", "Hinzuzufügende Labels", "Etiquetas a añadir", "Étiquettes à ajouter")
+      // The same list read twice: both are that REPOSITORY's labels, which is
+      // the case a source that could not be told a sibling's answer missed.
+      chosenFrom(
+        several(
+          param("add", "string", "Labels to add", "Hinzuzufügende Labels", "Etiquetas a añadir", "Étiquettes à ajouter")
+        ),
+        LABELS_OF
       ),
-      several(
-        param("remove", "string", "Labels to remove", "Zu entfernende Labels", "Etiquetas a quitar", "Étiquettes à retirer")
+      chosenFrom(
+        several(
+          param("remove", "string", "Labels to remove", "Zu entfernende Labels", "Etiquetas a quitar", "Étiquettes à retirer")
+        ),
+        LABELS_OF
       ),
     ],
 

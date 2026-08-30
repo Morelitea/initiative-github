@@ -835,6 +835,8 @@ describe("what a read says it hands back", () => {
   const CALLS: Record<string, Record<string, string>> = {
     [READ_IDS.listRepositories]: {},
     [READ_IDS.listLabels]: {},
+    [READ_IDS.listAssignees]: {},
+    [READ_IDS.listMilestones]: {},
     [READ_IDS.getIssue]: { number: "7" },
     [READ_IDS.findIssues]: {},
     [READ_IDS.getPullRequest]: { number: "8" },
@@ -878,6 +880,8 @@ describe("what a read says it hands back", () => {
         r0: { name: "widgets" },
         repository: {
           labels: connection,
+          assignableUsers: { totalCount: 1, nodes: [{ login: "alice" }] },
+          milestones: { totalCount: 1, nodes: [{ number: 4, title: "v1" }] },
           issues: connection,
           pullRequests: connection,
           issueOrPullRequest: node,

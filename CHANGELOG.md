@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+### The parameters people were typing are now picked
+
+A repository. A label. Who to assign it to. Which milestone, which board, which
+field, which value. Every one of those was a text box you had to fill in
+correctly from memory, on endpoints where getting it wrong is a step that
+silently matches nothing.
+
+They were never unanswerable — this app already read most of them. What was
+missing was any way for the manifest to say which read answers which parameter,
+and, past the first one, any way to tell that read what had already been chosen.
+A repository's labels are that repository's; a board's fields are that board's.
+The kit's `options_from.needs` closes that, and this release uses it on every
+parameter it fits:
+
+| Parameter | Comes from |
+| --- | --- |
+| `repo` | `list-repositories` |
+| `labels`, `add`, `remove` | `list-labels`, for the chosen repository |
+| `assignee`, `assignees`, `reviewers`, `review_requested` | `list-assignees`, for the chosen repository |
+| `milestone` | `list-milestones`, for the chosen repository |
+| `project_id` | `list-projects`, read by title |
+| `field`, `field_id` | `list-project-fields`, for the chosen board |
+| `option_id` | `list-project-options`, for the chosen board and field |
+
+Two new reads answer the ones nothing here answered before. **Who can be
+assigned** is GitHub's own list of assignable people for a repository, which is
+the same set it offers for a review request — one read, so the two cannot drift.
+**Milestones** are the open ones, soonest first: what somebody is planning
+against. Both cost no new permission on the GitHub App; both cache for five
+minutes, like the other pickers.
+
+`number` and `item_id` are deliberately still plain. An issue number comes from
+a trigger or from a find step above it, and a menu of every card on a board
+would be the wrong gesture even where it fit. `base_ref`, `head_ref` and
+`team_reviewers` are still plain too, for a different reason: branches and teams
+would each cost this app a GitHub permission it does not currently ask for.
+
+A picker narrows what is offered, never what is accepted. `@me` is not on the
+assignee list and cannot be — it is this app's word, not GitHub's — and it
+still works, as does a closed milestone, a label somebody is about to create,
+or any value from a source that will not resolve.
+
 ### A member who has left the organization stops being carried
 
 A user access token is an intersection: it reaches what the app was granted
