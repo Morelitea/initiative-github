@@ -110,6 +110,21 @@ export async function installsForInstallation(
   return watching(found.rows);
 }
 
+/**
+ * The installation one guild is bound to, if it is bound to one.
+ *
+ * By guild rather than by install id, because the caller here holds a member's
+ * credential and knows which guild it was minted for and nothing else.
+ */
+export async function installationForGuild(guildId: number): Promise<number | null> {
+  const found = await pool.query<{ installation_id: string | null }>(
+    "SELECT installation_id FROM workspaces WHERE guild_id = $1 LIMIT 1",
+    [guildId]
+  );
+  const held = found.rows[0]?.installation_id ?? null;
+  return held === null ? null : Number(held);
+}
+
 export async function forgetWorkspace(appInstallId: number): Promise<void> {
   await pool.query("DELETE FROM workspaces WHERE app_install_id = $1", [appInstallId]);
 }

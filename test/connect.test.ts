@@ -32,6 +32,7 @@ import { signReturnUrl } from "initiative-app-kit";
 
 import { config } from "../src/config.js";
 import { close, migrate, pool, seal } from "../src/db.js";
+import { rememberWorkspace } from "../src/workspace.js";
 import {
   beginOAuth,
   completeOAuth,
@@ -95,7 +96,7 @@ function handoff(home = HOME): URLSearchParams {
 
 beforeEach(async () => {
   await migrate();
-  await pool.query("TRUNCATE connections, oauth_states");
+  await pool.query("TRUNCATE connections, oauth_states, workspaces");
   writeConnection.mockClear();
   writeConnection.mockResolvedValue({});
 });
@@ -406,6 +407,77 @@ describe("when GitHub does not answer", () => {
 
     expect(result.outcome).toBe("connected");
     expect((await credentialFor(REF))?.accessToken).toBe("ghu_member");
+  });
+});
+
+describe("a credential that no longer reaches anything", () => {
+  /**
+   * A user access token is an intersection: it reaches what the app was
+   * granted *and* what the person can see. Somebody who leaves the
+   * organization keeps a token that is still valid and reaches none of it, and
+   * GitHub answers their reads with less rather than refusing — so nothing
+   * notices unless this app asks.
+   *
+   * Asked on renewal, which is periodic without being per-read.
+   */
+  const renewing = (holds: number[], ok = true) =>
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const at = String(url);
+      if (at.includes("access_token")) {
+        return Response.json({ access_token: "ghu_renewed", expires_in: 28_800 });
+      }
+      if (at.includes("/user/installations")) {
+        return ok
+          ? Response.json({ installations: holds.map((id) => ({ id })) })
+          : Response.json({ message: "Server Error" }, { status: 500 });
+      }
+      return Response.json({});
+    });
+
+  const bind = () => rememberWorkspace(11, GUILD, "acme", 4242, ["widgets"]);
+
+  it("is dropped when GitHub says they no longer hold the installation", async () => {
+    await bind();
+    await holding(30);
+    renewing([9999]);
+
+    expect(await credentialFor(REF)).toBeNull();
+    expect((await pool.query("SELECT 1 FROM connections")).rowCount).toBe(0);
+    // And Initiative is told, so the member is asked to connect rather than
+    // left with a connection that reads as working.
+    expect(writeConnection).toHaveBeenCalledWith(GUILD, REF, {
+      values: { authorized: null },
+      status: "pending",
+    });
+  });
+
+  it("is kept when they still hold it", async () => {
+    await bind();
+    await holding(30);
+    renewing([4242]);
+
+    expect((await credentialFor(REF))?.accessToken).toBe("ghu_renewed");
+  });
+
+  it("is kept when GitHub would not say", async () => {
+    // Silence is not a departure. Dropping on a bad minute would ask somebody
+    // to connect again to fix nothing.
+    await bind();
+    await holding(30);
+    renewing([], false);
+
+    expect((await credentialFor(REF))?.accessToken).toBe("ghu_renewed");
+  });
+
+  it("is kept when the guild is bound to no installation", async () => {
+    // Nothing to have lost access to, and no call made to find out.
+    await holding(30);
+    const fetching = renewing([]);
+
+    expect((await credentialFor(REF))?.accessToken).toBe("ghu_renewed");
+    expect(
+      fetching.mock.calls.some((made) => String(made[0]).includes("/user/installations"))
+    ).toBe(false);
   });
 });
 

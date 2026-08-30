@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### A member who has left the organization stops being carried
+
+A user access token is an intersection: it reaches what the app was granted
+*and* what the person can still see. Somebody who leaves the organization keeps
+a token that is perfectly valid and reaches none of it, and GitHub answers their
+reads with less rather than refusing them — so nothing here would ever notice.
+The connection stayed, the widgets went quiet, and no route reported anything
+wrong.
+
+On renewal this app now asks GitHub `GET /user/installations` and looks for the
+one this guild is bound to. If it is gone, the credential is dropped and
+Initiative is told, which is the same ending as a revoked grant and the one a
+member can act on. Renewal is the right moment: periodic without being
+per-read, and a token is being written down anyway.
+
+Silence does not count as a departure. GitHub unreachable, a rate limit, a
+malformed answer — all leave the connection alone, because dropping it on a bad
+minute asks somebody to connect again to fix nothing. A guild bound to no
+installation is left alone too: there is nothing to have lost access to.
+
 ## [0.9.0] — 2026-08-29
 
 ### An app that has not registered yet can register itself

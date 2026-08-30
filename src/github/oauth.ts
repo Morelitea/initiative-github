@@ -15,6 +15,7 @@ import { pool } from "../db.js";
 import { CALLBACK_PATH } from "../vocabulary.js";
 import { open, seal } from "../db.js";
 import { claimHandoff, rememberHandoff } from "./handoff.js";
+import { installationForGuild } from "../workspace.js";
 
 export interface StoredAccount {
   accessToken: string;
@@ -246,6 +247,21 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
       ]
     );
     await client.query("COMMIT");
+
+    // Renewed, and worth re-asking whether it still reaches anything. GitHub's
+    // own guidance is to check this regularly rather than once — a member who
+    // has left the organization keeps a token that is still valid, and the
+    // intersection rule means it simply returns less rather than failing, so
+    // nothing here would notice on its own.
+    //
+    // On renewal is the right moment: it is periodic without being per-read,
+    // and a token is already being written down.
+    if (!(await stillReaches(grant.accessToken, row.guild_id))) {
+      await forgetConnection(connectionRef);
+      await disconnect(row.guild_id, connectionRef);
+      return null;
+    }
+
     return { accessToken: grant.accessToken };
   } catch (error) {
     await client.query("ROLLBACK");
@@ -253,6 +269,52 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
   } finally {
     client.release();
   }
+}
+
+/**
+ * Whether this member's credential still reaches the guild's installation.
+ *
+ * A user access token is an intersection: it reaches what the app was granted
+ * *and* what the person can see. Somebody who leaves the organization keeps a
+ * token that is perfectly valid and reaches none of it, and GitHub answers
+ * their reads with less rather than refusing them — so an app that never asks
+ * carries a credential for somebody it can no longer answer for.
+ *
+ * `true` when GitHub will not say. Silence is not a departure, and dropping a
+ * credential on a bad minute would ask a member to connect again to fix
+ * nothing. `true` too when the guild is bound to no installation: there is
+ * nothing to have lost access to.
+ */
+async function stillReaches(
+  accessToken: string,
+  guildId: string | null
+): Promise<boolean> {
+  if (guildId === null) return true;
+
+  const bound = await installationForGuild(Number(guildId));
+  if (bound === null) return true;
+
+  const answer = await fetchJson<{ installations?: unknown }>(
+    `${config.github.apiBase}/user/installations?per_page=100`,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/vnd.github+json",
+      },
+    }
+  );
+
+  if (!answer.ok) {
+    console.warn(`could not check which installations they still hold: ${answer.detail}`);
+    return true;
+  }
+
+  const listed = answer.body.installations;
+  if (!Array.isArray(listed)) return true;
+
+  return listed.some(
+    (entry) => (entry as { id?: unknown } | null)?.id === bound
+  );
 }
 
 async function disconnect(guildId: string | null, connectionRef: string): Promise<void> {
