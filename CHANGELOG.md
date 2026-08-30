@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.10.0] — 2026-08-29
 
 ### The parameters people were typing are now picked
 
