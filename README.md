@@ -365,7 +365,19 @@ stays that way without anybody maintaining a copy.
 > removing repositories does not need it — do that at GitHub, on the app's
 > *Configure* page, and it arrives here on its own.
 
-Install **GitHub overview** the same way for the ready-made dashboard.
+Install **GitHub overview** the same way for the ready-made dashboard. Its
+four tiles arrive pointed at no repository, and each one is pointed at one
+where it sits — the tile's `repo`, chosen from what `list-repositories`
+answers for your own installation. A tile that has not been pointed anywhere
+says so rather than showing a number.
+
+That is deliberate, and it applies to an install covering one repository as
+much as to an install covering forty. This app used to fill a blank `repo` in
+with the only repository an installation had, which read as convenience and was
+a trap: the tile went on being right until the day somebody ticked a second box
+at GitHub, and then stopped, having never said what it was about. Four tiles
+and one choice each is the cheaper end of that trade — and it is what lets one
+canvas put two repositories side by side.
 
 ## Step 7 — Connect your account
 
@@ -441,8 +453,8 @@ Optional:
 | Tile says *not configured* | The install at GitHub was never finished, or was cleared. Press **Connect** on *GitHub organization* in step 6. |
 | *Waiting on an owner* after installing | You do not own that account, so GitHub raised a request instead. Nothing is wrong; press **Connect** again once an owner approves it. |
 | *Not connected* right after choosing an account | GitHub did not agree the installation you came back naming is one you hold. Start again from **Connect** rather than reusing the link. |
-| Tile says *repository-required* | The installation covers several repositories and the tile does not say which. Set `repo` on the dashboard tile. |
-| Tile says *repository-not-listed* | The tile's `repo` is not one the installation covers. Add it at GitHub and it arrives within a sync, or fix the tile. |
+| Tile says *choose a repository* | The tile does not say which repository it is about, which every tile has to. Set `repo` on it — the values are what `list-repositories` answers. Nothing is inferred, including on an install covering exactly one. |
+| Tile says *a repository the install does not cover* | The tile's `repo` is not one the installation covers. Add it at GitHub and it arrives within a sync, or fix the tile. |
 | Events never arrive | The install at GitHub in step 6 did not finish, or was removed there. Widgets run on members' own credentials and work without it; deliveries do not. |
 | Redirect mismatch at GitHub | `APP_PUBLIC_URL` and the Callback URL disagree. They must match exactly, scheme and port included. |
 | GitHub's *Recent Deliveries* shows red | `401` is the webhook secret differing between the form and the container. A timeout is the proxy: the Webhook URL does not reach port 8080. |

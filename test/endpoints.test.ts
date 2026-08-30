@@ -219,6 +219,7 @@ describe("what it does at GitHub", () => {
     github(() => ({ status: 201, body: { number: 42, html_url: "https://gh/42", id: 9 } }));
 
     const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, workspace, {
+      repo: "widgets",
       title: "It broke",
       body: "here is how",
       labels: ["bug"],
@@ -251,6 +252,7 @@ describe("what it does at GitHub", () => {
     github(() => ({ status: 201, body: { id: 5, html_url: "https://gh/c/5" } }));
 
     const result = await WRITE_HANDLERS[WRITE_IDS.comment](APP, workspace, {
+      repo: "widgets",
       number: 812,
       body: "on it",
     });
@@ -269,6 +271,7 @@ describe("what it does at GitHub", () => {
     github(() => ({ status: 200, body: { number: 42, state: "closed" } }));
 
     await WRITE_HANDLERS[WRITE_IDS.closeIssue](MEMBER, workspace, {
+      repo: "widgets",
       number: 42,
       reason: "not_planned",
     });
@@ -279,14 +282,21 @@ describe("what it does at GitHub", () => {
 
     // And refuses a reason GitHub does not know rather than passing it on.
     sent.length = 0;
-    await WRITE_HANDLERS[WRITE_IDS.closeIssue](MEMBER, workspace, { number: 42, reason: "vibes" });
+    await WRITE_HANDLERS[WRITE_IDS.closeIssue](MEMBER, workspace, {
+      repo: "widgets",
+      number: 42,
+      reason: "vibes",
+    });
     expect(sent[0].body).toEqual({ state: "closed" });
   });
 
   it("reopens through the same field, which is why it is one endpoint", async () => {
     const workspace = await installed();
     github(() => ({ status: 200, body: { number: 42, state: "open" } }));
-    await WRITE_HANDLERS[WRITE_IDS.reopenIssue](MEMBER, workspace, { number: 42 });
+    await WRITE_HANDLERS[WRITE_IDS.reopenIssue](MEMBER, workspace, {
+      repo: "widgets",
+      number: 42,
+    });
     expect(sent[0].body).toEqual({ state: "open" });
   });
 
@@ -298,6 +308,7 @@ describe("what it does at GitHub", () => {
     github(() => ({ status: 200, body: [] }));
 
     await WRITE_HANDLERS[WRITE_IDS.label](MEMBER, workspace, {
+      repo: "widgets",
       number: 42,
       remove: ["triage"],
       add: ["bug"],
@@ -315,6 +326,7 @@ describe("what it does at GitHub", () => {
     github((url) => (url.includes("/labels/") ? { status: 404, body: {} } : { status: 200, body: [] }));
 
     const result = await WRITE_HANDLERS[WRITE_IDS.label](MEMBER, workspace, {
+      repo: "widgets",
       number: 42,
       remove: ["gone"],
       add: ["bug"],
@@ -327,6 +339,7 @@ describe("what it does at GitHub", () => {
     github(() => ({ status: 201, body: { number: 812 } }));
 
     await WRITE_HANDLERS[WRITE_IDS.requestReview](MEMBER, workspace, {
+      repo: "widgets",
       number: 812,
       reviewers: "alice",
     });
@@ -386,13 +399,20 @@ describe("what it does at GitHub", () => {
 });
 
 describe("what it refuses", () => {
-  it("a call naming no repository when the install covers several", async () => {
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets", "gadgets"]);
-    const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, await workspaceFor(11), {
-      title: "which one?",
-    });
-    expect(failed(result)).toBe(true);
-    expect(failed(result) && result.error).toBe("repository-required");
+  it("a call naming no repository, however many the install covers", async () => {
+    // Both sizes of install, because the one-repository case is the one that
+    // used to be answered by inference and is the reason it is gone: an
+    // automation written against it kept working right up until somebody
+    // ticked a second box at GitHub.
+    for (const repos of [["widgets"], ["widgets", "gadgets"]]) {
+      await pool.query("TRUNCATE workspaces");
+      await rememberWorkspace(11, 500, "acme", 9011, repos);
+      const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, await workspaceFor(11), {
+        title: "which one?",
+      });
+      expect(failed(result), `${repos.length} repositories`).toBe(true);
+      expect(failed(result) && result.error).toBe("repository-required");
+    }
   });
 
   it("a call missing what the operation needs", async () => {
@@ -424,7 +444,10 @@ describe("what it refuses", () => {
       body: { message: "Resource not accessible by integration", secret: "leak" },
     }));
 
-    const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, workspace, { title: "x" });
+    const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, workspace, {
+      repo: "widgets",
+      title: "x",
+    });
     expect(failed(result)).toBe(true);
     expect(failed(result) && result.error).toBe("Resource not accessible by integration");
     expect(JSON.stringify(result)).not.toContain("leak");
@@ -435,7 +458,10 @@ describe("what it refuses", () => {
     github(() => {
       throw new Error("econnrefused");
     });
-    const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, workspace, { title: "x" });
+    const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, workspace, {
+      repo: "widgets",
+      title: "x",
+    });
     expect(failed(result) && result.status).toBe(502);
   });
 });
@@ -449,12 +475,13 @@ describe("what a write says it hands back", () => {
    * here is what keeps the table from falling behind the declarations.
    */
   const CALLS: Record<string, Record<string, unknown>> = {
-    [WRITE_IDS.openIssue]: { title: "It broke" },
-    [WRITE_IDS.comment]: { number: 1, body: "here is how" },
-    [WRITE_IDS.closeIssue]: { number: 1, reason: "completed" },
-    [WRITE_IDS.reopenIssue]: { number: 1 },
-    [WRITE_IDS.label]: { number: 1, add: ["bug"] },
-    [WRITE_IDS.requestReview]: { number: 1, reviewers: ["someone"] },
+    [WRITE_IDS.openIssue]: { repo: "widgets", title: "It broke" },
+    [WRITE_IDS.comment]: { repo: "widgets", number: 1, body: "here is how" },
+    [WRITE_IDS.closeIssue]: { repo: "widgets", number: 1, reason: "completed" },
+    [WRITE_IDS.reopenIssue]: { repo: "widgets", number: 1 },
+    [WRITE_IDS.label]: { repo: "widgets", number: 1, add: ["bug"] },
+    [WRITE_IDS.requestReview]: { repo: "widgets", number: 1, reviewers: ["someone"] },
+    // The one that names no repository: a board belongs to the account.
     [WRITE_IDS.moveProjectItem]: {
       project_id: "PVT_1",
       item_id: "PVTI_1",
@@ -569,7 +596,7 @@ describe("who a read is answered for", () => {
 
     const asking: Caller = { ...CONNECTED, actors: ["member", "installation"] };
     asking.resolved = await resolveActor(asking);
-    await READ_HANDLERS[READ_IDS.listLabels](asking, new URLSearchParams());
+    await READ_HANDLERS[READ_IDS.listLabels](asking, new URLSearchParams({ repo: "widgets" }));
 
     expect(sent[0].auth).toBe("Bearer member-token");
   });
@@ -584,7 +611,7 @@ describe("who a read is answered for", () => {
 
     const asking: Caller = { ...STRANGER, actors: ["member", "installation"] };
     asking.resolved = await resolveActor(asking);
-    await READ_HANDLERS[READ_IDS.listLabels](asking, new URLSearchParams());
+    await READ_HANDLERS[READ_IDS.listLabels](asking, new URLSearchParams({ repo: "widgets" }));
 
     expect(sent[0].auth).toBe("Bearer ghs_installation");
   });
@@ -656,7 +683,7 @@ describe("the boundary, on the way in", () => {
     expect(
       await READ_HANDLERS[READ_IDS.findPullRequests](
         CONNECTED,
-        new URLSearchParams({ review_requested: "me repo:other/thing" })
+        new URLSearchParams({ repo: "widgets", review_requested: "me repo:other/thing" })
       )
     ).toEqual({ unavailable: "bad-login" });
     expect(sent).toHaveLength(0);
@@ -667,7 +694,7 @@ describe("the boundary, on the way in", () => {
     graph({ data: { search: { issueCount: 1, nodes: [{ number: 8 }] } } });
     await READ_HANDLERS[READ_IDS.findPullRequests](
       CONNECTED,
-      new URLSearchParams({ review_requested: "@me" })
+      new URLSearchParams({ repo: "widgets", review_requested: "@me" })
     );
     expect(asked().variables.query).toBe(
       "repo:acme/widgets is:pr review-requested:@me is:open"
@@ -682,7 +709,7 @@ describe("the boundary, on the way in", () => {
     expect(
       await READ_HANDLERS[READ_IDS.findPullRequests](
         CONNECTED,
-        new URLSearchParams({ review_requested: "@me", labels: "bug" })
+        new URLSearchParams({ repo: "widgets", review_requested: "@me", labels: "bug" })
       )
     ).toEqual({ unavailable: "unsupported-combination" });
   });
@@ -716,7 +743,10 @@ describe("what a read makes of the answer", () => {
     await connected();
     graph({ errors: [{ message: "API rate limit exceeded" }] });
     expect(
-      await READ_HANDLERS[READ_IDS.listLabels](CONNECTED, new URLSearchParams())
+      await READ_HANDLERS[READ_IDS.listLabels](
+        CONNECTED,
+        new URLSearchParams({ repo: "widgets" })
+      )
     ).toEqual({ unavailable: "vendor-error" });
   });
 
@@ -724,7 +754,10 @@ describe("what a read makes of the answer", () => {
     await connected();
     graph({ data: { repository: null } });
     expect(
-      await READ_HANDLERS[READ_IDS.findIssues](CONNECTED, new URLSearchParams())
+      await READ_HANDLERS[READ_IDS.findIssues](
+        CONNECTED,
+        new URLSearchParams({ repo: "widgets" })
+      )
     ).toEqual({ unavailable: "not-found" });
   });
 
@@ -745,7 +778,10 @@ describe("what a read makes of the answer", () => {
       },
     });
     expect(
-      await READ_HANDLERS[READ_IDS.getIssue](CONNECTED, new URLSearchParams({ number: "7" }))
+      await READ_HANDLERS[READ_IDS.getIssue](
+        CONNECTED,
+        new URLSearchParams({ repo: "widgets", number: "7" })
+      )
     ).toMatchObject({ state: "closed", state_reason: "not_planned" });
   });
 
@@ -769,7 +805,10 @@ describe("what a read makes of the answer", () => {
       },
     });
     expect(
-      await READ_HANDLERS[READ_IDS.listAlerts](CONNECTED, new URLSearchParams())
+      await READ_HANDLERS[READ_IDS.listAlerts](
+        CONNECTED,
+        new URLSearchParams({ repo: "widgets" })
+      )
     ).toMatchObject({ severities: ["medium"], packages: ["qs"] });
   });
 
@@ -779,7 +818,10 @@ describe("what a read makes of the answer", () => {
       data: { repository: { issues: { totalCount: 240, nodes: [{ number: 1 }, { number: 2 }] } } },
     });
     expect(
-      await READ_HANDLERS[READ_IDS.findIssues](CONNECTED, new URLSearchParams({ limit: "2" }))
+      await READ_HANDLERS[READ_IDS.findIssues](
+        CONNECTED,
+        new URLSearchParams({ repo: "widgets", limit: "2" })
+      )
     ).toMatchObject({ count: 2, total: 240, numbers: [1, 2] });
   });
 
@@ -824,28 +866,35 @@ describe("what a read makes of the answer", () => {
     expect(
       await READ_HANDLERS[READ_IDS.findProjectItem](
         CONNECTED,
-        new URLSearchParams({ project_id: "PVT_1", number: "7" })
+        new URLSearchParams({ repo: "widgets", project_id: "PVT_1", number: "7" })
       )
     ).toEqual({ unavailable: "not-on-that-board" });
   });
 });
 
 describe("what a read says it hands back", () => {
-  /** The smallest call each read accepts, so the assertions cover every one. */
+  /**
+   * The smallest call each read accepts, so the assertions cover every one.
+   *
+   * `repo` is in nine of the thirteen because it is genuinely the smallest
+   * call now: a read that resolves a repository is not answerable without one,
+   * whatever the install happens to cover. The four without it are the ones
+   * that are about the account or about a board.
+   */
   const CALLS: Record<string, Record<string, string>> = {
     [READ_IDS.listRepositories]: {},
-    [READ_IDS.listLabels]: {},
-    [READ_IDS.listAssignees]: {},
-    [READ_IDS.listMilestones]: {},
-    [READ_IDS.getIssue]: { number: "7" },
-    [READ_IDS.findIssues]: {},
-    [READ_IDS.getPullRequest]: { number: "8" },
-    [READ_IDS.findPullRequests]: {},
-    [READ_IDS.listAlerts]: {},
+    [READ_IDS.listLabels]: { repo: "widgets" },
+    [READ_IDS.listAssignees]: { repo: "widgets" },
+    [READ_IDS.listMilestones]: { repo: "widgets" },
+    [READ_IDS.getIssue]: { repo: "widgets", number: "7" },
+    [READ_IDS.findIssues]: { repo: "widgets" },
+    [READ_IDS.getPullRequest]: { repo: "widgets", number: "8" },
+    [READ_IDS.findPullRequests]: { repo: "widgets" },
+    [READ_IDS.listAlerts]: { repo: "widgets" },
     [READ_IDS.listProjects]: {},
     [READ_IDS.listProjectFields]: { project_id: "PVT_1" },
     [READ_IDS.listProjectOptions]: { project_id: "PVT_1", field: "Status" },
-    [READ_IDS.findProjectItem]: { project_id: "PVT_1", number: "7" },
+    [READ_IDS.findProjectItem]: { repo: "widgets", project_id: "PVT_1", number: "7" },
   };
 
   /** A GitHub that answers every read with every field any of them asks for. */

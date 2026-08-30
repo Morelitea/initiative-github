@@ -1,6 +1,7 @@
 import type { Widget } from "initiative-app-kit";
 
 import { READ_IDS } from "../vocabulary.js";
+import { WHY_NOTHING } from "./unavailable.js";
 
 const SOURCE = READ_IDS.findPullRequests;
 
@@ -22,7 +23,11 @@ export const reviewQueueWidget: Widget = {
   },
   endpoints: [SOURCE],
   module_source: `
+${WHY_NOTHING}
+
 function render(data) {
+  const nothing = missing(data);
+  if (nothing) return nothing;
   const rows = data.rows ?? [];
   if (!rows.length) {
     return { v: 1, scene: { kind: "empty", message: "Nothing is waiting on you" } };

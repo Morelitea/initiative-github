@@ -369,6 +369,59 @@ describe("the choices this app makes", () => {
     }
   });
 
+  /** A widget's module, actually run, since a module is a string until it is. */
+  function drawing(widget: { module_source: string }) {
+    return new Function(`${widget.module_source}\nreturn render;`)() as (
+      data: Record<string, unknown>
+    ) => { v: number; scene: { kind: string; message?: string } };
+  }
+
+  it("says why it has nothing, rather than drawing a zero", () => {
+    // The failure this replaced: a read that refused to answer arrived as
+    // `rows: []` and every widget drew it as data. "Open issues: 0" for a tile
+    // that had never been told which repository — plausible, checkable-looking,
+    // and about nothing at all.
+    //
+    // `repository-required` is now the ordinary state of a tile somebody has
+    // just placed, so it is the one a widget most has to say out loud.
+    for (const widget of manifest.widgets ?? []) {
+      const scene = drawing(widget)({ values: { unavailable: "repository-required" }, rows: [] });
+      expect(scene.scene.kind, `${widget.id} drew a ${scene.scene.kind}`).toBe("empty");
+      expect(scene.scene.message, `${widget.id} does not say which thing is missing`).toContain(
+        "repository"
+      );
+    }
+  });
+
+  it("says something for a reason it does not recognise", () => {
+    // The reasons come from this app's own endpoints and one will be added.
+    // A widget that drew a blank tile for an unknown one would look broken
+    // rather than unconfigured, which is the wrong thing to make somebody debug.
+    for (const widget of manifest.widgets ?? []) {
+      const scene = drawing(widget)({ values: { unavailable: "some-later-reason" }, rows: [] });
+      expect(scene.scene.kind).toBe("empty");
+      expect(scene.scene.message, `${widget.id} says nothing at all`).toBeTruthy();
+    }
+  });
+
+  it("draws its sample data as data, unavailability being absent from it", () => {
+    // The other half: the branch above must not swallow an ordinary answer.
+    for (const widget of manifest.widgets ?? []) {
+      const sample = Object.values(widget.sample_data ?? {})[0] as Record<string, unknown>;
+      const rows = Object.entries(sample)
+        .filter(([, value]) => Array.isArray(value))
+        .map(([key, value]) => [key, value as unknown[]] as const);
+      const length = Math.max(0, ...rows.map(([, column]) => column.length));
+      const scene = drawing(widget)({
+        values: sample,
+        rows: Array.from({ length }, (_, index) =>
+          Object.fromEntries(rows.map(([key, column]) => [key, column[index]]))
+        ),
+      });
+      expect(scene.scene.kind, `${widget.id} drew nothing from its own sample`).not.toBe("empty");
+    }
+  });
+
   it("ships sample data so a preview renders with no network call", () => {
     for (const widget of manifest.widgets ?? []) {
       expect(widget.sample_data).toBeDefined();

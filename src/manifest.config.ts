@@ -145,12 +145,35 @@ export const manifest: Manifest = {
 
   widgets: [...WIDGETS],
 
+  /**
+   * An arrangement, with the repository left to the guild that installs it.
+   *
+   * Every binding below names its endpoint and the fixed half of its
+   * parameters — a state, a window, a limit — and **none of them names a
+   * `repo`**, because no manifest can. A repository name is a fact about one
+   * guild's installation, and this document is published once and is identical
+   * on every deployment; writing `acme/widgets` here would be this app naming
+   * somebody else's repository.
+   *
+   * That is the slot, not an oversight. A tile's `repo` is filled per
+   * instance, against the guild's own installation, from the list
+   * `list-repositories` answers — which is what `REPO.options_from` names it
+   * for. Each tile carries its own id, so the four are filled independently and
+   * a canvas can put two repositories side by side.
+   *
+   * Until one is filled, a tile draws "Choose a repository for this tile"
+   * rather than a number. That is the whole of what changed: the app used to
+   * quietly answer for whichever repository an install happened to cover, which
+   * was right until the day it was not, and said nothing either way.
+   */
   dashboards: [
     {
       uid: DASHBOARD_UID,
       public_id: "morelitea.github-overview",
       name: "GitHub overview",
-      description: "The repository at a glance: open issues, reviews, throughput.",
+      description:
+        "A repository at a glance: open issues, reviews, throughput. " +
+        "Each tile is pointed at a repository once it is placed.",
       layout: { columns: 12 },
       widgets: [
         {

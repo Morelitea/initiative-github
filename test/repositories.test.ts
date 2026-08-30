@@ -39,19 +39,36 @@ afterEach(() => {
 });
 
 describe("when nobody said which", () => {
-  it("uses the one the guild named", () => {
-    expect(resolveRepository(workspace(["gadgets"]))).toEqual({
-      owner: "acme",
-      repo: "gadgets",
-    });
-  });
-
   it("refuses to guess between several", () => {
     // The answer that makes a dashboard say which. Picking the first would be
     // a tile quietly reporting one team's numbers to another.
     expect(resolveRepository(workspace(["widgets", "gadgets"]))).toEqual({
       unavailable: "repository-required",
     });
+  });
+
+  it("refuses to guess when there is only one, which is the harder case", () => {
+    // This one used to resolve, and it is the reason the inference had to go.
+    // It is not wrong on the day it happens — there is one repository, and it
+    // is the one meant. It is wrong on the day somebody ticks a second box at
+    // GitHub, because the tile that had been answering for a year stops, and
+    // nothing about the tile changed. An install grew and a dashboard broke.
+    //
+    // The parameter costs a dashboard one choice, once. Being right only while
+    // an install stays the size it was is the thing being given up here.
+    expect(resolveRepository(workspace(["gadgets"]))).toEqual({
+      unavailable: "repository-required",
+    });
+  });
+
+  it("says the same thing whether the name is absent, empty or spaces", () => {
+    // One reason, so a widget has one branch to draw. A binding saved with the
+    // field cleared is a binding that named nothing.
+    for (const said of [undefined, null, "", "   "]) {
+      expect(resolveRepository(workspace(["gadgets"]), said)).toEqual({
+        unavailable: "repository-required",
+      });
+    }
   });
 });
 
@@ -103,7 +120,7 @@ describe("when there is nothing to resolve against", () => {
 describe("what it asks GitHub", () => {
   it("nothing, on any path", () => {
     const fetching = watchFetch();
-    resolveRepository(workspace(["gadgets"]));
+    resolveRepository(workspace(["gadgets"]), "gadgets");
     resolveRepository(workspace(["widgets", "gadgets"]), "widgets");
     resolveRepository(workspace(["widgets"]), "payroll");
     resolveRepository(workspace([]));
@@ -116,7 +133,10 @@ describe("what it asks GitHub", () => {
     // its dashboard without waiting on an organization owner. What still waits
     // on the installation is the webhook, which is a different surface.
     expect(
-      resolveRepository({ owner: "acme", repos: ["gadgets"], installationId: null })
+      resolveRepository(
+        { owner: "acme", repos: ["gadgets"], installationId: null },
+        "gadgets"
+      )
     ).toEqual({ owner: "acme", repo: "gadgets" });
   });
 });

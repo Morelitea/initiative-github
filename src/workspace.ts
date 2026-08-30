@@ -141,6 +141,23 @@ export type RepositoryChoice =
   | { owner: string; repo: string }
   | { unavailable: string };
 
+/**
+ * Which repository a call is about — said, never worked out.
+ *
+ * There is no reading of an absent `repo` that is safe. Guessing between
+ * several was never on the table; guessing when there happens to be one was,
+ * and it was the worse of the two, because it is the one that looks like it
+ * works. A tile bound with no repository drew the only repository an install
+ * covered, and went on drawing until somebody ticked a second box at GitHub —
+ * at which point the same unchanged tile stopped answering, for a reason
+ * nothing in it had said anything about. The install was what changed, and the
+ * dashboard was what broke.
+ *
+ * So the parameter is the whole of the answer. A caller that does not name a
+ * repository is told to, in the same shape every other missing parameter here
+ * is answered in, and a tile says "choose one" rather than showing somebody a
+ * number that is about a repository nobody chose.
+ */
 export function resolveRepository(
   workspace: StoredWorkspace | null,
   wanted?: string | null
@@ -149,17 +166,13 @@ export function resolveRepository(
     return { unavailable: "not-configured" };
   }
 
-  const allowed = workspace.repos;
   const asked = wanted?.trim();
+  if (!asked) return { unavailable: "repository-required" };
 
-  if (asked) {
-    const repo = allowed.find((name) => name.toLowerCase() === asked.toLowerCase());
+  // GitHub matches names case-insensitively and this one was typed, so what
+  // goes back into a URL is the spelling the installation gave.
+  const repo = workspace.repos.find((name) => name.toLowerCase() === asked.toLowerCase());
+  if (!repo) return { unavailable: "repository-not-listed" };
 
-    if (!repo) return { unavailable: "repository-not-listed" };
-    return { owner: workspace.owner, repo };
-  }
-
-  if (allowed.length === 1) return { owner: workspace.owner, repo: allowed[0] };
-
-  return { unavailable: "repository-required" };
+  return { owner: workspace.owner, repo };
 }

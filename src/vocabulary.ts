@@ -161,9 +161,16 @@ export const ISSUE_IDENTITY: EndpointIdentity = {
  * consumer draws for it is still a consumer's business; which values are
  * permitted is this app's, and only this app can know them.
  *
- * `resolveRepository` accepts a bare name and falls back to the workspace's
- * single repository when the parameter is absent, so a one-repository install
- * can leave it blank.
+ * **Every caller names one.** `resolveRepository` infers nothing — not even
+ * for an install covering exactly one repository, which is the case that used
+ * to be inferred and is the one that broke later, silently, when a second
+ * repository was ticked at GitHub. A call that leaves it out is answered
+ * `repository-required` rather than guessed at.
+ *
+ * It is not declared `required`, and that is the same decision every other
+ * parameter here made: this manifest answers a missing parameter in the body,
+ * where a widget can draw it, rather than as a status a widget draws nothing
+ * from. Required in fact, `unavailable` in the answer.
  */
 export const REPO: EndpointParam = {
   ...param("repo", "string", "Repository", "Repository", "Repositorio", "Dépôt"),

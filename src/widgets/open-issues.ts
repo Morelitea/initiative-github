@@ -1,6 +1,7 @@
 import type { Widget } from "initiative-app-kit";
 
 import { READ_IDS } from "../vocabulary.js";
+import { WHY_NOTHING } from "./unavailable.js";
 
 const SOURCE = READ_IDS.findIssues;
 
@@ -23,7 +24,11 @@ export const openIssuesWidget: Widget = {
   endpoints: [SOURCE],
 
   module_source: `
+${WHY_NOTHING}
+
 function render(data) {
+  const nothing = missing(data);
+  if (nothing) return nothing;
   const values = data.values ?? {};
   return {
     v: 1,
