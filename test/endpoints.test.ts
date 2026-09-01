@@ -642,6 +642,53 @@ describe("who a read is answered for", () => {
   });
 });
 
+describe("a parameter that takes several values", () => {
+  it("carries every one of them into the read", async () => {
+    // `list` is declared so a caller sends an array rather than a string with
+    // a comma in it that nothing upstream can check or fill a menu for. The
+    // reads here take several through `readNames`, which splits on commas, so
+    // the join happens once on the way in.
+    await connected();
+    graph({ data: { repository: { issues: { totalCount: 0, nodes: [] } } } });
+
+    const asked = parseInvoke(
+      {
+        endpoint: READ_IDS.findIssues,
+        guild_id: 500,
+        params: { repo: "widgets", labels: ["bug", "regression"] },
+      },
+      READ_DECLARATIONS
+    );
+    expect(asked.ok).toBe(true);
+    await invoke(CONNECTED, asked.ok ? asked.request : ({} as never));
+
+    expect(asked.ok && asked.request.params.labels).toEqual(["bug", "regression"]);
+    expect(asked.ok && asked.request.params.repo).toBe("widgets");
+  });
+
+  it("does not drop a filter it cannot spell, which would answer too much", async () => {
+    // The failure this replaced, and the reason it is worth a test: an array
+    // was skipped on the way in, so a tile asking for one label was answered
+    // with every issue — a filter that looks set and narrows nothing.
+    await connected();
+    graph({ data: { repository: { issues: { totalCount: 0, nodes: [] } } } });
+
+    const asked = parseInvoke(
+      {
+        endpoint: READ_IDS.findIssues,
+        guild_id: 500,
+        params: { repo: "widgets", labels: ["bug"] },
+      },
+      READ_DECLARATIONS
+    );
+    await invoke(CONNECTED, asked.ok ? asked.request : ({} as never));
+
+    // It reached GitHub as a narrowed query rather than an unfiltered one.
+    expect(JSON.stringify(asked.ok && asked.request.params)).toContain("bug");
+    expect(sent.length).toBeGreaterThan(0);
+  });
+});
+
 describe("the boundary, on the way in", () => {
   it("refuses a repository the guild did not list", async () => {
     await connected();

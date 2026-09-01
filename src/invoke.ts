@@ -27,9 +27,34 @@ import { workspaceFor } from "./workspace.js";
 
 export type { Caller } from "./endpoints/index.js";
 
+/**
+ * The wire's parameters as a read's own `URLSearchParams`.
+ *
+ * A parameter this manifest declares `list` — labels, assignees, reviewers —
+ * arrives as an **array**, because that is what declaring `list` is for: the
+ * alternative it replaces is an app declaring a string and documenting a comma,
+ * which nothing upstream can validate or fill a menu for. Every read here takes
+ * several values through `readNames`, which splits on commas, so this is where
+ * the two meet.
+ *
+ * Dropping an array instead — which is what this did — is the quiet kind of
+ * wrong: a caller that asked for the "bug" label got every issue, with nothing
+ * anywhere saying the filter had been ignored.
+ */
 function searchParams(params: Record<string, unknown>): URLSearchParams {
   const out = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
+    if (Array.isArray(value)) {
+      const several = value
+        .filter(
+          (entry): entry is string | number | boolean =>
+            typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean"
+        )
+        .map((entry) => String(entry).trim())
+        .filter(Boolean);
+      if (several.length) out.set(key, several.join(","));
+      continue;
+    }
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
       out.set(key, String(value));
     }
