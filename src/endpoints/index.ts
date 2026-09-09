@@ -23,6 +23,7 @@ import {
 } from "./projects.js";
 import { findPullRequests, getPullRequest, requestReview } from "./pull-requests.js";
 import { listAssignees, listRepositories } from "./repositories.js";
+import { WRITE_IDS } from "../vocabulary.js";
 import { listAlerts } from "./security.js";
 
 export interface Caller {
@@ -87,6 +88,31 @@ export const WRITES: readonly Write[] = [
   requestReview,
   moveProjectItem,
 ];
+
+/**
+ * The GitHub permissions each write needs write access on, any one of which is
+ * enough.
+ *
+ * Several are a pair rather than one because GitHub's issues API is also its
+ * pull request API: a comment, a close, a reopen and a label all go to
+ * `/issues/{number}`, and whether that number is an issue or a pull request
+ * decides which permission GitHub checks. This app does not know which without
+ * asking, and asking would spend a request to find out something GitHub is
+ * about to check anyway — so the pair is the honest requirement, and the one
+ * case that is unambiguous in each direction says so. `open-issue` can only
+ * ever make an issue, and `request-review` only ever touches `/pulls`.
+ */
+export const WRITE_NEEDS: Readonly<Record<string, readonly string[]>> = {
+  [WRITE_IDS.openIssue]: ["issues"],
+  [WRITE_IDS.comment]: ["issues", "pull_requests"],
+  [WRITE_IDS.closeIssue]: ["issues", "pull_requests"],
+  [WRITE_IDS.reopenIssue]: ["issues", "pull_requests"],
+  [WRITE_IDS.label]: ["issues", "pull_requests"],
+  [WRITE_IDS.requestReview]: ["pull_requests"],
+  // A board is the account's rather than a repository's, and an installation
+  // reaches one through either permission depending on where it lives.
+  [WRITE_IDS.moveProjectItem]: ["organization_projects", "repository_projects"],
+};
 
 export const READ_HANDLERS: Record<string, Read["run"]> = Object.fromEntries(
   READS.map((read) => [read.declaration.id, read.run.bind(read)])

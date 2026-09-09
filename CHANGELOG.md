@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+### A write says when the installation was never granted it
+
+An organization grants this app twice, and the README has always said so:
+**which permissions** it has, and **which repositories** they apply to. Only the
+second half was ever checked. `GET /installation/repositories` is the boundary
+on repositories and always has been — an installation token cannot reach past
+it, so every read, write, widget and delivery here was already confined to the
+repositories somebody ticked at GitHub. The permissions half was read from
+GitHub three times over and thrown away every time.
+
+That matters because the two drift by design. An app that widens what it asks
+for leaves every existing installation on the set its owner already agreed to
+until an owner approves the new one — so what this app *requests* and what any
+one installation *holds* are different facts, and only the second one decides
+anything. An installation still on a narrower grant had its writes refused by
+GitHub with a 403 that arrived here as an unexplained failure. The automation
+looked broken rather than un-approved, and the one remedy — an owner approving
+the permissions at GitHub — appeared nowhere in what the caller was told.
+
+The permissions now come off the mint response they were always arriving in, so
+this costs no extra request and expires with the token, which is what makes an
+owner's approval take effect within the hour. A write the installation was not
+granted is refused before it is sent, naming the permission and saying who can
+fix it. Asked of the installation even though every write runs as the member,
+because a user-to-server token is bounded by both: GitHub gives somebody acting
+through an app the intersection of what the app was granted and what that person
+can do, so a read-only installation cannot write as anybody.
+
+Worth being exact about what this is *not*: a per-repository check. GitHub has
+no way to grant `issues: write` on one repository and `issues: read` on another
+inside a single installation, so there is no writable subset of an install's
+repositories, and nothing here pretends to compute one.
+
+An unanswered question is still not a refusal. No installation to ask about, a
+mint GitHub would not answer, or a response carrying no permissions block all
+let the write through to GitHub, which is the party entitled to decide.
+
+Upgrading: nothing to change, and no schema change. A guild whose installation
+holds everything this app asks for sees no difference. One that does not gets a
+403 naming the missing permission where it previously got an opaque failure.
+
 ## [0.10.3] — 2026-09-09
 
 ### A filter that takes several values arrives with all of them

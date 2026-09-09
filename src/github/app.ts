@@ -147,9 +147,71 @@ export async function installationById(
  * in an hour. Kept in memory until just before it does, because minting one per
  * call would spend a request on every tile.
  */
+/**
+ * A permission level per GitHub permission name — `{ issues: "write" }`.
+ *
+ * Installation-wide, and uniform across every repository the installation
+ * covers. GitHub has no way to grant `issues: write` on one repository and
+ * `issues: read` on another inside a single installation, so this is asked
+ * once per installation rather than once per repository — there is no
+ * writable subset of `repos` to work out, and nothing here pretends there is.
+ */
+export type Grant = Readonly<Record<string, string>>;
+
+/**
+ * Levels, in the order that makes one imply another.
+ *
+ * `admin` covers `write` covers `read`, so a check asks "at least this" rather
+ * than matching a word. Anything unrecognised ranks below everything: a level
+ * GitHub adds after this is written is not quietly read as sufficient.
+ */
+const LEVELS: Readonly<Record<string, number>> = {
+  read: 1,
+  triage: 2,
+  write: 3,
+  maintain: 4,
+  admin: 5,
+};
+
+/** Whether a grant reaches a level — `grants(g, "issues", "write")`. */
+export function grants(grant: Grant, permission: string, level: string): boolean {
+  const held = LEVELS[grant[permission] ?? ""] ?? 0;
+  const wanted = LEVELS[level] ?? Number.POSITIVE_INFINITY;
+  return held >= wanted;
+}
+
+/**
+ * The permissions block, kept only where it is the shape GitHub documents.
+ *
+ * `null` is "GitHub did not say", and it is a different answer from `{}`.
+ * An absent block has to stay unknown rather than collapsing into "granted
+ * nothing", because the only thing downstream does with a grant is refuse on
+ * it — and refusing every write on a key that failed to arrive would be this
+ * app inventing a restriction the owner never set.
+ */
+function readGrant(said: unknown): Grant | null {
+  if (!said || typeof said !== "object" || Array.isArray(said)) return null;
+  const grant: Record<string, string> = {};
+  for (const [permission, level] of Object.entries(said as Record<string, unknown>)) {
+    if (typeof level === "string") grant[permission] = level;
+  }
+  return grant;
+}
+
 interface Minted {
   token: string;
   lapsesAt: number;
+  /**
+   * What the owner actually granted, as GitHub said it while minting this.
+   *
+   * Not `PERMISSIONS`, which is what the registration *asks* for. An app that
+   * widens its request leaves every existing installation on the set its owner
+   * already agreed to until an owner approves the new one, so the two drift and
+   * only this one is true. Free to keep: it arrives in the mint response this
+   * function was already parsing, and it lapses with the token it came with,
+   * which is what makes an approval show up here within the hour.
+   */
+  grant: Grant | null;
 }
 
 const minted = new Map<number, Minted>();
@@ -161,10 +223,14 @@ export async function installationToken(installationId: number): Promise<string 
   const held = minted.get(installationId);
   if (held && held.lapsesAt > Date.now() + TOKEN_SKEW_MS) return held.token;
 
-  const answer = await fetchJson<{ token?: unknown; expires_at?: unknown }>(
-    `${config.github.apiBase}/app/installations/${installationId}/access_tokens`,
-    { method: "POST", headers: appHeaders() }
-  );
+  const answer = await fetchJson<{
+    token?: unknown;
+    expires_at?: unknown;
+    permissions?: unknown;
+  }>(`${config.github.apiBase}/app/installations/${installationId}/access_tokens`, {
+    method: "POST",
+    headers: appHeaders(),
+  });
 
   if (!answer.ok) {
     console.error(
@@ -187,8 +253,27 @@ export async function installationToken(installationId: number): Promise<string 
     // An hour is what GitHub gives; an unparseable expiry is treated as the
     // shortest thing it could have been rather than as forever.
     lapsesAt: Number.isFinite(lapsesAt) ? lapsesAt : Date.now() + TOKEN_SKEW_MS,
+    grant: readGrant(answer.body.permissions),
   });
   return token;
+}
+
+/**
+ * What one installation was granted, as GitHub last said while minting.
+ *
+ * The same response the token comes out of, so asking costs nothing beyond a
+ * mint that was happening anyway, and it expires alongside the token — which
+ * is what makes an owner's approval take effect here within the hour rather
+ * than at the next restart.
+ *
+ * `null` is "GitHub would not say", and never "granted nothing".
+ */
+export async function installationGrant(
+  installationId: number
+): Promise<Grant | null> {
+  const token = await installationToken(installationId);
+  if (!token) return null;
+  return minted.get(installationId)?.grant ?? null;
 }
 
 /** Stop holding a token for an installation that is gone. */

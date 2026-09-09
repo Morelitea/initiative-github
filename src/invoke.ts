@@ -15,7 +15,9 @@ import {
   ENDPOINTS,
   READ_HANDLERS,
   WRITE_HANDLERS,
+  WRITE_NEEDS,
 } from "./endpoints/index.js";
+import { grants, installationGrant } from "./github/app.js";
 import {
   chooseActor,
   fail,
@@ -23,7 +25,7 @@ import {
   resolveActor,
   type OperationFailure,
 } from "./github/api.js";
-import { workspaceFor } from "./workspace.js";
+import { workspaceFor, type StoredWorkspace } from "./workspace.js";
 
 export type { Caller } from "./endpoints/index.js";
 
@@ -120,6 +122,45 @@ async function memberToken(caller: Caller): Promise<string | null> {
   return account?.accessToken ?? null;
 }
 
+/**
+ * Whether the installation was granted enough for this write to be possible.
+ *
+ * Asked of the installation even though every write here runs as the member,
+ * because a user-to-server token is bounded by both: GitHub gives somebody
+ * acting through an app the intersection of what the app was granted and what
+ * that person can do. An installation left on a read-only grant therefore
+ * cannot write as anybody, and the member's own push access does not lift it.
+ *
+ * That case was silent before this. GitHub refused with a 403 that arrived as
+ * an unexplained failure, so the one remedy — an owner approving, at GitHub,
+ * the permissions this app asks for — appeared nowhere in what the caller was
+ * told, and the automation looked broken rather than un-approved.
+ *
+ * An unanswered question is not a refusal, and this leans that way at every
+ * step: no installation to ask about, a mint GitHub would not answer, or a
+ * response carrying no permissions block all let the write through to GitHub,
+ * which is the party entitled to decide. What is refused here is only the case
+ * GitHub stated plainly and this app can therefore explain.
+ */
+async function ungranted(
+  endpointId: string,
+  workspace: StoredWorkspace | null
+): Promise<OperationFailure | null> {
+  const needs = WRITE_NEEDS[endpointId];
+  if (!needs || !workspace || workspace.installationId === null) return null;
+
+  const grant = await installationGrant(workspace.installationId);
+  if (!grant) return null;
+
+  if (needs.some((permission) => grants(grant, permission, "write"))) return null;
+
+  return fail(
+    403,
+    `this installation is not granted write access to ${needs.join(" or ")}. ` +
+      `An owner has to approve the permissions this app asks for, at GitHub`
+  );
+}
+
 export async function invoke(
   caller: Caller,
   request: InvokeRequest
@@ -149,6 +190,9 @@ export async function invoke(
   }
 
   const workspace = await workspaceFor(caller.appInstallId);
+
+  const refused = await ungranted(endpoint.id, workspace);
+  if (refused) return refused;
 
   const actor = await chooseActor(endpoint, { member: () => memberToken(caller) });
   if (failed(actor)) return actor;

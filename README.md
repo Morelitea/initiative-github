@@ -8,6 +8,17 @@ An organization grants it twice, on GitHub's own pages: **which permissions**
 it has, and **which repositories** they apply to — all of them, or a list you
 pick. That grant is the boundary, and this app cannot widen it from here.
 
+Both halves are checked. The repositories are checked by GitHub: an
+installation reaches the ones it was given and no others, and the list this app
+works from is a copy of GitHub's own answer. The permissions are checked here,
+because they drift — an app that widens what it asks for leaves existing
+installations on the set their owner already agreed to until an owner approves
+the new one. So a write the installation was never granted is refused before it
+is sent, naming the permission, rather than arriving as an unexplained 403. The
+two are separate questions on purpose: permissions are installation-wide, so
+there is no subset of your repositories this app can write to and another it
+cannot.
+
 Inside it, two credentials do two jobs. Anything about *you* — your review
 queue, an issue you open — runs on **your own GitHub credential**, so it shows
 exactly what you can see and is attributed to you. Anything about the
