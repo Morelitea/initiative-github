@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [0.10.4] — 2026-09-09
 
 ### One empty answer stopped every automation
 
