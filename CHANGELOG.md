@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.10.3] — 2026-09-09
+
+### A filter that takes several values arrives with all of them
+
+`labels`, `assignees`, `reviewers` — every parameter this manifest declares
+`list` — arrive from the dashboard as an **array**, which is the whole point of
+declaring `list`: the alternative is an app declaring a string and documenting a
+comma, which nothing upstream can validate or fill a menu from.
+
+`searchParams` forwarded strings, numbers and booleans on the way in, and
+skipped anything else. So an array went nowhere. A tile configured for the *bug*
+label was answered with every issue in the repository, and the count it drew was
+a real count of the wrong question — the filter looked set on the form, was
+stored on the widget, was sent on every fetch, and narrowed nothing.
+
+Several values now join on commas once, on the way in, which is the shape every
+read here already expects: they all go through `readNames`, which splits on
+them. Entries that are not values are dropped, and a parameter left with none is
+absent rather than empty.
+
+Upgrading: nothing to change. A tile whose label, assignee or reviewer filter
+had been quietly ignored starts answering the question it was configured with,
+so its numbers will move.
+
 ## [0.10.2] — 2026-08-30
 
 ### A tile says which repository it is about
