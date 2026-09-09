@@ -2,6 +2,43 @@
 
 ## Unreleased
 
+### One empty answer stopped every automation
+
+`syncAllInstalls` ends by dropping the workspace rows the platform did not
+name, which is how an install this app is no longer in stops being routed to.
+It passed the names straight into `DELETE FROM workspaces WHERE NOT
+(app_install_id = ANY($1))` — and `ANY` of an empty array is false for every
+row, so `NOT` is true for every row. An answer that named nothing deleted
+everything.
+
+The platform answers `[]` with a 200 in ordinary circumstances that have nothing
+to do with installs: a registration whose listing is not verified reports no
+installs by design, and so does a walk that visited no guild. Neither is anybody
+saying this app was uninstalled.
+
+What that costs is not what it looks like. Reads recover on the next pass that
+succeeds, so a dashboard flickers and comes back. **Deliveries do not.** A
+GitHub webhook arriving while the table is empty is verified, translated, and
+then matched against a routing table with nothing in it — `installsWatching`
+returns no rows, the delivery is answered `200` because nothing failed, and
+GitHub never sends it again. The subscription is still there and still correct,
+so an automation stops firing with no error on either side and nothing to find.
+
+Nothing is now pruned on an answer that named no installs at all. A stale row
+costs one delivery to a guild that fails its own config read, and the next pass
+reconciles it; the deletion it replaces cost every delivery in every guild.
+This is the rule `installIsGone` states two functions above — only Initiative
+can say an install is gone, and silence is not it saying so — applied to the one
+place that was not following it.
+
+`syncAllInstalls` had no test of its own, which is how this survived. It has
+four now.
+
+Upgrading: nothing to change. If automations stopped firing and nothing in the
+logs said why, this is a candidate — `dropped N install(s) this app is no longer
+in` on a pass where nothing was uninstalled is the line that recorded it
+happening.
+
 ### A write says when the installation was never granted it
 
 An organization grants this app twice, and the README has always said so:

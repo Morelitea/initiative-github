@@ -449,3 +449,70 @@ describe("asking GitHub which installation covers an owner", () => {
     }
   });
 });
+
+/**
+ * The pass that reconciles every guild at once, and the one deletion in it.
+ *
+ * `syncAllInstalls` ends by dropping the workspace rows the platform did not
+ * name, which is how an install this app is no longer in stops being routed to.
+ * The whole of the risk is in what "did not name" means: the platform answers
+ * `[]` with a 200 in ordinary circumstances that have nothing to do with
+ * installs, and the delete is written so that one such answer takes out every
+ * row rather than none.
+ *
+ * What that costs is not symmetric with what it saves, which is why it is
+ * pinned here. A stale row is reconciled by the next pass. A GitHub delivery
+ * that arrives while the table is empty finds nothing watching its repository,
+ * is answered 200 because nothing failed, and is gone — an automation that
+ * stops firing with no error on either side.
+ */
+describe("reconciling every install at once", () => {
+  it("drops the rows the platform no longer names", async () => {
+    // The prune doing its job: two installs listed, so anything else is stale.
+    installs.mockResolvedValue([
+      { install_id: 11, guild_id: 500, enabled: true },
+      { install_id: 12, guild_id: 501, enabled: true },
+    ]);
+    configCall.mockResolvedValue(installConfig());
+    installationById.mockResolvedValue(told(4242));
+
+    await syncAllInstalls();
+
+    expect(forgetInstallsExcept).toHaveBeenCalledWith([11, 12]);
+  });
+
+  it("keeps a row for an install that is listed but switched off", async () => {
+    // Disabled is dropped one at a time on the way past, which is a different
+    // statement from the prune's — the platform named it, and said it is off.
+    installs.mockResolvedValue([{ install_id: 11, guild_id: 500, enabled: false }]);
+
+    await syncAllInstalls();
+
+    expect(forgetWorkspace).toHaveBeenCalledWith(11);
+    expect(forgetInstallsExcept).toHaveBeenCalledWith([]);
+  });
+
+  it("deletes nothing when the platform named nothing at all", async () => {
+    // The case this guard exists for, and the reason it is not paranoia: a
+    // registration whose listing is not verified answers `[]` with a 200, and
+    // so does a walk that visited no guild. Neither is anybody saying this app
+    // was uninstalled — but `NOT (id = ANY('{}'))` is true of every row, so
+    // acting on it empties the routing table and silences every delivery.
+    installs.mockResolvedValue([]);
+
+    await syncAllInstalls();
+
+    expect(forgetInstallsExcept).not.toHaveBeenCalled();
+  });
+
+  it("still refuses when a guild's own sync failed on the same pass", async () => {
+    // A pass where the per-guild work threw must not turn into a narrower list
+    // that the prune then acts on. The install was named; that is what counts.
+    installs.mockResolvedValue([{ install_id: 11, guild_id: 500, enabled: true }]);
+    configCall.mockRejectedValue(new ChannelError(503, "unavailable"));
+
+    await syncAllInstalls();
+
+    expect(forgetInstallsExcept).toHaveBeenCalledWith([11]);
+  });
+});

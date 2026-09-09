@@ -298,6 +298,31 @@ export async function syncAllInstalls(): Promise<void> {
     }
   }
 
+  // An answer naming nothing is not the same answer as nothing being installed,
+  // and the two are told apart here because only one of them is survivable.
+  //
+  // The prune below deletes every workspace row that was not just named, which
+  // is right when the platform listed the installs and this app is genuinely no
+  // longer in one. It is catastrophic when the list came back empty for a
+  // reason that has nothing to do with installs — a registration whose listing
+  // is not verified answers `[]` with a 200, and so does a walk that visited no
+  // guild. `NOT (id = ANY('{}'))` is true of every row, so one such answer
+  // takes out the whole routing table.
+  //
+  // Reads recover on the next pass that succeeds. **Deliveries do not.** A
+  // GitHub webhook that arrives while the table is empty finds nothing watching
+  // its repository, is answered 200 because nothing failed, and is gone — so an
+  // automation stops firing with no error anywhere, on either side. That is a
+  // different order of cost from the stale row this refuses to delete, which
+  // the next pass reconciles anyway.
+  //
+  // The rule is the one `installIsGone` states directly above: only Initiative
+  // can say an install is gone, and silence is not it saying so.
+  if (!installs.length) {
+    console.warn("the platform named no installs — keeping what is written down");
+    return;
+  }
+
   const present = installs.filter((i) => i.enabled).map((i) => i.install_id);
   const dropped = await forgetInstallsExcept(present);
   if (dropped) console.log(`dropped ${dropped} install(s) this app is no longer in`);
