@@ -285,6 +285,23 @@ function sendPage(res: ServerResponse, html: string): void {
     "Content-Length": Buffer.byteLength(html),
 
     "Content-Security-Policy": "frame-ancestors 'none'",
+
+    // Every page this function serves belongs to the setup or OAuth flow, and
+    // two of them are reached by a URL carrying a secret: the registration form
+    // behind ?token=, and the result page that renders the four one-time values
+    // GitHub will not show again.
+    //
+    // no-store because a secret-bearing response has no business in any cache,
+    // shared or private, and this is cheaper than deciding per route which pages
+    // are the sensitive ones.
+    //
+    // no-referrer because the setup token travels in the query string. Without
+    // it, following the link to the app's GitHub page from the result screen
+    // sends that URL — token included — to github.com in a Referer header. The
+    // token should move out of the query string entirely; until it does, this
+    // stops the most direct way it escapes.
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
   });
   res.end(html);
 }
