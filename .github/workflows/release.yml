@@ -64,7 +64,6 @@ jobs:
             type=raw,value=latest
 
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-
         id: build
         with:
           context: .
@@ -100,7 +99,13 @@ jobs:
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -euo pipefail
-          image="$(printf '%s' "$TAGS" | head -n1 | cut -d: -f1)"
+          # metadata-action emits one tag per line; any of them names the same
+          # image, so the first will do. Strip the tag with ${tag%:*} rather
+          # than `cut -d: -f1`, which would return "localhost" for a registry
+          # that carries a port. Not the case for ghcr.io today, and not a
+          # thing to leave as a trap either.
+          tag="$(printf '%s' "$TAGS" | head -n1)"
+          image="${tag%:*}"
           cosign sign --yes "${image}@${DIGEST}"
           echo "signed ${image}@${DIGEST}"
 
