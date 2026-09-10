@@ -285,6 +285,14 @@ function sendPage(res: ServerResponse, html: string): void {
     "Content-Length": Buffer.byteLength(html),
 
     "Content-Security-Policy": "frame-ancestors 'none'",
+
+    // Setup and OAuth pages are not cacheable and must not pass their own URL
+    // onward. Applied to everything sendPage serves rather than per route: one
+    // rule is harder to get wrong than a list kept in step with the routes.
+    //
+    // Rationale: T98.
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
   });
   res.end(html);
 }
