@@ -22,7 +22,7 @@ interface Write { values: Record<string, unknown>; status?: string }
 const { writeConnection } = vi.hoisted(() => ({
   // Typed, so reading an argument back below is checked rather than asserted.
   writeConnection:
-    vi.fn<(guildId: number, ref: string, write: Write) => Promise<unknown>>(
+    vi.fn<(guildRef: string, ref: string, write: Write) => Promise<unknown>>(
       async () => ({})
     ),
 }));
@@ -42,7 +42,7 @@ import {
 import { manifest } from "../src/manifest.config.js";
 
 const REF = "ref-abcdef";
-const GUILD = 500;
+const GUILD = "gapp_testguild500";
 const HOME = "https://initiative.test/apps/connected?app=morelitea.github";
 
 /** GitHub answering the token exchange and the `/user` lookup that follows. */
@@ -61,8 +61,8 @@ function github(token = "ghu_member") {
 }
 
 /** Start a flow the way the route does, and read back the state GitHub gets. */
-async function started(guildId = GUILD, home: string | null = HOME) {
-  const redirect = await beginOAuth(REF, guildId, home);
+async function started(guildRef = GUILD, home: string | null = HOME) {
+  const redirect = await beginOAuth(REF, guildRef, home);
   return new URL(redirect).searchParams.get("state")!;
 }
 
@@ -78,7 +78,7 @@ function exchanged(fetching: ReturnType<typeof github>): URLSearchParams {
 async function holding(expiresInSeconds: number) {
   await pool.query(
     `INSERT INTO connections
-       (connection_ref, guild_id, access_token, refresh_token, expires_at)
+       (connection_ref, guild_ref, access_token, refresh_token, expires_at)
      VALUES ($1, $2, $3, $4, now() + ($5 || ' seconds')::interval)`,
     [REF, GUILD, seal("ghu_held"), seal("ghr_held"), String(expiresInSeconds)]
   );
@@ -88,7 +88,7 @@ async function holding(expiresInSeconds: number) {
 function handoff(home = HOME): URLSearchParams {
   return new URLSearchParams({
     connection_ref: REF,
-    guild_id: String(GUILD),
+    guild_ref: GUILD,
     return_url: home,
     return_sig: signReturnUrl(config.appSecret, home),
   });
@@ -139,10 +139,10 @@ describe("sending a member to GitHub", () => {
     // moment Initiative hands the member over, and the only honest place to
     // take it.
     await beginOAuth(REF, GUILD, HOME);
-    const stored = await pool.query<{ guild_id: string }>(
-      "SELECT guild_id FROM oauth_states"
+    const stored = await pool.query<{ guild_ref: string }>(
+      "SELECT guild_ref FROM oauth_states"
     );
-    expect(Number(stored.rows[0].guild_id)).toBe(GUILD);
+    expect(stored.rows[0].guild_ref).toBe(GUILD);
   });
 });
 
@@ -269,10 +269,10 @@ describe("when they come back", () => {
     const state = await started();
     await completeOAuth(new URLSearchParams({ state, code: "gh-code" }));
 
-    const row = await pool.query<{ guild_id: string }>(
-      "SELECT guild_id FROM connections"
+    const row = await pool.query<{ guild_ref: string }>(
+      "SELECT guild_ref FROM connections"
     );
-    expect(Number(row.rows[0].guild_id)).toBe(GUILD);
+    expect(row.rows[0].guild_ref).toBe(GUILD);
   });
 });
 

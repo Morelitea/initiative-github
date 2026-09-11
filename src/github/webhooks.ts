@@ -61,11 +61,11 @@ export async function handleDelivery(
   let resynced = 0;
   for (const install of await installsForInstallation(installationId)) {
     try {
-      await syncInstall(install.guildId);
+      await syncInstall(install.guildRef);
       resynced += 1;
     } catch (error) {
       console.error(
-        `could not re-sync guild ${install.guildId} after an install change`,
+        `could not re-sync guild ${install.guildRef} after an install change`,
         error
       );
     }
@@ -95,7 +95,7 @@ async function publishActivity(
   let published = 0;
   for (const install of watching) {
     const outcomes = await publish({
-      guildId: install.guildId,
+      guildRef: install.guildRef,
       appInstallId: install.appInstallId,
       endpoint: translated.endpoint,
       identity: translated.identity,

@@ -11,7 +11,8 @@ export interface StoredWorkspace extends Workspace {
 
 export interface WatchingInstall {
   appInstallId: number;
-  guildId: number;
+  /** The guild, as the deployment names it to this install. */
+  guildRef: string;
 }
 
 /**
@@ -27,7 +28,7 @@ export interface WatchingInstall {
  */
 export async function rememberWorkspace(
   appInstallId: number,
-  guildId: number,
+  guildRef: string,
   owner: string,
   installationId: number | null | undefined,
   repos: string[] | undefined
@@ -35,10 +36,10 @@ export async function rememberWorkspace(
   const learnedInstall = installationId !== undefined;
   const learnedRepos = repos !== undefined;
   await pool.query(
-    `INSERT INTO workspaces (app_install_id, guild_id, owner, repos, installation_id)
+    `INSERT INTO workspaces (app_install_id, guild_ref, owner, repos, installation_id)
      VALUES ($1, $2, $3, COALESCE($4, ARRAY[]::text[]), $5)
      ON CONFLICT (app_install_id) DO UPDATE
-        SET guild_id = EXCLUDED.guild_id,
+        SET guild_ref = EXCLUDED.guild_ref,
             owner = EXCLUDED.owner,
             repos = CASE WHEN $7 THEN EXCLUDED.repos ELSE workspaces.repos END,
             installation_id = CASE WHEN $6 THEN EXCLUDED.installation_id
@@ -46,7 +47,7 @@ export async function rememberWorkspace(
             updated_at = now()`,
     [
       appInstallId,
-      guildId,
+      guildRef,
       owner,
       repos ?? null,
       installationId ?? null,
@@ -78,10 +79,10 @@ export async function workspaceFor(
   };
 }
 
-function watching(rows: Array<{ app_install_id: string; guild_id: string }>) {
+function watching(rows: Array<{ app_install_id: string; guild_ref: string }>) {
   return rows.map((row) => ({
     appInstallId: Number(row.app_install_id),
-    guildId: Number(row.guild_id),
+    guildRef: row.guild_ref,
   }));
 }
 
@@ -89,8 +90,8 @@ export async function installsWatching(
   installationId: number,
   repo: string
 ): Promise<WatchingInstall[]> {
-  const found = await pool.query<{ app_install_id: string; guild_id: string }>(
-    `SELECT app_install_id, guild_id
+  const found = await pool.query<{ app_install_id: string; guild_ref: string }>(
+    `SELECT app_install_id, guild_ref
        FROM workspaces
       WHERE installation_id = $1
         AND EXISTS (SELECT 1 FROM unnest(repos) AS r
@@ -103,8 +104,8 @@ export async function installsWatching(
 export async function installsForInstallation(
   installationId: number
 ): Promise<WatchingInstall[]> {
-  const found = await pool.query<{ app_install_id: string; guild_id: string }>(
-    "SELECT app_install_id, guild_id FROM workspaces WHERE installation_id = $1",
+  const found = await pool.query<{ app_install_id: string; guild_ref: string }>(
+    "SELECT app_install_id, guild_ref FROM workspaces WHERE installation_id = $1",
     [installationId]
   );
   return watching(found.rows);
@@ -116,10 +117,10 @@ export async function installsForInstallation(
  * By guild rather than by install id, because the caller here holds a member's
  * credential and knows which guild it was minted for and nothing else.
  */
-export async function installationForGuild(guildId: number): Promise<number | null> {
+export async function installationForGuild(guildRef: string): Promise<number | null> {
   const found = await pool.query<{ installation_id: string | null }>(
-    "SELECT installation_id FROM workspaces WHERE guild_id = $1 LIMIT 1",
-    [guildId]
+    "SELECT installation_id FROM workspaces WHERE guild_ref = $1 LIMIT 1",
+    [guildRef]
   );
   const held = found.rows[0]?.installation_id ?? null;
   return held === null ? null : Number(held);

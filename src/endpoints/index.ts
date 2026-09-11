@@ -27,7 +27,8 @@ import { WRITE_IDS } from "../vocabulary.js";
 import { listAlerts } from "./security.js";
 
 export interface Caller {
-  guildId: number;
+  /** The guild, as the deployment names it to this install. */
+  guildRef: string;
   appInstallId: number;
     connectionRef: string | null;
   /**

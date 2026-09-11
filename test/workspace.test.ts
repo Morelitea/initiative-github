@@ -33,15 +33,15 @@ afterAll(async () => {
 
 describe("the installation id", () => {
   it("is written down when GitHub named one", async () => {
-    await rememberWorkspace(11, 500, OWNER, 9011, COVERS);
+    await rememberWorkspace(11, "gapp_testguild500", OWNER, 9011, COVERS);
     expect((await workspaceFor(11))?.installationId).toBe(9011);
   });
 
   it("is cleared when GitHub said there is none", async () => {
     // An organization that uninstalled. This has to stop routing, which means
     // the absence is recorded rather than left at the last good answer.
-    await rememberWorkspace(11, 500, OWNER, 9011, COVERS);
-    await rememberWorkspace(11, 500, OWNER, null, COVERS);
+    await rememberWorkspace(11, "gapp_testguild500", OWNER, 9011, COVERS);
+    await rememberWorkspace(11, "gapp_testguild500", OWNER, null, COVERS);
 
     expect((await workspaceFor(11))?.installationId).toBeNull();
   });
@@ -49,14 +49,14 @@ describe("the installation id", () => {
   it("is kept when GitHub did not say", async () => {
     // The case with no symptom. Nothing was learned, so nothing is written:
     // the id stays, deliveries keep routing, and the next sync asks again.
-    await rememberWorkspace(11, 500, OWNER, 9011, COVERS);
-    await rememberWorkspace(11, 500, OWNER, undefined, COVERS);
+    await rememberWorkspace(11, "gapp_testguild500", OWNER, 9011, COVERS);
+    await rememberWorkspace(11, "gapp_testguild500", OWNER, undefined, COVERS);
 
     expect((await workspaceFor(11))?.installationId).toBe(9011);
   });
 
   it("is absent on a row that never had one", async () => {
-    await rememberWorkspace(11, 500, OWNER, undefined, COVERS);
+    await rememberWorkspace(11, "gapp_testguild500", OWNER, undefined, COVERS);
     expect((await workspaceFor(11))?.installationId).toBeNull();
   });
 });
@@ -65,8 +65,8 @@ describe("the boundary", () => {
   it("is replaced by what the installation now covers", async () => {
     // A repository ticked at GitHub reaches the guild on the next sync, with
     // nobody coming back through Initiative to say so.
-    await rememberWorkspace(11, 500, OWNER, 9011, COVERS);
-    await rememberWorkspace(11, 500, OWNER, 9011, ["widgets", "gadgets"]);
+    await rememberWorkspace(11, "gapp_testguild500", OWNER, 9011, COVERS);
+    await rememberWorkspace(11, "gapp_testguild500", OWNER, 9011, ["widgets", "gadgets"]);
 
     expect((await workspaceFor(11))?.repos).toEqual(["widgets", "gadgets"]);
   });
@@ -75,8 +75,8 @@ describe("the boundary", () => {
     // The same rule the id follows, and for a bigger reason: an unanswered
     // question written down as an empty boundary is every tile in the guild
     // going dark until some later sync happens to succeed.
-    await rememberWorkspace(11, 500, OWNER, 9011, COVERS);
-    await rememberWorkspace(11, 500, OWNER, 9011, undefined);
+    await rememberWorkspace(11, "gapp_testguild500", OWNER, 9011, COVERS);
+    await rememberWorkspace(11, "gapp_testguild500", OWNER, 9011, undefined);
 
     const stored = await workspaceFor(11);
     expect(stored?.repos).toEqual(COVERS);
@@ -84,7 +84,7 @@ describe("the boundary", () => {
   });
 
   it("is empty on a row that never learned one", async () => {
-    await rememberWorkspace(11, 500, OWNER, undefined, undefined);
+    await rememberWorkspace(11, "gapp_testguild500", OWNER, undefined, undefined);
     expect((await workspaceFor(11))?.repos).toEqual([]);
   });
 });

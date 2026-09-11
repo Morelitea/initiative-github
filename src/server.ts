@@ -82,11 +82,9 @@ body{font:16px/1.5 system-ui,sans-serif;margin:4rem auto;max-width:44rem;padding
 
 const jwks = new JwksCache();
 
-function guildFrom(params: URLSearchParams): number | null {
-  const raw = params.get("guild_id");
-  if (raw === null || !isDigits(raw)) return null;
-  const guildId = Number(raw);
-  return Number.isSafeInteger(guildId) && guildId > 0 ? guildId : null;
+function guildFrom(params: URLSearchParams): string | null {
+  const raw = params.get("guild_ref")?.trim();
+  return raw ? raw : null;
 }
 
 const NO_GUILD = page(
@@ -337,7 +335,6 @@ async function delegate(
   try {
     claims = await verifyDelegationToken(token, {
       publicId: manifest.service.public_id,
-      delegate: named,
       baseUrl: config.initiativeBaseUrl,
       jwks,
     });
@@ -423,9 +420,9 @@ export const server = createServer(async (req, res) => {
       if (!claims) return;
 
       try {
-        await syncInstall(claims.guild_id);
+        await syncInstall(claims.guild_ref);
       } catch (error) {
-        console.error(`lifecycle sync failed for guild ${claims.guild_id}`, error);
+        console.error(`lifecycle sync failed for guild ${claims.guild_ref}`, error);
         // Drop the install only when Initiative says there is no install to
         // sync. Repairing a stale workspace is what the poll is for; this only
         // has to not destroy a good one.
@@ -449,10 +446,10 @@ export const server = createServer(async (req, res) => {
       const connectionRef = url.searchParams.get("connection_ref");
       if (!connectionRef) return send(res, 400, { error: "no connection_ref" });
 
-      const guildId = guildFrom(url.searchParams);
-      if (guildId === null) return sendPage(res, NO_GUILD);
+      const guildRef = guildFrom(url.searchParams);
+      if (guildRef === null) return sendPage(res, NO_GUILD);
 
-      const redirect = await beginOAuth(connectionRef, guildId, homeFrom(url));
+      const redirect = await beginOAuth(connectionRef, guildRef, homeFrom(url));
       res.writeHead(302, { Location: redirect });
       return res.end();
     }
@@ -470,12 +467,12 @@ export const server = createServer(async (req, res) => {
 
     if (req.method === "GET" && path === INSTALL_PATH) {
       const connectionRef = url.searchParams.get("connection_ref");
-      const guildId = connectionRef ? guildFrom(url.searchParams) : null;
-      if (connectionRef && guildId === null) return sendPage(res, NO_GUILD);
+      const guildRef = connectionRef ? guildFrom(url.searchParams) : null;
+      if (connectionRef && guildRef === null) return sendPage(res, NO_GUILD);
 
       const redirect =
-        connectionRef && guildId !== null
-          ? await beginInstall(connectionRef, guildId, homeFrom(url))
+        connectionRef && guildRef !== null
+          ? await beginInstall(connectionRef, guildRef, homeFrom(url))
           : await installUrl();
       if (!redirect) {
         return send(res, 503, { error: "this app is not registered at GitHub" });
@@ -518,27 +515,20 @@ export const server = createServer(async (req, res) => {
       const parsed = parseInvoke(body, ENDPOINTS);
       if (!parsed.ok) return send(res, 400, { error: parsed.error });
 
+      // Whichever kind of caller this is, the token names the guild, the
+      // install and the member in this app's own terms. There is nothing in
+      // the body to reconcile it against and nothing to look up.
       let caller: Caller;
       if (delegateHeader(req.headers)) {
         const claims = await delegate(req, res);
         if (!claims) return;
-        if (parsed.request.guild_id !== claims.guildId) {
-          return send(res, 403, { error: "that token is for another guild" });
-        }
-        const resolved = await callerFromDelegate(claims);
-        if (failed(resolved)) {
-          return send(res, resolved.status, { error: resolved.error });
-        }
-        caller = resolved;
+        caller = callerFromDelegate(claims);
       } else {
         const claims = await context(req, res, {
           scope: "endpoint",
           endpointId: parsed.request.endpoint,
         });
         if (!claims) return;
-        if (parsed.request.guild_id !== claims.guild_id) {
-          return send(res, 403, { error: "that token is for another guild" });
-        }
         caller = callerFromContext(claims);
       }
 
@@ -553,7 +543,7 @@ export const server = createServer(async (req, res) => {
 
       if (req.method === "GET") {
         return send(res, 200, {
-          items: await listSubscriptions(claims.signer.publicId, claims.guildId),
+          items: await listSubscriptions(claims.actor.publicId, claims.guildRef),
         });
       }
 
@@ -563,7 +553,7 @@ export const server = createServer(async (req, res) => {
       } catch {
         return send(res, 400, { error: "body is not json" });
       }
-      const result = await subscribe(claims.signer.publicId, claims.guildId, body);
+      const result = await subscribe(claims.actor.publicId, claims.guildRef, body);
       if (!result.ok) return send(res, result.status, { error: result.error });
 
       return send(res, 201, { ...result.view, secret: result.secret });
@@ -576,7 +566,7 @@ export const server = createServer(async (req, res) => {
       const claims = await delegate(req, res);
       if (!claims) return;
 
-      const removed = await unsubscribe(claims.signer.publicId, claims.guildId, id);
+      const removed = await unsubscribe(claims.actor.publicId, claims.guildRef, id);
       if (!removed) return send(res, 404, { error: "no such subscription" });
       return send(res, 204, null);
     }

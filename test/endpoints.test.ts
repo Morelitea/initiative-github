@@ -44,8 +44,8 @@ const WRITE_DECLARATIONS = WRITES.map((write) => write.declaration);
 const READ_DECLARATIONS = READS.map((read) => read.declaration);
 
 /** A member who has connected, and one who has not. */
-const CONNECTED: Caller = { guildId: 500, appInstallId: 11, connectionRef: "ref-a" };
-const STRANGER: Caller = { guildId: 500, appInstallId: 11, connectionRef: null };
+const CONNECTED: Caller = { guildRef: "gapp_testguild500", appInstallId: 11, connectionRef: "ref-a" };
+const STRANGER: Caller = { guildRef: "gapp_testguild500", appInstallId: 11, connectionRef: null };
 
 const MEMBER: Actor = { kind: "member", token: "member-token" };
 // No endpoint declares this kind, and it is here so `run` is exercised with an
@@ -98,7 +98,7 @@ function github(answer: (url: string) => { status: number; body?: unknown }) {
 
 /** A guild with the app installed on one repository. */
 async function installed() {
-  await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
+  await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
   return workspaceFor(11);
 }
 
@@ -110,9 +110,9 @@ beforeEach(async () => {
 
 /** A guild with one repository written down, and a member who has connected. */
 async function connected(repos = ["widgets"]) {
-  await rememberWorkspace(11, 500, "acme", 9011, repos);
+  await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, repos);
   await pool.query(
-    "INSERT INTO connections (connection_ref, guild_id, access_token) VALUES ($1, $2, $3)",
+    "INSERT INTO connections (connection_ref, guild_ref, access_token) VALUES ($1, $2, $3)",
     ["ref-a", 500, seal("member-token")]
   );
 }
@@ -147,10 +147,10 @@ describe("the closed set", () => {
   });
 
   it("refuses anything not on it, before any credential is chosen", () => {
-    expect(parseInvoke({ operation: "app.morelitea.github.rm-rf", guild_id: 1 }, WRITE_DECLARATIONS).ok)
+    expect(parseInvoke({ operation: "app.morelitea.github.rm-rf", guild_ref: "gapp_testguild1" }, WRITE_DECLARATIONS).ok)
       .toBe(false);
     // Including a real GitHub capability this app deliberately does not offer.
-    expect(parseInvoke({ operation: "app.morelitea.github.delete-repo", guild_id: 1 }, WRITE_DECLARATIONS).ok)
+    expect(parseInvoke({ operation: "app.morelitea.github.delete-repo", guild_ref: "gapp_testguild1" }, WRITE_DECLARATIONS).ok)
       .toBe(false);
   });
 
@@ -406,7 +406,7 @@ describe("what it refuses", () => {
     // ticked a second box at GitHub.
     for (const repos of [["widgets"], ["widgets", "gadgets"]]) {
       await pool.query("TRUNCATE workspaces");
-      await rememberWorkspace(11, 500, "acme", 9011, repos);
+      await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, repos);
       const result = await WRITE_HANDLERS[WRITE_IDS.openIssue](MEMBER, await workspaceFor(11), {
         title: "which one?",
       });
@@ -577,7 +577,7 @@ describe("who a read is answered for", () => {
 
   it("says so when the guild has written nothing down", async () => {
     await pool.query(
-      "INSERT INTO connections (connection_ref, guild_id, access_token) VALUES ($1, $2, $3)",
+      "INSERT INTO connections (connection_ref, guild_ref, access_token) VALUES ($1, $2, $3)",
       ["ref-a", 500, seal("member-token")]
     );
     graph({ data: {} });
@@ -606,7 +606,7 @@ describe("who a read is answered for", () => {
     // true whether or not the person looking has ever signed in. Before this,
     // a guild could be fully set up and every tile still said "connect your
     // account" to everybody.
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
     graph({ data: { repository: { labels: { totalCount: 0, nodes: [] } } } });
 
     const asking: Caller = { ...STRANGER, actors: ["member", "installation"] };
@@ -621,13 +621,13 @@ describe("who a read is answered for", () => {
     // installation token belongs to nobody — so a search carrying one runs as
     // a person or does not run. Narrowed off the value rather than the
     // parameter name, because it is a convention of the search syntax.
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
     graph({ data: {} });
 
     const asked = parseInvoke(
       {
         endpoint: READ_IDS.findPullRequests,
-        guild_id: 500,
+        guild_ref: "gapp_testguild500",
         params: { review_requested: "@me" },
       },
       READ_DECLARATIONS
@@ -654,7 +654,7 @@ describe("a parameter that takes several values", () => {
     const asked = parseInvoke(
       {
         endpoint: READ_IDS.findIssues,
-        guild_id: 500,
+        guild_ref: "gapp_testguild500",
         params: { repo: "widgets", labels: ["bug", "regression"] },
       },
       READ_DECLARATIONS
@@ -676,7 +676,7 @@ describe("a parameter that takes several values", () => {
     const asked = parseInvoke(
       {
         endpoint: READ_IDS.findIssues,
-        guild_id: 500,
+        guild_ref: "gapp_testguild500",
         params: { repo: "widgets", labels: ["bug"] },
       },
       READ_DECLARATIONS

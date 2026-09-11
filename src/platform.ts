@@ -24,7 +24,7 @@ import {
 
 interface Row {
   id: string;
-  guild_id: string;
+  guild_ref: string;
   subscriber: string;
   target_url: string;
   secret: string;
@@ -34,7 +34,7 @@ interface Row {
 function toSubscription(row: Row): Subscription {
   return {
     id: Number(row.id),
-    guildId: Number(row.guild_id),
+    guildRef: row.guild_ref,
     subscriber: row.subscriber,
     targetUrl: row.target_url,
 
@@ -43,12 +43,12 @@ function toSubscription(row: Row): Subscription {
   };
 }
 
-async function matching(guildId: number, endpoint: string): Promise<Subscription[]> {
+async function matching(guildRef: string, endpoint: string): Promise<Subscription[]> {
   const found = await pool.query<Row>(
-    `SELECT id, guild_id, subscriber, target_url, secret, endpoints
+    `SELECT id, guild_ref, subscriber, target_url, secret, endpoints
        FROM subscriptions
-      WHERE guild_id = $1 AND $2 = ANY(endpoints)`,
-    [guildId, endpoint]
+      WHERE guild_ref = $1 AND $2 = ANY(endpoints)`,
+    [guildRef, endpoint]
   );
 
   return found.rows.map(toSubscription).filter((sub) => sub.secret !== "");
@@ -65,10 +65,10 @@ export async function publish(emission: Emission): Promise<DeliveryOutcome[]> {
   }
 }
 
-export async function installFor(guildId: number): Promise<number | null> {
+export async function installFor(guildRef: string): Promise<number | null> {
   const found = await pool.query<{ app_install_id: string }>(
-    "SELECT app_install_id FROM workspaces WHERE guild_id = $1 LIMIT 1",
-    [guildId]
+    "SELECT app_install_id FROM workspaces WHERE guild_ref = $1 LIMIT 1",
+    [guildRef]
   );
   const row = found.rows[0];
   return row ? Number(row.app_install_id) : null;
@@ -76,7 +76,7 @@ export async function installFor(guildId: number): Promise<number | null> {
 
 export interface SubscriptionView {
   id: number;
-  guild_id: number;
+  guild_ref: string;
   target_url: string;
   endpoints: string[];
 }
@@ -84,7 +84,7 @@ export interface SubscriptionView {
 function view(subscription: Subscription): SubscriptionView {
   return {
     id: subscription.id,
-    guild_id: subscription.guildId,
+    guild_ref: subscription.guildRef,
     target_url: subscription.targetUrl,
     endpoints: subscription.endpoints,
   };
@@ -96,30 +96,29 @@ export type SubscribeResult =
 
 export async function subscribe(
   subscriber: string,
-  guildId: number,
+  guildRef: string,
   body: unknown
 ): Promise<SubscribeResult> {
   const parsed = parseSubscribe(body, ENDPOINTS);
   if (!parsed.ok) return { ok: false, status: 400, error: parsed.error };
 
-  if (parsed.request.guild_id !== guildId) {
-    return { ok: false, status: 403, error: "that token is for another guild" };
-  }
-
-  if ((await installFor(guildId)) === null) {
+  // Nothing compares a body against the token any more: the guild is named
+  // once, in the token, and a caller could not have restated it anyway — the
+  // reference is ours and a caller does not hold it.
+  if ((await installFor(guildRef)) === null) {
     return { ok: false, status: 404, error: "this app is not installed in that guild" };
   }
 
   const secret = mintSubscriptionSecret();
   const stored = await pool.query<Row>(
-    `INSERT INTO subscriptions (guild_id, subscriber, target_url, secret, endpoints)
+    `INSERT INTO subscriptions (guild_ref, subscriber, target_url, secret, endpoints)
      VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (guild_id, subscriber, target_url) DO UPDATE
+     ON CONFLICT (guild_ref, subscriber, target_url) DO UPDATE
         SET secret = EXCLUDED.secret,
             endpoints = EXCLUDED.endpoints,
             updated_at = now()
-     RETURNING id, guild_id, subscriber, target_url, secret, endpoints`,
-    [guildId, subscriber, parsed.request.target_url, seal(secret), parsed.request.endpoints]
+     RETURNING id, guild_ref, subscriber, target_url, secret, endpoints`,
+    [guildRef, subscriber, parsed.request.target_url, seal(secret), parsed.request.endpoints]
   );
 
   return { ok: true, view: view(toSubscription(stored.rows[0])), secret };
@@ -127,26 +126,26 @@ export async function subscribe(
 
 export async function listSubscriptions(
   subscriber: string,
-  guildId: number
+  guildRef: string
 ): Promise<SubscriptionView[]> {
   const found = await pool.query<Row>(
-    `SELECT id, guild_id, subscriber, target_url, secret, endpoints
+    `SELECT id, guild_ref, subscriber, target_url, secret, endpoints
        FROM subscriptions
-      WHERE guild_id = $1 AND subscriber = $2
+      WHERE guild_ref = $1 AND subscriber = $2
       ORDER BY id`,
-    [guildId, subscriber]
+    [guildRef, subscriber]
   );
   return found.rows.map((row) => view(toSubscription(row)));
 }
 
 export async function unsubscribe(
   subscriber: string,
-  guildId: number,
+  guildRef: string,
   id: number
 ): Promise<boolean> {
   const result = await pool.query(
-    "DELETE FROM subscriptions WHERE id = $1 AND guild_id = $2 AND subscriber = $3",
-    [id, guildId, subscriber]
+    "DELETE FROM subscriptions WHERE id = $1 AND guild_ref = $2 AND subscriber = $3",
+    [id, guildRef, subscriber]
   );
   return (result.rowCount ?? 0) > 0;
 }
@@ -201,8 +200,8 @@ function readWorkspace(installConfig: InstallConfig): Configured | null {
   return { owner, installationId: named };
 }
 
-export async function syncInstall(guildId: number): Promise<boolean> {
-  const installConfig = await initiative.config(guildId);
+export async function syncInstall(guildRef: string): Promise<boolean> {
+  const installConfig = await initiative.config(guildRef);
   const installId = installConfig.install_id;
 
   const configured = readWorkspace(installConfig);
@@ -210,7 +209,7 @@ export async function syncInstall(guildId: number): Promise<boolean> {
     await forgetInstall(installId);
 
     if (!installConfig.needs_config) {
-      await initiative.reportStatus(guildId, {
+      await initiative.reportStatus(guildRef, {
         state: "invalid",
         detail: "not_installed",
       });
@@ -234,13 +233,13 @@ export async function syncInstall(guildId: number): Promise<boolean> {
       ? undefined
       : ((await installationRepositories(installationId)) ?? undefined);
 
-  await rememberWorkspace(installId, guildId, configured.owner, installationId, repos);
+  await rememberWorkspace(installId, guildRef, configured.owner, installationId, repos);
 
   // `ok` even where GitHub named no installation. Reads that can run as a
   // member still answer, so calling a working dashboard invalid would be
   // false; what an absent installation costs is the webhook and everything
   // guild-wide, and the poll keeps looking.
-  await initiative.reportStatus(guildId, { state: "ok" });
+  await initiative.reportStatus(guildRef, { state: "ok" });
   return true;
 }
 
@@ -256,10 +255,10 @@ export async function resyncInstallation(installationId: number): Promise<number
   let done = 0;
   for (const install of await installsForInstallation(installationId)) {
     try {
-      await syncInstall(install.guildId);
+      await syncInstall(install.guildRef);
       done += 1;
     } catch (error) {
-      console.error(`could not re-sync guild ${install.guildId}`, error);
+      console.error(`could not re-sync guild ${install.guildRef}`, error);
     }
   }
   return done;
@@ -292,9 +291,9 @@ export async function syncAllInstalls(): Promise<void> {
       continue;
     }
     try {
-      await syncInstall(install.guild_id);
+      await syncInstall(install.guild_ref);
     } catch (error) {
-      console.error(`could not sync install in guild ${install.guild_id}`, error);
+      console.error(`could not sync install in guild ${install.guild_ref}`, error);
     }
   }
 

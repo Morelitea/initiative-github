@@ -23,7 +23,8 @@ const HANDOFF_TTL_MINUTES = 10;
 
 export interface Handoff {
   connectionRef: string;
-  guildId: number | null;
+  /** The guild, as the deployment names it to this install. */
+  guildRef: string | null;
   /** The PKCE verifier, or `null` where no challenge went out. */
   codeVerifier: string | null;
   returnUrl: string | null;
@@ -42,19 +43,19 @@ export interface Handoff {
 export async function rememberHandoff(
   auth: Authorization,
   connectionRef: string,
-  guildId: number,
+  guildRef: string,
   returnUrl: string | null,
   claimedInstallation: number | null = null
 ): Promise<void> {
   await pool.query(
     `INSERT INTO oauth_states
-       (state, connection_ref, guild_id, code_verifier, return_url,
+       (state, connection_ref, guild_ref, code_verifier, return_url,
         claimed_installation, expires_at)
      VALUES ($1, $2, $3, $4, $5, $6, now() + ($7 || ' minutes')::interval)`,
     [
       auth.state,
       connectionRef,
-      guildId,
+      guildRef,
       auth.verifier,
       returnUrl,
       claimedInstallation,
@@ -76,14 +77,14 @@ export async function claimHandoff(state: string): Promise<Handoff | null> {
 
   const claimed = await pool.query<{
     connection_ref: string;
-    guild_id: string | null;
+    guild_ref: string | null;
     code_verifier: string | null;
     return_url: string | null;
     claimed_installation: string | null;
   }>(
     `DELETE FROM oauth_states
       WHERE state = $1 AND expires_at > now()
-      RETURNING connection_ref, guild_id, code_verifier, return_url,
+      RETURNING connection_ref, guild_ref, code_verifier, return_url,
                 claimed_installation`,
     [state]
   );
@@ -93,7 +94,7 @@ export async function claimHandoff(state: string): Promise<Handoff | null> {
 
   return {
     connectionRef: row.connection_ref,
-    guildId: row.guild_id === null ? null : Number(row.guild_id),
+    guildRef: row.guild_ref,
     codeVerifier: row.code_verifier,
     returnUrl: row.return_url,
     claimedInstallation:

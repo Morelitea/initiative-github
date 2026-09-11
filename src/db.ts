@@ -30,7 +30,7 @@ const SCHEMA = [
   // what it is filed under.
   `CREATE TABLE IF NOT EXISTS connections (
      connection_ref     TEXT PRIMARY KEY,
-     guild_id           BIGINT,
+     guild_ref          TEXT,
      access_token       TEXT NOT NULL,
      refresh_token      TEXT,
      expires_at         TIMESTAMPTZ,
@@ -50,7 +50,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS oauth_states (
      state                TEXT PRIMARY KEY,
      connection_ref       TEXT NOT NULL,
-     guild_id             BIGINT,
+     guild_ref            TEXT,
      code_verifier        TEXT,
      return_url           TEXT,
      claimed_installation BIGINT,
@@ -61,7 +61,7 @@ const SCHEMA = [
 
   `CREATE TABLE IF NOT EXISTS workspaces (
      app_install_id  BIGINT PRIMARY KEY,
-     guild_id        BIGINT,
+     guild_ref       TEXT,
      owner           TEXT NOT NULL,
      repos           TEXT[],
      installation_id BIGINT,
@@ -75,7 +75,7 @@ const SCHEMA = [
 
   `CREATE TABLE IF NOT EXISTS subscriptions (
      id         BIGSERIAL PRIMARY KEY,
-     guild_id   BIGINT NOT NULL,
+     guild_ref  TEXT NOT NULL,
      subscriber TEXT NOT NULL,
      target_url TEXT NOT NULL,
      secret     TEXT NOT NULL,
@@ -84,10 +84,10 @@ const SCHEMA = [
      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
    )`,
 
-  `CREATE INDEX IF NOT EXISTS subscriptions_guild ON subscriptions (guild_id)`,
+  `CREATE INDEX IF NOT EXISTS subscriptions_guild ON subscriptions (guild_ref)`,
 
   `CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_target
-     ON subscriptions (guild_id, subscriber, target_url)`,
+     ON subscriptions (guild_ref, subscriber, target_url)`,
 
   `CREATE TABLE IF NOT EXISTS delegation_tokens (
      jti        TEXT PRIMARY KEY,
