@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.1] — 2026-09-11
+
+### The actor a delivery names is a reference
+
+`initiative-app-kit` v0.18.0, where the emitted envelope's `actor_user_id`
+becomes `actor_ref`. The platform names whoever caused a batch by a reference
+minted for the receiver rather than by a row id, and this envelope is the
+platform's field for field — a receiver written against one is written against
+both.
+
+Nothing an emission carries changes: an app's events have no member of the
+deployment behind them, so the field is still null. It is null under the name
+the platform uses now.
+
 ## [0.11.0] — 2026-09-10
 
 ### A guild is known by the name the deployment gives it
