@@ -226,7 +226,10 @@ describe("republishing what a repository did", () => {
     expect(typeof envelope.event_id).toBe("string");
     expect(Number.isInteger(envelope.subscription_id)).toBe(true);
     expect(envelope.guild_ref).toBe("gapp_testguild500");
-    expect(envelope.actor_user_id).toBeNull();
+    expect(envelope.actor_ref).toBeNull();
+    // The platform renamed it with the field it names: whoever caused a batch
+    // is a reference minted for the receiver, never a row id.
+    expect("actor_user_id" in envelope).toBe(false);
 
     const change = envelope.changes[0];
     expect(change.event_type).toBe("app.morelitea.github.issue-opened");
