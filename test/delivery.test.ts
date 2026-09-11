@@ -53,10 +53,10 @@ afterAll(async () => {
 
 describe("turning an installation back into guilds", () => {
   it("finds the installs it answers for", async () => {
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
 
     expect(await installsForInstallation(9011)).toEqual([
-      { appInstallId: 11, guildId: 500 },
+      { appInstallId: 11, guildRef: "gapp_testguild500" },
     ]);
     expect(await installsForInstallation(9999)).toEqual([]);
   });
@@ -77,13 +77,13 @@ describe("what a delivery does", () => {
   };
 
   it("re-syncs the installs an installation answered for", async () => {
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
 
     expect(await handleDelivery("installation", REMOVED, "d-1")).toEqual({
       resynced: 1,
       published: 0,
     });
-    expect(syncInstall).toHaveBeenCalledWith(500);
+    expect(syncInstall).toHaveBeenCalledWith("gapp_testguild500");
   });
 
   it("re-reads the guilds an installation's own grant just changed for", async () => {
@@ -95,7 +95,7 @@ describe("what a delivery does", () => {
     //
     // Every app receives this delivery whether or not it subscribes, which is
     // why nothing in the registration asks for it.
-    await rememberWorkspace(11, 500, "acme", 7000, ["widgets"]);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 7000, ["widgets"]);
 
     const result = await handleDelivery(
       "installation_repositories",
@@ -108,7 +108,7 @@ describe("what a delivery does", () => {
     );
 
     expect(result).toEqual({ resynced: 1, published: 0 });
-    expect(syncInstall).toHaveBeenCalledWith(500);
+    expect(syncInstall).toHaveBeenCalledWith("gapp_testguild500");
   });
 
   it("says so when the change touches nobody here", async () => {
@@ -124,7 +124,7 @@ describe("what a delivery does", () => {
     // publishes four of them. `edited`, `labeled` and a dozen more arrive and
     // stop here. Failing them would fill an organization's webhook log with red
     // for something working exactly as intended.
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
 
     for (const payload of [
       { action: "labeled", installation: { id: 9011 } },
@@ -194,17 +194,17 @@ describe("republishing what a repository did", () => {
   });
 
   /** One subscriber, wanting everything, at an address the producer will post to. */
-  async function subscriber(guildId: number, types = [...EMITTED]) {
+  async function subscriber(guildRef: string, types = [...EMITTED]) {
     await pool.query(
-      `INSERT INTO subscriptions (guild_id, subscriber, target_url, secret, endpoints)
+      `INSERT INTO subscriptions (guild_ref, subscriber, target_url, secret, endpoints)
        VALUES ($1, 'morelitea.auto', 'https://auto.example.com/in', $2, $3)`,
-      [guildId, seal("subscriber-secret"), types]
+      [guildRef, seal("subscriber-secret"), types]
     );
   }
 
   it("tells the guild whose repository it was", async () => {
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
-    await subscriber(500);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
+    await subscriber("gapp_testguild500");
 
     expect(await handleDelivery("issues", OPENED, "gh-delivery-1")).toEqual({
       resynced: 0,
@@ -218,14 +218,14 @@ describe("republishing what a repository did", () => {
     // The whole reason the shapes come from the kit: one receiver, two kinds of
     // producer. The outer fields and the integer resource id are what an
     // existing parser checks before it reaches anything app-specific.
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
-    await subscriber(500);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
+    await subscriber("gapp_testguild500");
     await handleDelivery("issues", OPENED, "gh-delivery-1");
 
     const envelope = delivered[0].body as Record<string, any>;
     expect(typeof envelope.event_id).toBe("string");
     expect(Number.isInteger(envelope.subscription_id)).toBe(true);
-    expect(envelope.guild_id).toBe(500);
+    expect(envelope.guild_ref).toBe("gapp_testguild500");
     expect(envelope.actor_user_id).toBeNull();
 
     const change = envelope.changes[0];
@@ -239,8 +239,8 @@ describe("republishing what a repository did", () => {
   });
 
   it("carries what a trigger narrows itself by, and not the whole delivery", async () => {
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
-    await subscriber(500);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
+    await subscriber("gapp_testguild500");
     await handleDelivery("issues", OPENED, "gh-delivery-1");
 
     // `repository` matters most: an app event names no initiative, so a payload
@@ -261,8 +261,8 @@ describe("republishing what a repository did", () => {
     // GitHub signs the body and not a timestamp, so a delivery it re-sends
     // verifies again. The envelope id is derived from GitHub's delivery id, so
     // the subscriber recognises the second copy rather than acting twice.
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
-    await subscriber(500);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
+    await subscriber("gapp_testguild500");
 
     await handleDelivery("issues", OPENED, "gh-delivery-1");
     await handleDelivery("issues", OPENED, "gh-delivery-1");
@@ -275,10 +275,10 @@ describe("republishing what a repository did", () => {
   });
 
   it("tells two guilds watching the same repository, and each independently", async () => {
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
-    await rememberWorkspace(12, 600, "acme", 9011, ["widgets"]);
-    await subscriber(500);
-    await subscriber(600);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
+    await rememberWorkspace(12, "gapp_testguild600", "acme", 9011, ["widgets"]);
+    await subscriber("gapp_testguild500");
+    await subscriber("gapp_testguild600");
 
     expect(await handleDelivery("issues", OPENED, "gh-delivery-1")).toEqual({
       resynced: 0,
@@ -291,8 +291,8 @@ describe("republishing what a repository did", () => {
   });
 
   it("says nothing to a guild that narrowed itself to another repository", async () => {
-    await rememberWorkspace(11, 500, "acme", 9011, ["gadgets"]);
-    await subscriber(500);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["gadgets"]);
+    await subscriber("gapp_testguild500");
 
     expect(await handleDelivery("issues", OPENED, "gh-delivery-1")).toEqual({
       resynced: 0,
@@ -303,8 +303,8 @@ describe("republishing what a repository did", () => {
   });
 
   it("says nothing to a subscriber that did not ask for that type", async () => {
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
-    await subscriber(500, ["app.morelitea.github.issue-closed"]);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
+    await subscriber("gapp_testguild500", ["app.morelitea.github.issue-closed"]);
 
     expect(await handleDelivery("issues", OPENED, "gh-delivery-1")).toEqual({
       resynced: 0,
@@ -319,8 +319,8 @@ describe("republishing what a repository did", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
       throw new Error("econnrefused");
     });
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
-    await subscriber(500);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
+    await subscriber("gapp_testguild500");
 
     expect(await handleDelivery("issues", OPENED, "gh-delivery-1")).toEqual({
       resynced: 0,
@@ -329,8 +329,8 @@ describe("republishing what a repository did", () => {
   });
 
   it("republishes a review request with whose review was asked for", async () => {
-    await rememberWorkspace(11, 500, "acme", 9011, ["widgets"]);
-    await subscriber(500);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", 9011, ["widgets"]);
+    await subscriber("gapp_testguild500");
 
     await handleDelivery(
       "pull_request",

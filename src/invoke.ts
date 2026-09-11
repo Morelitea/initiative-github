@@ -66,35 +66,27 @@ function searchParams(params: Record<string, unknown>): URLSearchParams {
 
 export function callerFromContext(claims: ContextClaims): Caller {
   return {
-    guildId: claims.guild_id,
+    guildRef: claims.guild_ref,
     appInstallId: claims.app_install_id,
     connectionRef: claims.connection_refs?.account ?? null,
   };
 }
 
-export async function callerFromDelegate(
-  claims: DelegationClaims
-): Promise<Caller | OperationFailure> {
-  const appInstallId = await installFor(claims.guildId);
-  if (appInstallId === null) {
-    return fail(404, "this app is not installed in that guild");
-  }
-
-  let connectionRef: string | null = null;
-  try {
-    const connection = await initiative.resolveDelegate(
-      claims.guildId,
-      claims.signer.publicId,
-      claims.subject
-    );
-    if (connection && connection.status === "connected") {
-      connectionRef = connection.connection_ref;
-    }
-  } catch (error) {
-    console.warn(`could not resolve the delegated member: ${(error as Error).message}`);
-  }
-
-  return { guildId: claims.guildId, appInstallId, connectionRef };
+/**
+ * The same shape as {@link callerFromContext}, and deliberately so.
+ *
+ * Everything a delegated call needs is in the token: the deployment issues it
+ * for this app, so the guild, the install and the member are already named the
+ * way this app names them, and the member's own handle rides along. There is
+ * nothing left to look up and nothing to translate — which is the whole point
+ * of the exchange that produces it.
+ */
+export function callerFromDelegate(claims: DelegationClaims): Caller {
+  return {
+    guildRef: claims.guildRef,
+    appInstallId: claims.appInstallId,
+    connectionRef: claims.connectionRefs?.account ?? null,
+  };
 }
 
 /**

@@ -45,7 +45,7 @@ import { claimHandoff, rememberHandoff } from "./handoff.js";
  */
 export async function beginInstall(
   connectionRef: string,
-  guildId: number,
+  guildRef: string,
   returnUrl: string | null
 ): Promise<string | null> {
   const app = await appIdentity();
@@ -57,7 +57,7 @@ export async function beginInstall(
   // binding GitHub never made.
   const auth = beginAuthorization({ pkce: false });
 
-  await rememberHandoff(auth, connectionRef, guildId, returnUrl);
+  await rememberHandoff(auth, connectionRef, guildRef, returnUrl);
   return `${config.github.webBase}/apps/${app.slug}/installations/new?${auth.params}`;
 }
 
@@ -80,7 +80,7 @@ export interface SetupResult {
   /** Where to send them next, when the claim still has to be proved. */
   authorize?: string;
   /** The guild whose installation was just recorded, for the caller to sync. */
-  installedFor?: number;
+  installedFor?: string;
 }
 
 /**
@@ -116,7 +116,7 @@ export async function completeInstall(
 
   const named = params.get("installation_id");
   const claimed = Number(named);
-  if (!named || !Number.isSafeInteger(claimed) || handoff.guildId === null) {
+  if (!named || !Number.isSafeInteger(claimed) || handoff.guildRef === null) {
     return { outcome: "refused", home };
   }
 
@@ -125,7 +125,7 @@ export async function completeInstall(
     redirectUri: verifyUri(),
   });
 
-  await rememberHandoff(auth, handoff.connectionRef, handoff.guildId, home, claimed);
+  await rememberHandoff(auth, handoff.connectionRef, handoff.guildRef, home, claimed);
 
   return {
     outcome: "verifying",
@@ -192,7 +192,7 @@ export async function completeVerify(
   const claimed = handoff.claimedInstallation;
   const code = params.get("code") ?? "";
 
-  if (claimed === null || handoff.guildId === null) {
+  if (claimed === null || handoff.guildRef === null) {
     return { outcome: "refused", home };
   }
   if (!code) return { outcome: "refused", home };
@@ -224,7 +224,7 @@ export async function completeVerify(
   }
 
   try {
-    await initiative.writeConnection(handoff.guildId, handoff.connectionRef, {
+    await initiative.writeConnection(handoff.guildRef, handoff.connectionRef, {
       values: { owner, installation_id: claimed },
       status: "connected",
     });
@@ -233,5 +233,5 @@ export async function completeVerify(
     return { outcome: "not_recorded", home };
   }
 
-  return { outcome: "connected", home, installedFor: handoff.guildId };
+  return { outcome: "connected", home, installedFor: handoff.guildRef };
 }

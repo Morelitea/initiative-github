@@ -34,12 +34,11 @@ const OTHER = "someone.else";
 const TARGET = "https://auto.example.com/webhooks/initiative";
 
 /** A guild with this app installed, which is what makes it subscribable. */
-async function installed(guildId: number, appInstallId: number) {
-  await rememberWorkspace(appInstallId, guildId, "acme", 9011, ["widgets"]);
+async function installed(guildRef: string, appInstallId: number) {
+  await rememberWorkspace(appInstallId, guildRef, "acme", 9011, ["widgets"]);
 }
 
 const request = (overrides: Record<string, unknown> = {}) => ({
-  guild_id: 500,
   target_url: TARGET,
   endpoints: [EMITTED[0]],
   ...overrides,
@@ -56,23 +55,22 @@ afterAll(async () => {
 
 describe("accepting a subscription", () => {
   it("records one and hands back the secret exactly once", async () => {
-    await installed(500, 11);
-    const result = await subscribe(AUTO, 500, request());
+    await installed("gapp_testguild500", 11);
+    const result = await subscribe(AUTO, "gapp_testguild500", request());
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.view).toMatchObject({
-      guild_id: 500,
-      target_url: TARGET,
+          target_url: TARGET,
       endpoints: [EMITTED[0]],
     });
     expect(result.secret).toMatch(/^[0-9a-f]{64}$/);
     // Reading it back never returns it — a subscriber that loses it
     // re-subscribes rather than asking for a copy.
-    const listed = await listSubscriptions(AUTO, 500);
+    const listed = await listSubscriptions(AUTO, "gapp_testguild500");
     expect(Object.keys(listed[0])).toEqual([
       "id",
-      "guild_id",
+      "guild_ref",
       "target_url",
       "endpoints",
     ]);
@@ -82,16 +80,16 @@ describe("accepting a subscription", () => {
     // Not cosmetic: a receiver written against Initiative's envelope refuses
     // one whose `subscription_id` is not an integer, so a uuid here could not
     // be heard at all until that receiver changed.
-    await installed(500, 11);
-    const result = await subscribe(AUTO, 500, request());
+    await installed("gapp_testguild500", 11);
+    const result = await subscribe(AUTO, "gapp_testguild500", request());
     expect(result.ok && Number.isInteger(result.view.id)).toBe(true);
   });
 
   it("keeps the secret sealed at rest", async () => {
     // It is what makes a forged delivery indistinguishable from a real one, so
     // a stray `SELECT` should not hand it over.
-    await installed(500, 11);
-    const result = await subscribe(AUTO, 500, request());
+    await installed("gapp_testguild500", 11);
+    const result = await subscribe(AUTO, "gapp_testguild500", request());
     const stored = await pool.query<{ secret: string }>(
       "SELECT secret FROM subscriptions"
     );
@@ -102,11 +100,11 @@ describe("accepting a subscription", () => {
   it("replaces rather than duplicating when the same address subscribes again", async () => {
     // A duplicate here is not harmless — it is two deliveries of every event,
     // and a subscriber re-running its own setup would accumulate them.
-    await installed(500, 11);
-    const first = await subscribe(AUTO, 500, request());
-    const second = await subscribe(AUTO, 500, request({ endpoints: [...EMITTED] }));
+    await installed("gapp_testguild500", 11);
+    const first = await subscribe(AUTO, "gapp_testguild500", request());
+    const second = await subscribe(AUTO, "gapp_testguild500", request({ endpoints: [...EMITTED] }));
 
-    expect(await listSubscriptions(AUTO, 500)).toHaveLength(1);
+    expect(await listSubscriptions(AUTO, "gapp_testguild500")).toHaveLength(1);
     expect(first.ok && second.ok && second.view.id).toBe(first.ok ? first.view.id : -1);
     expect(second.ok && second.view.endpoints).toEqual([...EMITTED]);
     // And rotates the secret, which is the only way a subscriber that lost one
@@ -115,17 +113,17 @@ describe("accepting a subscription", () => {
   });
 
   it("keeps two addresses in one guild apart", async () => {
-    await installed(500, 11);
-    await subscribe(AUTO, 500, request());
-    await subscribe(AUTO, 500, request({ target_url: "https://auto.example.com/other" }));
-    expect(await listSubscriptions(AUTO, 500)).toHaveLength(2);
+    await installed("gapp_testguild500", 11);
+    await subscribe(AUTO, "gapp_testguild500", request());
+    await subscribe(AUTO, "gapp_testguild500", request({ target_url: "https://auto.example.com/other" }));
+    expect(await listSubscriptions(AUTO, "gapp_testguild500")).toHaveLength(2);
   });
 
   it("collapses a repeated event type", async () => {
-    await installed(500, 11);
+    await installed("gapp_testguild500", 11);
     const result = await subscribe(
       AUTO,
-      500,
+      "gapp_testguild500",
       request({ endpoints: [EMITTED[0], EMITTED[0]] })
     );
     expect(result.ok && result.view.endpoints).toEqual([EMITTED[0]]);
@@ -133,23 +131,23 @@ describe("accepting a subscription", () => {
 });
 
 describe("what it refuses", () => {
-  it("a guild the token does not name", async () => {
-    // The token names one guild. A body naming another would be a subscription
-    // for a guild nobody authorized.
-    await installed(500, 11);
-    await installed(600, 12);
-    expect(await subscribe(AUTO, 500, request({ guild_id: 600 }))).toEqual({
-      ok: false,
-      status: 403,
-      error: "that token is for another guild",
-    });
-    expect(await listSubscriptions(AUTO, 600)).toHaveLength(0);
+  it("files it under the guild the token names, whatever the body says", async () => {
+    // A body cannot name a guild any more — the reference is this app's and a
+    // caller does not hold it — so there is nothing to disagree with the token
+    // about. Naming one anyway is ignored rather than refused.
+    await installed("gapp_testguild500", 11);
+    await installed("gapp_testguild600", 12);
+
+    await subscribe(AUTO, "gapp_testguild500", request({ guild_ref: "gapp_testguild600" }));
+
+    expect(await listSubscriptions(AUTO, "gapp_testguild500")).toHaveLength(1);
+    expect(await listSubscriptions(AUTO, "gapp_testguild600")).toHaveLength(0);
   });
 
   it("a guild that does not have this app", async () => {
     // Not a permission check — the platform made that decision when the guild
     // installed the app — but the answer to "is there anything here for you".
-    expect(await subscribe(AUTO, 500, request())).toEqual({
+    expect(await subscribe(AUTO, "gapp_testguild500", request())).toEqual({
       ok: false,
       status: 404,
       error: "this app is not installed in that guild",
@@ -159,10 +157,10 @@ describe("what it refuses", () => {
   it("a type this app does not produce", async () => {
     // Stored inert it would never fire, and the subscriber would have no way to
     // find out — which is the failure this whole surface exists to stop.
-    await installed(500, 11);
+    await installed("gapp_testguild500", 11);
     const result = await subscribe(
       AUTO,
-      500,
+      "gapp_testguild500",
       request({ endpoints: ["app.morelitea.github.issue-teleported"] })
     );
     expect(result.ok).toBe(false);
@@ -170,35 +168,35 @@ describe("what it refuses", () => {
   });
 
   it("an address it would not post to", async () => {
-    await installed(500, 11);
+    await installed("gapp_testguild500", 11);
     for (const target of [
       "http://localhost:9000/in",
       "http://169.254.169.254/latest/meta-data/",
       "file:///etc/passwd",
       "not a url",
     ]) {
-      const result = await subscribe(AUTO, 500, request({ target_url: target }));
+      const result = await subscribe(AUTO, "gapp_testguild500", request({ target_url: target }));
       expect(result.ok, target).toBe(false);
     }
-    expect(await listSubscriptions(AUTO, 500)).toHaveLength(0);
+    expect(await listSubscriptions(AUTO, "gapp_testguild500")).toHaveLength(0);
   });
 
   it("a body that is not a subscription at all", async () => {
-    await installed(500, 11);
+    await installed("gapp_testguild500", 11);
     for (const body of [null, "a string", {}, request({ endpoints: [] })]) {
-      expect((await subscribe(AUTO, 500, body)).ok).toBe(false);
+      expect((await subscribe(AUTO, "gapp_testguild500", body)).ok).toBe(false);
     }
   });
 });
 
 describe("whose subscription it is", () => {
   it("shows a delegate only its own", async () => {
-    await installed(500, 11);
-    await subscribe(AUTO, 500, request());
-    await subscribe(OTHER, 500, request());
+    await installed("gapp_testguild500", 11);
+    await subscribe(AUTO, "gapp_testguild500", request());
+    await subscribe(OTHER, "gapp_testguild500", request());
 
-    expect(await listSubscriptions(AUTO, 500)).toHaveLength(1);
-    expect(await listSubscriptions(OTHER, 500)).toHaveLength(1);
+    expect(await listSubscriptions(AUTO, "gapp_testguild500")).toHaveLength(1);
+    expect(await listSubscriptions(OTHER, "gapp_testguild500")).toHaveLength(1);
     // Two rows, same address, same guild, different delegates — so one is not
     // a replacement of the other.
     const all = await pool.query("SELECT 1 FROM subscriptions");
@@ -206,45 +204,47 @@ describe("whose subscription it is", () => {
   });
 
   it("shows a delegate only the guild it asked about", async () => {
-    await installed(500, 11);
-    await installed(600, 12);
-    await subscribe(AUTO, 500, request());
-    await subscribe(AUTO, 600, request({ guild_id: 600 }));
+    await installed("gapp_testguild500", 11);
+    await installed("gapp_testguild600", 12);
+    await subscribe(AUTO, "gapp_testguild500", request());
+    await subscribe(AUTO, "gapp_testguild600", request());
 
-    expect(await listSubscriptions(AUTO, 500)).toHaveLength(1);
-    expect((await listSubscriptions(AUTO, 500))[0].guild_id).toBe(500);
+    expect(await listSubscriptions(AUTO, "gapp_testguild500")).toHaveLength(1);
+    expect((await listSubscriptions(AUTO, "gapp_testguild500"))[0].guild_ref).toBe(
+      "gapp_testguild500"
+    );
   });
 
   it("will not let one delegate delete another's", async () => {
     // Matched on the delegate and the guild as well as the id, so guessing a
     // number reaches nothing — and the delegate is the registration whose
     // published key verified the call, not a name the caller typed.
-    await installed(500, 11);
-    const mine = await subscribe(AUTO, 500, request());
+    await installed("gapp_testguild500", 11);
+    const mine = await subscribe(AUTO, "gapp_testguild500", request());
     expect(mine.ok).toBe(true);
     if (!mine.ok) return;
 
-    expect(await unsubscribe(OTHER, 500, mine.view.id)).toBe(false);
-    expect(await listSubscriptions(AUTO, 500)).toHaveLength(1);
+    expect(await unsubscribe(OTHER, "gapp_testguild500", mine.view.id)).toBe(false);
+    expect(await listSubscriptions(AUTO, "gapp_testguild500")).toHaveLength(1);
 
-    expect(await unsubscribe(AUTO, 500, mine.view.id)).toBe(true);
-    expect(await listSubscriptions(AUTO, 500)).toHaveLength(0);
+    expect(await unsubscribe(AUTO, "gapp_testguild500", mine.view.id)).toBe(true);
+    expect(await listSubscriptions(AUTO, "gapp_testguild500")).toHaveLength(0);
   });
 
   it("will not let a delegate delete across guilds", async () => {
-    await installed(500, 11);
-    await installed(600, 12);
-    const mine = await subscribe(AUTO, 500, request());
+    await installed("gapp_testguild500", 11);
+    await installed("gapp_testguild600", 12);
+    const mine = await subscribe(AUTO, "gapp_testguild500", request());
     expect(mine.ok).toBe(true);
     if (!mine.ok) return;
 
-    expect(await unsubscribe(AUTO, 600, mine.view.id)).toBe(false);
-    expect(await listSubscriptions(AUTO, 500)).toHaveLength(1);
+    expect(await unsubscribe(AUTO, "gapp_testguild600", mine.view.id)).toBe(false);
+    expect(await listSubscriptions(AUTO, "gapp_testguild500")).toHaveLength(1);
   });
 
   it("reports an id that was never there the same as one it may not touch", async () => {
-    await installed(500, 11);
-    expect(await unsubscribe(AUTO, 500, 999_999)).toBe(false);
+    await installed("gapp_testguild500", 11);
+    expect(await unsubscribe(AUTO, "gapp_testguild500", 999_999)).toBe(false);
   });
 });
 

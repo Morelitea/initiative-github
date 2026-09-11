@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@types/pg": "^8.23.1",
-    "initiative-app-kit": "github:Morelitea/initiative-app-kit",
+    "initiative-app-kit": "github:Morelitea/initiative-app-kit#v0.17.0",
     "pg": "^8.23.0"
   },
   "devDependencies": {

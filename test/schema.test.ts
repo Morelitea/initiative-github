@@ -120,7 +120,7 @@ describe("when the database was built by a different version", () => {
     // The failure this replaces, reproduced: a database built before a column,
     // which every `IF NOT EXISTS` statement then leaves exactly as it is.
     await migrate();
-    await pool.query("ALTER TABLE connections DROP COLUMN guild_id");
+    await pool.query("ALTER TABLE connections DROP COLUMN guild_ref");
     await pool.query("UPDATE schema_version SET fingerprint = 'anolderbuild00'");
 
     // Boot refuses…
@@ -128,7 +128,7 @@ describe("when the database was built by a different version", () => {
     // …and it was right to: re-running the statements would not have added it.
     const columns = await pool.query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
-        WHERE table_name = 'connections' AND column_name = 'guild_id'`
+        WHERE table_name = 'connections' AND column_name = 'guild_ref'`
     );
     expect(columns.rowCount).toBe(0);
   });

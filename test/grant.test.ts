@@ -36,7 +36,7 @@ import { rememberWorkspace } from "../src/workspace.js";
 const WRITE_DECLARATIONS = WRITES.map((write) => write.declaration);
 
 const INSTALLATION = 9011;
-const CONNECTED: Caller = { guildId: 500, appInstallId: 11, connectionRef: "ref-a" };
+const CONNECTED: Caller = { guildRef: "gapp_testguild500", appInstallId: 11, connectionRef: "ref-a" };
 
 /** Everything the write itself sent, so a refusal can be shown to send nothing. */
 let sent: string[] = [];
@@ -70,15 +70,15 @@ function github(permissions: Record<string, string> | undefined) {
 
 /** One guild, one repository, one member who has connected. */
 async function installed() {
-  await rememberWorkspace(11, 500, "acme", INSTALLATION, ["widgets"]);
+  await rememberWorkspace(11, "gapp_testguild500", "acme", INSTALLATION, ["widgets"]);
   await pool.query(
-    "INSERT INTO connections (connection_ref, guild_id, access_token) VALUES ($1, $2, $3)",
+    "INSERT INTO connections (connection_ref, guild_ref, access_token) VALUES ($1, $2, $3)",
     ["ref-a", 500, seal("member-token")]
   );
 }
 
 async function attempt(endpoint: string, params: Record<string, unknown>) {
-  const asked = parseInvoke({ endpoint, guild_id: 500, params }, WRITE_DECLARATIONS);
+  const asked = parseInvoke({ endpoint, guild_ref: "gapp_testguild500", params }, WRITE_DECLARATIONS);
   expect(asked.ok).toBe(true);
   return invoke(CONNECTED, asked.ok ? asked.request : ({} as never));
 }
@@ -209,9 +209,9 @@ describe("a question GitHub did not answer", () => {
     // A guild whose installation is gone still has a member with a credential
     // of their own. What that reaches is GitHub's to decide, not this app's to
     // pre-empt from a workspace row.
-    await rememberWorkspace(11, 500, "acme", null, ["widgets"]);
+    await rememberWorkspace(11, "gapp_testguild500", "acme", null, ["widgets"]);
     await pool.query(
-      "INSERT INTO connections (connection_ref, guild_id, access_token) VALUES ($1, $2, $3)",
+      "INSERT INTO connections (connection_ref, guild_ref, access_token) VALUES ($1, $2, $3)",
       ["ref-a", 500, seal("member-token")]
     );
     github({ issues: "read" });

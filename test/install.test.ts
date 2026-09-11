@@ -40,7 +40,7 @@ import {
 } from "../src/github/install.js";
 
 const REF = "ref-workspace";
-const GUILD = 500;
+const GUILD = "gapp_testguild500";
 const HOME = "https://initiative.test/apps/connected?app=morelitea.github";
 
 const INSTALLATION = 4242;

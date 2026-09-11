@@ -29,7 +29,7 @@ const tokenUrl = () => `${config.github.webBase}/login/oauth/access_token`;
 
 export async function beginOAuth(
   connectionRef: string,
-  guildId: number,
+  guildRef: string,
   returnUrl: string | null
 ): Promise<string> {
   // GitHub's authorize step takes a challenge and checks the verifier against
@@ -40,7 +40,7 @@ export async function beginOAuth(
     redirectUri: redirectUri(),
   });
 
-  await rememberHandoff(auth, connectionRef, guildId, returnUrl);
+  await rememberHandoff(auth, connectionRef, guildRef, returnUrl);
   return `${config.github.webBase}/login/oauth/authorize?${auth.params}`;
 }
 
@@ -50,17 +50,17 @@ function lapsesAt(seconds: number | null): Date | null {
 
 async function store(
   connectionRef: string,
-  guildId: number,
+  guildRef: string,
   grant: Grant
 ): Promise<void> {
   await pool.query(
     `INSERT INTO connections (
-       connection_ref, guild_id, access_token, refresh_token,
+       connection_ref, guild_ref, access_token, refresh_token,
        expires_at, refresh_expires_at
      )
      VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (connection_ref) DO UPDATE
-        SET guild_id           = EXCLUDED.guild_id,
+        SET guild_ref          = EXCLUDED.guild_ref,
             access_token       = EXCLUDED.access_token,
             refresh_token      = EXCLUDED.refresh_token,
             expires_at         = EXCLUDED.expires_at,
@@ -68,7 +68,7 @@ async function store(
             updated_at         = now()`,
     [
       connectionRef,
-      guildId,
+      guildRef,
       seal(grant.accessToken),
       grant.refreshToken ? seal(grant.refreshToken) : null,
       lapsesAt(grant.expiresIn),
@@ -112,13 +112,13 @@ export async function completeOAuth(
     return { outcome: "refused", home };
   }
 
-  const guildId = handoff.guildId ?? Number.NaN;
-  await store(handoff.connectionRef, guildId, exchanged.grant);
+  const guildRef = handoff.guildRef ?? "";
+  await store(handoff.connectionRef, guildRef, exchanged.grant);
 
   // A credential this app holds and Initiative does not know about is the same
   // situation as a write that did not land: nothing satisfies the connection,
   // the dashboard refuses them, and connecting again is safe and is the remedy.
-  if (!(await announce(guildId, handoff.connectionRef, true))) {
+  if (!(await announce(guildRef, handoff.connectionRef, true))) {
     return { outcome: "not_recorded", home };
   }
 
@@ -139,13 +139,13 @@ export function landingFor(result: ConnectResult): string | null {
  * read back by nothing, and already known to the one party with a use for it.
  */
 async function announce(
-  guildId: number,
+  guildRef: string,
   connectionRef: string,
   authorized: boolean
 ): Promise<boolean> {
-  if (!Number.isInteger(guildId)) return false;
+  if (!guildRef) return false;
   try {
-    await initiative.writeConnection(guildId, connectionRef, {
+    await initiative.writeConnection(guildRef, connectionRef, {
       values: { authorized: authorized ? true : null },
       status: authorized ? "connected" : "pending",
     });
@@ -161,13 +161,13 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
   try {
     await client.query("BEGIN");
     const locked = await client.query<{
-      guild_id: string | null;
+      guild_ref: string | null;
       access_token: string;
       refresh_token: string | null;
       stale: boolean;
       renewable: boolean;
     }>(
-      `SELECT guild_id, access_token, refresh_token,
+      `SELECT guild_ref, access_token, refresh_token,
               (expires_at IS NOT NULL
                  AND expires_at <= now() + ($2 || ' seconds')::interval) AS stale,
               (refresh_expires_at IS NULL OR refresh_expires_at > now()) AS renewable
@@ -196,7 +196,7 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
         connectionRef,
       ]);
       await client.query("COMMIT");
-      await disconnect(row.guild_id, connectionRef);
+      await disconnect(row.guild_ref, connectionRef);
       return null;
     }
 
@@ -224,7 +224,7 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
         connectionRef,
       ]);
       await client.query("COMMIT");
-      await disconnect(row.guild_id, connectionRef);
+      await disconnect(row.guild_ref, connectionRef);
       return null;
     }
 
@@ -256,9 +256,9 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
     //
     // On renewal is the right moment: it is periodic without being per-read,
     // and a token is already being written down.
-    if (!(await stillReaches(grant.accessToken, row.guild_id))) {
+    if (!(await stillReaches(grant.accessToken, row.guild_ref))) {
       await forgetConnection(connectionRef);
-      await disconnect(row.guild_id, connectionRef);
+      await disconnect(row.guild_ref, connectionRef);
       return null;
     }
 
@@ -287,11 +287,11 @@ async function refresh(connectionRef: string): Promise<StoredAccount | null> {
  */
 async function stillReaches(
   accessToken: string,
-  guildId: string | null
+  guildRef: string | null
 ): Promise<boolean> {
-  if (guildId === null) return true;
+  if (guildRef === null) return true;
 
-  const bound = await installationForGuild(Number(guildId));
+  const bound = await installationForGuild(guildRef);
   if (bound === null) return true;
 
   const answer = await fetchJson<{ installations?: unknown }>(
@@ -317,9 +317,9 @@ async function stillReaches(
   );
 }
 
-async function disconnect(guildId: string | null, connectionRef: string): Promise<void> {
-  if (guildId === null) return;
-  await announce(Number(guildId), connectionRef, false);
+async function disconnect(guildRef: string | null, connectionRef: string): Promise<void> {
+  if (guildRef === null) return;
+  await announce(guildRef, connectionRef, false);
 }
 
 export async function credentialFor(

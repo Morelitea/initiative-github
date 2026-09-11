@@ -81,7 +81,7 @@ import { forgetInstall, installIsGone, syncAllInstalls, syncInstall } from "../s
 /** One install's configuration as the channel returns it. */
 function installConfig(overrides: Record<string, unknown> = {}) {
   return {
-    guild_id: 500,
+    guild_ref: "gapp_testguild500",
     install_id: 11,
     listing_uid: "TESTAPP0000001",
     listing_version: "0.4.0",
@@ -120,12 +120,12 @@ describe("finding the guild's access", () => {
     installationById.mockResolvedValue(told(4242));
     installationRepositories.mockResolvedValue(["widgets", "gadgets"]);
 
-    await syncInstall(500);
+    await syncInstall("gapp_testguild500");
 
     expect(installationRepositories).toHaveBeenCalledWith(4242);
     expect(rememberWorkspace).toHaveBeenCalledWith(
       11,
-      500,
+      "gapp_testguild500",
       "acme",
       4242,
       ["widgets", "gadgets"]
@@ -146,9 +146,9 @@ describe("finding the guild's access", () => {
     installationById.mockResolvedValue(told(4242));
     installationRepositories.mockResolvedValue(null);
 
-    await syncInstall(500);
+    await syncInstall("gapp_testguild500");
 
-    expect(rememberWorkspace).toHaveBeenCalledWith(11, 500, "acme", 4242, undefined);
+    expect(rememberWorkspace).toHaveBeenCalledWith(11, "gapp_testguild500", "acme", 4242, undefined);
   });
 
   it("asks after the installation an admin actually made", async () => {
@@ -167,12 +167,12 @@ describe("finding the guild's access", () => {
     );
     installationById.mockResolvedValue(told(4242));
 
-    await expect(syncInstall(500)).resolves.toBe(true);
+    await expect(syncInstall("gapp_testguild500")).resolves.toBe(true);
 
     expect(installationById).toHaveBeenCalledWith(4242);
     expect(rememberWorkspace).toHaveBeenCalledWith(
       11,
-      500,
+      "gapp_testguild500",
       "acme",
       4242,
       ["widgets"]
@@ -191,11 +191,11 @@ describe("finding the guild's access", () => {
     );
     installationById.mockResolvedValue(SILENT);
 
-    await syncInstall(500);
+    await syncInstall("gapp_testguild500");
 
     expect(rememberWorkspace).toHaveBeenCalledWith(
       11,
-      500,
+      "gapp_testguild500",
       "acme",
       undefined,
       undefined
@@ -212,8 +212,8 @@ describe("finding the guild's access", () => {
     configCall.mockResolvedValue(installConfig());
     installationById.mockResolvedValue(told(null));
 
-    await expect(syncInstall(500)).resolves.toBe(true);
-    expect(reportStatus).toHaveBeenCalledWith(500, { state: "ok" });
+    await expect(syncInstall("gapp_testguild500")).resolves.toBe(true);
+    expect(reportStatus).toHaveBeenCalledWith("gapp_testguild500", { state: "ok" });
   });
 
   it("records the absence, so a source answers rather than guessing", async () => {
@@ -222,11 +222,11 @@ describe("finding the guild's access", () => {
     configCall.mockResolvedValue(installConfig());
     installationById.mockResolvedValue(told(null));
 
-    await syncInstall(500);
+    await syncInstall("gapp_testguild500");
 
     expect(rememberWorkspace).toHaveBeenCalledWith(
       11,
-      500,
+      "gapp_testguild500",
       "acme",
       null,
       undefined
@@ -241,18 +241,18 @@ describe("finding the guild's access", () => {
     configCall.mockResolvedValue(installConfig());
     installationById.mockResolvedValue(SILENT);
 
-    await expect(syncInstall(500)).resolves.toBe(true);
+    await expect(syncInstall("gapp_testguild500")).resolves.toBe(true);
 
     expect(rememberWorkspace).toHaveBeenCalledWith(
       11,
-      500,
+      "gapp_testguild500",
       "acme",
       undefined,
       undefined
     );
     // And the install is still usable: the reads that run as a member never
     // needed the installation in the first place.
-    expect(reportStatus).toHaveBeenCalledWith(500, { state: "ok" });
+    expect(reportStatus).toHaveBeenCalledWith("gapp_testguild500", { state: "ok" });
   });
 
   it("asks again on every sync rather than trusting the last answer", async () => {
@@ -262,13 +262,13 @@ describe("finding the guild's access", () => {
     configCall.mockResolvedValue(installConfig());
     installationById.mockResolvedValueOnce(told(4242)).mockResolvedValueOnce(told(7));
 
-    await syncInstall(500);
-    await syncInstall(500);
+    await syncInstall("gapp_testguild500");
+    await syncInstall("gapp_testguild500");
 
     expect(installationById).toHaveBeenCalledTimes(2);
     expect(rememberWorkspace).toHaveBeenLastCalledWith(
       11,
-      500,
+      "gapp_testguild500",
       "acme",
       7,
       ["widgets"]
@@ -283,12 +283,12 @@ describe("finding the guild's access", () => {
     configCall.mockResolvedValue(installConfig());
     installationById.mockResolvedValueOnce(told(4242)).mockResolvedValueOnce(told(null));
 
-    await syncInstall(500);
-    await syncInstall(500);
+    await syncInstall("gapp_testguild500");
+    await syncInstall("gapp_testguild500");
 
     expect(rememberWorkspace).toHaveBeenLastCalledWith(
       11,
-      500,
+      "gapp_testguild500",
       "acme",
       null,
       undefined
@@ -300,7 +300,7 @@ describe("finding the guild's access", () => {
       installConfig({ connections: {}, needs_config: true })
     );
 
-    await expect(syncInstall(500)).resolves.toBe(false);
+    await expect(syncInstall("gapp_testguild500")).resolves.toBe(false);
 
     expect(installationById).not.toHaveBeenCalled();
     // `needs_config` already says an admin has not finished; reporting
@@ -315,9 +315,9 @@ describe("finding the guild's access", () => {
       installConfig({ connections: { workspace: { owner: "acme/widgets" } } })
     );
 
-    await expect(syncInstall(500)).resolves.toBe(false);
+    await expect(syncInstall("gapp_testguild500")).resolves.toBe(false);
 
-    expect(reportStatus).toHaveBeenCalledWith(500, {
+    expect(reportStatus).toHaveBeenCalledWith("gapp_testguild500", {
       state: "invalid",
       detail: "not_installed",
     });
@@ -470,8 +470,8 @@ describe("reconciling every install at once", () => {
   it("drops the rows the platform no longer names", async () => {
     // The prune doing its job: two installs listed, so anything else is stale.
     installs.mockResolvedValue([
-      { install_id: 11, guild_id: 500, enabled: true },
-      { install_id: 12, guild_id: 501, enabled: true },
+      { install_id: 11, guild_ref: "gapp_testguild500", enabled: true },
+      { install_id: 12, guild_ref: "gapp_testguild501", enabled: true },
     ]);
     configCall.mockResolvedValue(installConfig());
     installationById.mockResolvedValue(told(4242));
@@ -484,7 +484,7 @@ describe("reconciling every install at once", () => {
   it("keeps a row for an install that is listed but switched off", async () => {
     // Disabled is dropped one at a time on the way past, which is a different
     // statement from the prune's — the platform named it, and said it is off.
-    installs.mockResolvedValue([{ install_id: 11, guild_id: 500, enabled: false }]);
+    installs.mockResolvedValue([{ install_id: 11, guild_ref: "gapp_testguild500", enabled: false }]);
 
     await syncAllInstalls();
 
@@ -508,7 +508,7 @@ describe("reconciling every install at once", () => {
   it("still refuses when a guild's own sync failed on the same pass", async () => {
     // A pass where the per-guild work threw must not turn into a narrower list
     // that the prune then acts on. The install was named; that is what counts.
-    installs.mockResolvedValue([{ install_id: 11, guild_id: 500, enabled: true }]);
+    installs.mockResolvedValue([{ install_id: 11, guild_ref: "gapp_testguild500", enabled: true }]);
     configCall.mockRejectedValue(new ChannelError(503, "unavailable"));
 
     await syncAllInstalls();
