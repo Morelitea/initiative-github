@@ -1,5 +1,84 @@
 # Changelog
 
+## [0.11.0] — 2026-09-10
+
+### A guild is known by the name the deployment gives it
+
+Every table here stored Initiative's row id for a guild. That was never an id of
+ours to keep: an index names a row to the system that owns it, and naming an
+entity to somebody else is a different job. `connections`, `oauth_states`,
+`workspaces` and `subscriptions` now key on `guild_ref` — the reference the
+deployment hands this app for the guild it is installed in — and the schema
+fingerprint moves with them.
+
+This is a rekey rather than a mapping table. An app that kept a numbering of its
+own would have had something to preserve beside a new key; these four tables held
+nothing but Initiative's, so there was nothing to hold onto.
+
+The delegated path collapses with it. A token now arrives issued by the
+deployment *for this app*, so the guild, the install and the member are already
+named the way this app names them, and the member's own handle rides along.
+`callerFromDelegate` reads them off the claims:
+
+    export function callerFromDelegate(claims: DelegationClaims): Caller {
+      return {
+        guildRef: claims.guildRef,
+        appInstallId: claims.appInstallId,
+        connectionRef: claims.connectionRefs?.account ?? null,
+      };
+    }
+
+That replaced a database lookup, a network round trip and two failure modes. The
+invoke route stops reconciling a body against a token, and `POST /subscriptions`
+stops checking that a `guild_id` in the body matches the one in the token —
+there is one answer now instead of two, and a caller could not have restated the
+reference anyway, because it is ours and they do not hold it.
+
+**A subscription names the guild the same way.** What `POST /subscriptions` and
+`GET /subscriptions` return carries `guild_ref`, a string, where it carried
+`guild_id`, a number.
+
+The kit is pinned at `initiative-app-kit#v0.17.0` rather than tracking its
+default branch, because the token shape above is the kit's: what this builds
+against is now written down where a reader can see it.
+
+Upgrading: **there is no migration path, and that is deliberate.** `migrate`
+compares a fingerprint of `src/db.ts` against the one the database was built
+with and refuses to start on a mismatch, naming both. Drop the database and let
+it be recreated, or reconcile the four tables by hand and update
+`schema_version`. A recreated database keeps nothing that was in it: every
+member connects their GitHub account again, and every subscription is
+registered again by whoever registered it. The workspace rows come back on the
+next install sync without anybody doing anything. A subscriber that reads
+`guild_id` off a subscription reads `guild_ref` now.
+
+### The setup pages are not cached and do not pass their URL onward
+
+Everything `sendPage` serves — the registration form, the page GitHub returns to
+with a one-time conversion code in the URL, and the endings of a member's
+connect trip — now carries `Cache-Control: no-store` and `Referrer-Policy:
+no-referrer`. Those URLs carry one-time state, and a shared cache or an outbound
+`Referer` is the wrong place for it to be left. Applied once where pages are
+served rather than per route: one rule is harder to get wrong than a list kept
+in step with the routes. Tracked as T98.
+
+### Published images are signed
+
+The release workflow signs what it publishes with cosign, keyless: the job
+exchanges its OIDC token for a short-lived certificate from Fulcio and the
+signature is recorded in the public Rekor log, so there is no private key to
+hold, rotate or lose. It signs by digest rather than by tag — a tag moves, a
+digest is what was built — so one signature covers `latest`, the `major.minor`
+line and the exact version alike. The certificate carries the workflow identity,
+which is what lets somebody about to run this image require that this
+repository's release workflow produced it:
+
+    cosign verify ghcr.io/morelitea/initiative-github:0.11.0 \
+      --certificate-identity-regexp '^https://github.com/Morelitea/initiative-github/' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+Tracked as T64.
+
 ## [0.10.4] — 2026-09-09
 
 ### One empty answer stopped every automation
