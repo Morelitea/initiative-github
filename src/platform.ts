@@ -74,9 +74,16 @@ export async function installFor(guildRef: string): Promise<number | null> {
   return row ? Number(row.app_install_id) : null;
 }
 
+/**
+ * What a subscriber is told about its own subscription.
+ *
+ * No guild. The subscriber named one by holding a delegation for it, and the
+ * reference this app would echo back was minted at THIS app's install rather
+ * than the subscriber's — an unrelated value for the same guild, which only the
+ * deployment can put together. `id` identifies the subscription on its own.
+ */
 export interface SubscriptionView {
   id: number;
-  guild_ref: string;
   target_url: string;
   endpoints: string[];
 }
@@ -84,7 +91,6 @@ export interface SubscriptionView {
 function view(subscription: Subscription): SubscriptionView {
   return {
     id: subscription.id,
-    guild_ref: subscription.guildRef,
     target_url: subscription.targetUrl,
     endpoints: subscription.endpoints,
   };
