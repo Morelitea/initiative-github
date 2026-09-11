@@ -14,6 +14,9 @@ on:
 permissions:
   contents: write
   packages: write
+  # Keyless signing needs an OIDC token to exchange for a short-lived
+  # certificate from Fulcio.
+  id-token: write
 
 jobs:
   publish:
@@ -61,6 +64,7 @@ jobs:
             type=raw,value=latest
 
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        id: build
         with:
           context: .
           push: true
@@ -72,6 +76,33 @@ jobs:
             REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Keyless signing. cosign exchanges the job's OIDC token for a
+      # short-lived certificate and records the signature in the public Rekor
+      # log, so no private key exists to hold, rotate or lose. The certificate
+      # carries the workflow identity, which is what lets a verifier require
+      # that this repository's release workflow produced an image.
+      #
+      # Signed by digest, not tag: a tag moves, a digest is what was built. One
+      # signature covers every tag pointing at it.
+      #
+      # Rationale: T64.
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - name: Sign the published image
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          # metadata-action emits one tag per line; any of them names the same
+          # image, so the first will do. Strip the tag with ${tag%:*} rather
+          # than `cut -d: -f1`, which would return "localhost" for a registry
+          # that carries a port. Not the case for ghcr.io today, and not a
+          # thing to leave as a trap either.
+          tag="$(printf '%s' "$TAGS" | head -n1)"
+          image="${tag%:*}"
+          cosign sign --yes "${image}@${DIGEST}"
+          echo "signed ${image}@${DIGEST}"
 
       # The catalog files, stamped with the tag. An operator publishes this app
       # by dropping them into their MARKETPLACE_EXTRA_CATALOG_DIR, so they ship
