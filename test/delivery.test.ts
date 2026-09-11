@@ -225,11 +225,14 @@ describe("republishing what a repository did", () => {
     const envelope = delivered[0].body as Record<string, any>;
     expect(typeof envelope.event_id).toBe("string");
     expect(Number.isInteger(envelope.subscription_id)).toBe(true);
-    expect(envelope.guild_ref).toBe("gapp_testguild500");
     expect(envelope.actor_ref).toBeNull();
     // The platform renamed it with the field it names: whoever caused a batch
     // is a reference minted for the receiver, never a row id.
     expect("actor_user_id" in envelope).toBe(false);
+    // And no guild. Initiative names one because its subscription ids repeat
+    // per guild; ours come from one sequence, and the name this app holds was
+    // minted at its own install — which no receiver can resolve.
+    expect("guild_ref" in envelope).toBe(false);
 
     const change = envelope.changes[0];
     expect(change.event_type).toBe("app.morelitea.github.issue-opened");

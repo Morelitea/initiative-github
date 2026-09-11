@@ -61,19 +61,16 @@ describe("accepting a subscription", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.view).toMatchObject({
-          target_url: TARGET,
+      target_url: TARGET,
       endpoints: [EMITTED[0]],
     });
     expect(result.secret).toMatch(/^[0-9a-f]{64}$/);
     // Reading it back never returns it — a subscriber that loses it
     // re-subscribes rather than asking for a copy.
     const listed = await listSubscriptions(AUTO, "gapp_testguild500");
-    expect(Object.keys(listed[0])).toEqual([
-      "id",
-      "guild_ref",
-      "target_url",
-      "endpoints",
-    ]);
+    // No guild either: the reference this app holds for one was minted at its
+    // own install, so it is not a name the subscriber could resolve.
+    expect(Object.keys(listed[0])).toEqual(["id", "target_url", "endpoints"]);
   });
 
   it("mints a subscription id an existing receiver can parse", async () => {
@@ -209,10 +206,12 @@ describe("whose subscription it is", () => {
     await subscribe(AUTO, "gapp_testguild500", request());
     await subscribe(AUTO, "gapp_testguild600", request());
 
-    expect(await listSubscriptions(AUTO, "gapp_testguild500")).toHaveLength(1);
-    expect((await listSubscriptions(AUTO, "gapp_testguild500"))[0].guild_ref).toBe(
-      "gapp_testguild500"
-    );
+    const listed = await listSubscriptions(AUTO, "gapp_testguild500");
+    expect(listed).toHaveLength(1);
+    // Which guild it is for is the question the caller asked, not something the
+    // answer restates — and this app's name for it is not one the caller could
+    // resolve anyway.
+    expect("guild_ref" in listed[0]).toBe(false);
   });
 
   it("will not let one delegate delete another's", async () => {
