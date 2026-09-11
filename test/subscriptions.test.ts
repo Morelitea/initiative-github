@@ -61,19 +61,16 @@ describe("accepting a subscription", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.view).toMatchObject({
-          target_url: TARGET,
+      target_url: TARGET,
       endpoints: [EMITTED[0]],
     });
     expect(result.secret).toMatch(/^[0-9a-f]{64}$/);
     // Reading it back never returns it — a subscriber that loses it
     // re-subscribes rather than asking for a copy.
     const listed = await listSubscriptions(AUTO, "gapp_testguild500");
-    expect(Object.keys(listed[0])).toEqual([
-      "id",
-      "guild_ref",
-      "target_url",
-      "endpoints",
-    ]);
+    // No guild either: the reference this app holds for one was minted at its
+    // own install, so it is not a name the subscriber could resolve.
+    expect(Object.keys(listed[0])).toEqual(["id", "target_url", "endpoints"]);
   });
 
   it("mints a subscription id an existing receiver can parse", async () => {
