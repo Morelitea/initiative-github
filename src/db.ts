@@ -89,6 +89,25 @@ const SCHEMA = [
   `CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_target
      ON subscriptions (guild_ref, subscriber, target_url)`,
 
+  // A webhook delivery is accepted once.
+  //
+  // The signature proves a delivery came from GitHub. It proves nothing about
+  // when, so a captured delivery replayed with its original signature verifies
+  // exactly as it did the first time. GitHub signs no timestamp, so there is no
+  // freshness field to check -- the delivery id is the only thing that
+  // distinguishes one send from the same send again.
+  //
+  // Primary key rather than a unique index, because the id IS the row.
+  `CREATE TABLE IF NOT EXISTS webhook_deliveries (
+     delivery_id TEXT PRIMARY KEY,
+     seen_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+   )`,
+
+  // Bounded. GitHub gives up redelivering long before this, so anything older
+  // cannot be a replay it would accept anyway -- it is only taking up space.
+  `CREATE INDEX IF NOT EXISTS webhook_deliveries_seen_at
+     ON webhook_deliveries (seen_at)`,
+
   `CREATE TABLE IF NOT EXISTS delegation_tokens (
      jti        TEXT PRIMARY KEY,
      expires_at TIMESTAMPTZ NOT NULL
@@ -160,3 +179,39 @@ export const seal = (value: string): string =>
 
 export const open = (value: string): string | null =>
   (vault ??= createVault(config.encryptionKey)).open(value);
+
+/** How long a delivery id is remembered. GitHub stops redelivering well inside
+ *  this, so a row older than this cannot be a replay that would still be
+ *  accepted. */
+export const DELIVERY_MEMORY_DAYS = 7;
+
+/**
+ * Claim a delivery id. True the first time, false every time after.
+ *
+ * One statement, so two concurrent deliveries of the same id cannot both win:
+ * the insert either creates the row or conflicts, and only the creating
+ * statement gets a row back.
+ *
+ * Sweeps expired rows on the way through rather than on a timer, because a
+ * timer is another thing to run and to notice has stopped.
+ */
+export async function claimDelivery(deliveryId: string): Promise<boolean> {
+  const client = await pool.connect();
+  try {
+    await client.query(
+      `DELETE FROM webhook_deliveries
+        WHERE seen_at < now() - ($1 || ' days')::interval`,
+      [String(DELIVERY_MEMORY_DAYS)]
+    );
+    const claimed = await client.query(
+      `INSERT INTO webhook_deliveries (delivery_id)
+       VALUES ($1)
+       ON CONFLICT (delivery_id) DO NOTHING
+       RETURNING delivery_id`,
+      [deliveryId]
+    );
+    return claimed.rowCount === 1;
+  } finally {
+    client.release();
+  }
+}

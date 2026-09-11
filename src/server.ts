@@ -17,7 +17,7 @@ import {
 } from "initiative-app-kit";
 
 import { config } from "./config.js";
-import { close, migrate, pool } from "./db.js";
+import { claimDelivery, close, migrate, pool } from "./db.js";
 import { document } from "./listing.config.js";
 import { manifest } from "./manifest.config.js";
 import {
@@ -590,6 +590,28 @@ export const server = createServer(async (req, res) => {
 
       if (event === "ping") return send(res, 200, { ok: true });
 
+      // Accept a delivery once. The signature above proves this came from
+      // GitHub; it proves nothing about WHEN, so the same body and the same
+      // signature verify again on a replay. GitHub signs no timestamp, so the
+      // delivery id is the only thing separating one send from the same send
+      // twice.
+      //
+      // After the signature check on purpose: before it, anyone could fill the
+      // table with ids of their choosing.
+      //
+      // 200 either way. A non-2xx tells GitHub to redeliver, which would turn
+      // a replay we just refused into one we asked for.
+      const deliveryId = header(req, DELIVERY_HEADER) ?? "";
+      if (deliveryId === "") {
+        // GitHub always sends one. Treating absence as a single empty key would
+        // make the first such delivery block every later one, so it is
+        // processed and said out loud instead.
+        console.warn(`delivery (${event}): no ${DELIVERY_HEADER}, cannot be deduplicated`);
+      } else if (!(await claimDelivery(deliveryId))) {
+        console.warn(`delivery ${deliveryId} (${event}): already seen, not processed`);
+        return send(res, 200, { resynced: 0, published: 0, duplicate: true });
+      }
+
       let payload: Record<string, unknown>;
       try {
         payload = JSON.parse(body.toString("utf-8")) as Record<string, unknown>;
@@ -597,16 +619,10 @@ export const server = createServer(async (req, res) => {
         return send(res, 400, { error: "body is not json" });
       }
 
-      const result = await handleDelivery(
-        event,
-        payload,
-        header(req, DELIVERY_HEADER) ?? "",
-      );
+      const result = await handleDelivery(event, payload, deliveryId);
 
       if (result.reason) {
-        console.log(
-          `delivery ${header(req, DELIVERY_HEADER) ?? "?"} (${event}): ${result.reason}`
-        );
+        console.log(`delivery ${deliveryId || "?"} (${event}): ${result.reason}`);
       }
       return send(res, 200, { resynced: result.resynced, published: result.published });
     }

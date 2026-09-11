@@ -73,6 +73,7 @@ describe("applying it", () => {
       "oauth_states",
       "schema_version",
       "subscriptions",
+      "webhook_deliveries",
       "workspaces",
     ]);
   });
