@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.11.2] — 2026-09-11
+
+### An emission stops naming the guild
+
+`initiative-app-kit` v0.19.0, which removes `guild_ref` from an app's emitted
+envelope and from the subscribe response. The subscription view here drops it
+too — it is this app's own type rather than the kit's, so nothing else would
+have caught it.
+
+Initiative names the guild on its envelope because it has to: its subscription
+ids live in the guild's schema and start at 1 in each. An app's come from a
+single sequence across every guild it is installed in, so `subscription_id`
+identifies the subscription on its own.
+
+The value was not usable by a receiver either way. The reference stored here was
+minted at this app's install, and a subscriber holds the one minted at its own —
+unrelated values for the same guild, with only the deployment holding both. A
+subscriber that read it should read the guild off its own record for that
+subscription instead.
+
+Nothing about what this app stores changes: `connections`, `oauth_states`,
+`workspaces` and `subscriptions` still key on `guild_ref`, which is this app's
+own sector and where the reference belongs.
+
 ## [0.11.1] — 2026-09-11
 
 ### The actor a delivery names is a reference
