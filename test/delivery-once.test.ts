@@ -1,17 +1,10 @@
 /**
  * A delivery is accepted once.
  *
- * The signature proves a delivery came from GitHub. It proves nothing about
- * *when*, so a captured delivery replayed with its original signature verifies
- * exactly as it did the first time — the bytes are unchanged, so the HMAC over
- * them is too. GitHub signs no timestamp, so there is no freshness field to
- * check against, and the delivery id is the only thing that separates one send
- * from the same send again.
- *
- * Needs a database, because the record of what has been seen *is* the database.
+ * Needs a database, because the record of what has been seen IS the database.
  * `DATABASE_URL` in CI; see README.md to run it locally.
  *
- * See T99.
+ * Rationale: T99.
  */
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
@@ -41,9 +34,8 @@ describe("a webhook delivery", () => {
   });
 
   it("only one of two concurrent claims of the same id wins", async () => {
-    // The race this guards is two deliveries of the same id arriving together.
-    // A read-then-write would let both see nothing and both proceed; the insert
-    // is one statement, so exactly one of them creates the row.
+    // A read-then-write would let two concurrent claims both see nothing and
+    // both proceed. The insert is one statement, so exactly one creates the row.
     const id = randomUUID();
     const results = await Promise.all([
       claimDelivery(id),
@@ -54,8 +46,7 @@ describe("a webhook delivery", () => {
   });
 
   it("forgets an id older than the memory window, and keeps a recent one", async () => {
-    // Unbounded growth is the obvious way a table like this becomes the
-    // problem it was added to solve.
+    // The table has to stay bounded.
     const stale = randomUUID();
     const fresh = randomUUID();
     await claimDelivery(stale);

@@ -590,17 +590,12 @@ export const server = createServer(async (req, res) => {
 
       if (event === "ping") return send(res, 200, { ok: true });
 
-      // Accept a delivery once. The signature above proves this came from
-      // GitHub; it proves nothing about WHEN, so the same body and the same
-      // signature verify again on a replay. GitHub signs no timestamp, so the
-      // delivery id is the only thing separating one send from the same send
-      // twice.
+      // A delivery id is accepted once.
       //
-      // After the signature check on purpose: before it, anyone could fill the
-      // table with ids of their choosing.
+      // After the signature check, so only GitHub can create rows. Answer 2xx
+      // either way -- a non-2xx asks GitHub to redeliver.
       //
-      // 200 either way. A non-2xx tells GitHub to redeliver, which would turn
-      // a replay we just refused into one we asked for.
+      // Rationale: T99.
       const deliveryId = header(req, DELIVERY_HEADER) ?? "";
       if (deliveryId === "") {
         // GitHub always sends one. Treating absence as a single empty key would
