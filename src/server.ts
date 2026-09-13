@@ -17,7 +17,7 @@ import {
 } from "initiative-app-kit";
 
 import { config } from "./config.js";
-import { claimDelivery, close, migrate, pool } from "./db.js";
+import { close, migrate, pool, runDeliveryOnce } from "./db.js";
 import { document } from "./listing.config.js";
 import { manifest } from "./manifest.config.js";
 import {
@@ -66,6 +66,7 @@ import {
   DELIVERY_HEADER,
   EVENT_HEADER,
   SIGNATURE_HEADER,
+  type DeliveryResult,
   handleDelivery,
   verifySignature,
 } from "./github/webhooks.js";
@@ -590,23 +591,7 @@ export const server = createServer(async (req, res) => {
 
       if (event === "ping") return send(res, 200, { ok: true });
 
-      // A delivery id is accepted once.
-      //
-      // After the signature check, so only GitHub can create rows. Answer 2xx
-      // either way -- a non-2xx asks GitHub to redeliver.
-      //
-      // Rationale: T99.
       const deliveryId = header(req, DELIVERY_HEADER) ?? "";
-      if (deliveryId === "") {
-        // GitHub always sends one. Treating absence as a single empty key would
-        // make the first such delivery block every later one, so it is
-        // processed and said out loud instead.
-        console.warn(`delivery (${event}): no ${DELIVERY_HEADER}, cannot be deduplicated`);
-      } else if (!(await claimDelivery(deliveryId))) {
-        console.warn(`delivery ${deliveryId} (${event}): already seen, not processed`);
-        return send(res, 200, { resynced: 0, published: 0, duplicate: true });
-      }
-
       let payload: Record<string, unknown>;
       try {
         payload = JSON.parse(body.toString("utf-8")) as Record<string, unknown>;
@@ -614,7 +599,27 @@ export const server = createServer(async (req, res) => {
         return send(res, 400, { error: "body is not json" });
       }
 
-      const result = await handleDelivery(event, payload, deliveryId);
+      let result: DeliveryResult;
+      if (deliveryId === "") {
+        // GitHub always sends one. Treating absence as a single empty key would
+        // make the first such delivery block every later one, so it is
+        // processed and said out loud instead.
+        console.warn(`delivery (${event}): no ${DELIVERY_HEADER}, cannot be deduplicated`);
+        result = await handleDelivery(event, payload, deliveryId);
+      } else {
+        const attempt = await runDeliveryOnce(deliveryId, () =>
+          handleDelivery(event, payload, deliveryId)
+        );
+        if (attempt.kind === "duplicate") {
+          console.warn(`delivery ${deliveryId} (${event}): already completed, not processed`);
+          return send(res, 200, { resynced: 0, published: 0, duplicate: true });
+        }
+        if (attempt.kind === "in_progress") {
+          console.warn(`delivery ${deliveryId} (${event}): another attempt is in progress`);
+          return send(res, 503, { error: "delivery is already being processed" });
+        }
+        result = attempt.result;
+      }
 
       if (result.reason) {
         console.log(`delivery ${deliveryId || "?"} (${event}): ${result.reason}`);

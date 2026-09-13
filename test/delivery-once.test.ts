@@ -7,13 +7,20 @@
  * Rationale: T99.
  */
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { claimDelivery, close, migrate, pool, DELIVERY_MEMORY_DAYS } from "../src/db.js";
+import {
+  beginDelivery,
+  close,
+  DELIVERY_MEMORY_DAYS,
+  migrate,
+  pool,
+  runDeliveryOnce,
+} from "../src/db.js";
 
 beforeEach(async () => {
   await migrate();
+  await pool.query("TRUNCATE webhook_deliveries");
 });
 
 afterAll(async () => {
@@ -21,53 +28,95 @@ afterAll(async () => {
 });
 
 describe("a webhook delivery", () => {
-  it("is claimed the first time and refused after", async () => {
-    const id = randomUUID();
-    expect(await claimDelivery(id)).toBe(true);
-    expect(await claimDelivery(id)).toBe(false);
-    expect(await claimDelivery(id)).toBe(false);
+  it("releases a failed attempt so the same delivery can retry", async () => {
+    const failed = vi.fn(async () => {
+      throw new Error("temporary downstream failure");
+    });
+    const retried = vi.fn(async () => "accepted on retry");
+
+    await expect(runDeliveryOnce("delivery-retry", failed)).rejects.toThrow(
+      "temporary downstream failure"
+    );
+    const original = await pool.query<{ seen_at: Date }>(
+      "SELECT seen_at FROM webhook_deliveries WHERE delivery_id = 'delivery-retry'"
+    );
+
+    await expect(runDeliveryOnce("delivery-retry", retried)).resolves.toEqual({
+      kind: "processed",
+      result: "accepted on retry",
+    });
+    const after = await pool.query<{ seen_at: Date }>(
+      "SELECT seen_at FROM webhook_deliveries WHERE delivery_id = 'delivery-retry'"
+    );
+    expect(after.rows[0]?.seen_at).toEqual(original.rows[0]?.seen_at);
+    expect(failed).toHaveBeenCalledOnce();
+    expect(retried).toHaveBeenCalledOnce();
   });
 
-  it("does not refuse a different delivery", async () => {
-    expect(await claimDelivery(randomUUID())).toBe(true);
-    expect(await claimDelivery(randomUUID())).toBe(true);
+  it("suppresses a retry only after the first attempt completed", async () => {
+    const work = vi.fn(async () => ({ published: 1 }));
+
+    await expect(runDeliveryOnce("delivery-complete", work)).resolves.toEqual({
+      kind: "processed",
+      result: { published: 1 },
+    });
+    await expect(runDeliveryOnce("delivery-complete", work)).resolves.toEqual({
+      kind: "duplicate",
+    });
+    expect(work).toHaveBeenCalledOnce();
   });
 
-  it("only one of two concurrent claims of the same id wins", async () => {
-    // A read-then-write would let two concurrent claims both see nothing and
-    // both proceed. The insert is one statement, so exactly one creates the row.
-    const id = randomUUID();
+  it("only one concurrent attempt starts", async () => {
     const results = await Promise.all([
-      claimDelivery(id),
-      claimDelivery(id),
-      claimDelivery(id),
+      beginDelivery("delivery-concurrent", "lease-a"),
+      beginDelivery("delivery-concurrent", "lease-b"),
+      beginDelivery("delivery-concurrent", "lease-c"),
     ]);
-    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(results.filter((result) => result === "started")).toHaveLength(1);
+    expect(results.filter((result) => result === "in_progress")).toHaveLength(2);
   });
 
-  it("forgets an id older than the memory window, and keeps a recent one", async () => {
-    // The table has to stay bounded.
-    const stale = randomUUID();
-    const fresh = randomUUID();
-    await claimDelivery(stale);
-    await claimDelivery(fresh);
+  it("lets a new attempt take over an expired lease without losing first-seen audit", async () => {
+    expect(await beginDelivery("delivery-expired", "lease-original")).toBe("started");
+    const original = await pool.query<{ seen_at: Date }>(
+      "SELECT seen_at FROM webhook_deliveries WHERE delivery_id = 'delivery-expired'"
+    );
+    expect(await beginDelivery("delivery-expired", "lease-too-soon")).toBe("in_progress");
 
     await pool.query(
       `UPDATE webhook_deliveries
-          SET seen_at = now() - ($1 || ' days')::interval
-        WHERE delivery_id = $2`,
-      [String(DELIVERY_MEMORY_DAYS + 1), stale]
+          SET lease_until = TIMESTAMPTZ '2000-01-01 00:00:00+00'
+        WHERE delivery_id = 'delivery-expired'`
     );
 
-    // Any claim sweeps expired rows, so this call is what collects `stale`.
-    await claimDelivery(randomUUID());
+    expect(await beginDelivery("delivery-expired", "lease-retry")).toBe("started");
+    const reclaimed = await pool.query<{ seen_at: Date; lease_token: string }>(
+      `SELECT seen_at, lease_token FROM webhook_deliveries
+        WHERE delivery_id = 'delivery-expired'`
+    );
+    expect(reclaimed.rows[0]?.seen_at).toEqual(original.rows[0]?.seen_at);
+    expect(reclaimed.rows[0]?.lease_token).toBe("lease-retry");
+  });
+
+  it("forgets completed deliveries older than the memory window", async () => {
+    await runDeliveryOnce("delivery-stale", async () => "done");
+    await runDeliveryOnce("delivery-fresh", async () => "done");
+
+    await pool.query(
+      `UPDATE webhook_deliveries
+          SET completed_at = now() - ($1 || ' days')::interval
+        WHERE delivery_id = 'delivery-stale'`,
+      [String(DELIVERY_MEMORY_DAYS + 1)]
+    );
+
+    await beginDelivery("delivery-sweeps", "lease-sweeper");
 
     const rows = await pool.query(
       "SELECT delivery_id FROM webhook_deliveries WHERE delivery_id = ANY($1)",
-      [[stale, fresh]]
+      [["delivery-stale", "delivery-fresh"]]
     );
     const kept = rows.rows.map((r) => r.delivery_id as string);
-    expect(kept).toContain(fresh);
-    expect(kept).not.toContain(stale);
+    expect(kept).toContain("delivery-fresh");
+    expect(kept).not.toContain("delivery-stale");
   });
 });
