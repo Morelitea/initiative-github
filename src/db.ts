@@ -40,18 +40,21 @@ export const pool: Pool = new Proxy({} as Pool, {
  * the only thing that can mean is that the database and the code have quietly
  * diverged.
  */
-export interface SchemaStep {
+interface SchemaStepBase {
   /** Ordered and stable. It is the primary key of the record. */
   name: string;
   statements: string[];
-  /**
-   * Set only on a step that can lose data, and say in a comment what is lost.
-   * Boot refuses an unmarked destructive statement -- not because marking it
-   * makes it safe, but because it must be a decision someone wrote down rather
-   * than a line that slipped through in a diff about something else.
-   */
-  destructive?: true;
 }
+
+/**
+ * SQL text is not a safety type. Every step therefore classifies itself, and a
+ * destructive step must say what it loses. The declaration makes the decision
+ * reviewable without pretending a regular expression can parse every way SQL
+ * changes data.
+ */
+export type SchemaStep =
+  | (SchemaStepBase & { risk: "additive" })
+  | (SchemaStepBase & { risk: "destructive"; dataLoss: string });
 
 const INITIAL = [
 
@@ -129,25 +132,12 @@ const INITIAL = [
      ON delegation_tokens (expires_at)`,
 ];
 
-export const SCHEMA: SchemaStep[] = [{ name: "0001-initial", statements: INITIAL }];
+export const SCHEMA: SchemaStep[] = [
+  { name: "0001-initial", statements: INITIAL, risk: "additive" },
+];
 
 const fingerprintOf = (statements: string[]): string =>
   createHash("sha256").update(statements.join(";")).digest("hex").slice(0, 16);
-
-/**
- * Statements that can destroy data.
- *
- * Deliberately blunt. It over-matches -- a `DELETE FROM` that clears an expired
- * row would trip it -- and over-matching costs one `destructive: true` and a
- * comment, while under-matching costs a table. `IF EXISTS` is not exempted:
- * dropping a table that is there is exactly the case this is about.
- */
-const DESTRUCTIVE =
-  /\b(?:DROP\s+(?:TABLE|SCHEMA|DATABASE|COLUMN|CONSTRAINT|VIEW)|TRUNCATE|DELETE\s+FROM|ALTER\s+COLUMN\s+\S+\s+TYPE)\b/i;
-
-/** The statements in a step that can lose data. Empty for an additive step. */
-export const destructiveStatementsIn = (step: SchemaStep): string[] =>
-  step.destructive ? [] : step.statements.filter((statement) => DESTRUCTIVE.test(statement));
 
 export class SchemaMismatchError extends Error {}
 
@@ -202,6 +192,19 @@ export async function migrate(): Promise<void> {
     }
 
     for (const step of SCHEMA) {
+      const stepName = step.name;
+      if (step.risk !== "additive" && step.risk !== "destructive") {
+        throw new SchemaMismatchError(
+          `schema step ${stepName} does not classify its data risk. Set risk ` +
+            `to additive, or to destructive and document what is lost.`
+        );
+      }
+      if (step.risk === "destructive" && step.dataLoss.trim() === "") {
+        throw new SchemaMismatchError(
+          `destructive schema step ${step.name} must document what data is lost`
+        );
+      }
+
       const fingerprint = fingerprintOf(step.statements);
       const stored = applied.get(step.name);
 
@@ -220,16 +223,6 @@ export async function migrate(): Promise<void> {
         continue;
       }
 
-      const destructive = destructiveStatementsIn(step);
-      if (destructive.length > 0) {
-        throw new SchemaMismatchError(
-          `schema step ${step.name} can destroy data and is not marked ` +
-            `destructive: ${destructive.join(" | ")}. If that is intended, ` +
-            `set destructive: true on the step and say in a comment what is ` +
-            `lost; boot will then apply it.`
-        );
-      }
-
       for (const statement of step.statements) {
         await client.query(statement);
       }
@@ -239,6 +232,8 @@ export async function migrate(): Promise<void> {
       );
     }
 
+    await blockPreviousSchemaBuilds(client);
+
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -246,6 +241,35 @@ export async function migrate(): Promise<void> {
   } finally {
     client.release();
   }
+}
+
+/**
+ * Once a later step exists, the single-fingerprint build cannot safely run.
+ * It does not know `schema_steps`, so leave a value in the table it does know
+ * that can never equal one of its hexadecimal schema fingerprints.
+ *
+ * The original 0001 fingerprint remains preserved in `schema_steps`; this
+ * compatibility marker changes only the obsolete guard's view of the schema.
+ */
+async function blockPreviousSchemaBuilds(client: PoolClient): Promise<void> {
+  if (SCHEMA.length < 2) return;
+
+  await client.query(
+    `CREATE TABLE IF NOT EXISTS schema_version (
+       id          BOOLEAN PRIMARY KEY DEFAULT true CHECK (id),
+       fingerprint TEXT NOT NULL,
+       applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+     )`
+  );
+  const marker = `schema-steps:${SCHEMA.at(-1)?.name}`;
+  await client.query(
+    `INSERT INTO schema_version (fingerprint) VALUES ($1)
+     ON CONFLICT (id) DO UPDATE
+       SET fingerprint = EXCLUDED.fingerprint,
+           applied_at = now()
+       WHERE schema_version.fingerprint <> EXCLUDED.fingerprint`,
+    [marker]
+  );
 }
 
 /**

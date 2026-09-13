@@ -16,8 +16,6 @@
  * README.md to run it locally.
  */
 
-import { createHash } from "node:crypto";
-
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -25,7 +23,6 @@ import {
   type SchemaStep,
   SchemaMismatchError,
   close,
-  destructiveStatementsIn,
   migrate,
   pool,
 } from "../src/db.js";
@@ -36,9 +33,42 @@ async function empty() {
   await pool.query("CREATE SCHEMA public");
 }
 
-/** The same fingerprint src/db.ts computes, so a test can forge a record. */
-const fingerprintOf = (statements: string[]): string =>
-  createHash("sha256").update(statements.join(";")).digest("hex").slice(0, 16);
+/** The exact stamp written by the release immediately before schema steps. */
+const PREVIOUS_SCHEMA_FINGERPRINT = "ea4f995a8e701b3f";
+
+class PreviousBuildRefusedSchema extends Error {}
+
+/**
+ * The previous release's observable rollback guard, pinned to its fixed stamp.
+ * It deliberately knows nothing about `schema_steps`: old code cannot be
+ * changed after a newer deployment has written the database.
+ */
+async function migrateAsPreviousBuild() {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `CREATE TABLE IF NOT EXISTS schema_version (
+         id          BOOLEAN PRIMARY KEY DEFAULT true CHECK (id),
+         fingerprint TEXT NOT NULL,
+         applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+       )`
+    );
+    const found = await client.query<{ fingerprint: string }>(
+      "SELECT fingerprint FROM schema_version"
+    );
+    const stored = found.rows[0]?.fingerprint ?? null;
+    if (stored !== null && stored !== PREVIOUS_SCHEMA_FINGERPRINT) {
+      throw new PreviousBuildRefusedSchema();
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 /**
  * Run migrate() with an extra step appended, and put SCHEMA back afterwards.
@@ -125,6 +155,7 @@ describe("an additive step on a database that already has rows", () => {
       {
         name: "9001-additive",
         statements: [`CREATE TABLE IF NOT EXISTS later_table (id BIGSERIAL PRIMARY KEY)`],
+        risk: "additive",
       },
       migrate
     );
@@ -144,6 +175,7 @@ describe("an additive step on a database that already has rows", () => {
       {
         name: "9001-additive",
         statements: [`CREATE TABLE IF NOT EXISTS later_table (id BIGSERIAL PRIMARY KEY)`],
+        risk: "additive",
       },
       migrate
     );
@@ -162,12 +194,20 @@ describe("a step that can destroy data", () => {
   const dropping: SchemaStep = {
     name: "9002-drops-a-table",
     statements: [`DROP TABLE IF EXISTS connections`],
+    risk: "destructive",
+    dataLoss: "all stored GitHub connection credentials",
   };
 
-  it("refuses unless it says so", async () => {
+  it("refuses a step with no explicit risk classification", async () => {
     await migrate();
+    const unclassified = {
+      name: dropping.name,
+      statements: dropping.statements,
+    } as SchemaStep;
 
-    await expect(withExtraStep(dropping, migrate)).rejects.toBeInstanceOf(SchemaMismatchError);
+    await expect(withExtraStep(unclassified, migrate)).rejects.toBeInstanceOf(
+      SchemaMismatchError
+    );
   });
 
   it("leaves the table it would have dropped", async () => {
@@ -179,7 +219,11 @@ describe("a step that can destroy data", () => {
       `INSERT INTO connections (connection_ref, access_token) VALUES ('ref-x', 'sealed')`
     );
 
-    await expect(withExtraStep(dropping, migrate)).rejects.toThrow(/destructive/);
+    const unclassified = {
+      name: dropping.name,
+      statements: dropping.statements,
+    } as SchemaStep;
+    await expect(withExtraStep(unclassified, migrate)).rejects.toThrow(/classify its data risk/);
 
     const rows = await pool.query("SELECT connection_ref FROM connections");
     expect(rows.rowCount).toBe(1);
@@ -190,7 +234,7 @@ describe("a step that can destroy data", () => {
     // only thing code can check.
     await migrate();
 
-    await withExtraStep({ ...dropping, destructive: true }, migrate);
+    await withExtraStep(dropping, migrate);
 
     const table = await pool.query(
       "SELECT to_regclass('public.connections') IS NOT NULL AS present"
@@ -198,23 +242,30 @@ describe("a step that can destroy data", () => {
     expect(table.rows[0].present).toBe(false);
   });
 
-  it("is recognised without a database at all", () => {
-    // The guard is a property of the statement text, so it is checkable in
-    // review rather than only at boot.
-    expect(destructiveStatementsIn(dropping)).toHaveLength(1);
-    expect(
-      destructiveStatementsIn({ name: "x", statements: [`CREATE TABLE t (id INT)`] })
-    ).toHaveLength(0);
-    expect(destructiveStatementsIn({ ...dropping, destructive: true })).toHaveLength(0);
+  it("classifies every step this build actually ships", () => {
+    for (const step of SCHEMA) {
+      expect(["additive", "destructive"]).toContain(step.risk);
+    }
   });
 
-  it("holds for every step this build actually ships", () => {
-    for (const step of SCHEMA) {
-      expect({ step: step.name, destructive: destructiveStatementsIn(step) }).toEqual({
-        step: step.name,
-        destructive: [],
-      });
-    }
+  it("refuses an unclassified update before it changes stored credentials", async () => {
+    await migrate();
+    await pool.query(
+      `INSERT INTO connections (connection_ref, access_token) VALUES ('ref-x', 'sealed')`
+    );
+    const unclassified = {
+      name: "9003-unclassified-update",
+      statements: [`UPDATE connections SET access_token = 'erased'`],
+    } as SchemaStep;
+
+    await expect(withExtraStep(unclassified, migrate)).rejects.toBeInstanceOf(
+      SchemaMismatchError
+    );
+
+    const stored = await pool.query<{ access_token: string }>(
+      "SELECT access_token FROM connections WHERE connection_ref = 'ref-x'"
+    );
+    expect(stored.rows[0]?.access_token).toBe("sealed");
   });
 });
 
@@ -283,7 +334,7 @@ describe("a database stamped by the scheme this replaced", () => {
   it("is adopted, and its rows survive", async () => {
     // These databases hold members' GitHub credentials. The upgrade has to be
     // something they live through, not something they are recreated for.
-    await asLegacyDatabase(fingerprintOf(SCHEMA[0].statements));
+    await asLegacyDatabase(PREVIOUS_SCHEMA_FINGERPRINT);
     await pool.query(
       `INSERT INTO connections (connection_ref, access_token) VALUES ('ref-x', 'sealed')`
     );
@@ -299,13 +350,14 @@ describe("a database stamped by the scheme this replaced", () => {
   it("then takes an additive step like any other database", async () => {
     // Adoption is only worth anything if what follows it works. This is the
     // whole path a real deployment walks.
-    await asLegacyDatabase(fingerprintOf(SCHEMA[0].statements));
+    await asLegacyDatabase(PREVIOUS_SCHEMA_FINGERPRINT);
 
     await migrate();
     await withExtraStep(
       {
         name: "9001-additive",
         statements: [`CREATE TABLE IF NOT EXISTS later_table (id BIGSERIAL PRIMARY KEY)`],
+        risk: "additive",
       },
       migrate
     );
@@ -328,7 +380,7 @@ describe("a database stamped by the scheme this replaced", () => {
   it("leaves the old table alone rather than dropping it", async () => {
     // Dropping it is a destructive statement on a database we are here to
     // preserve. One unused table is the cheaper mistake.
-    await asLegacyDatabase(fingerprintOf(SCHEMA[0].statements));
+    await asLegacyDatabase(PREVIOUS_SCHEMA_FINGERPRINT);
 
     await migrate();
 
@@ -336,5 +388,27 @@ describe("a database stamped by the scheme this replaced", () => {
       "SELECT to_regclass('public.schema_version') IS NOT NULL AS present"
     );
     expect(table.rows[0].present).toBe(true);
+  });
+
+  it("makes the previous build refuse after a later step is applied", async () => {
+    await asLegacyDatabase(PREVIOUS_SCHEMA_FINGERPRINT);
+    await pool.query(
+      `INSERT INTO connections (connection_ref, access_token) VALUES ('ref-x', 'sealed')`
+    );
+
+    await withExtraStep(
+      {
+        name: "9004-forward-only",
+        statements: [`CREATE TABLE later_table (id BIGSERIAL PRIMARY KEY)`],
+        risk: "additive",
+      },
+      migrate
+    );
+
+    await expect(migrateAsPreviousBuild()).rejects.toBeInstanceOf(PreviousBuildRefusedSchema);
+    const stored = await pool.query<{ access_token: string }>(
+      "SELECT access_token FROM connections WHERE connection_ref = 'ref-x'"
+    );
+    expect(stored.rows[0]?.access_token).toBe("sealed");
   });
 });
