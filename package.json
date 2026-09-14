@@ -16,7 +16,7 @@
     "github-app": "tsx scripts/build-github-app.ts",
     "register": "tsx scripts/register-github-app.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --reporter=default --reporter=json --outputFile=.vitest-result.json && node scripts/assert-tests-ran.mjs",
     "catalog": "tsx scripts/build-listing.ts",
     "env-contract": "tsx scripts/build-env-contract.ts"
   },
