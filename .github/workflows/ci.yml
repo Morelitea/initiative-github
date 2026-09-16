@@ -29,6 +29,9 @@ jobs:
       - run: npm test
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/initiative_github_test
+      - run: npm run test:command
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/initiative_github_test
       # The manifest has to build, which validates it — a manifest a deployment
       # would refuse should never reach a commit.
       - run: npm run manifest
