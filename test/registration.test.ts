@@ -149,3 +149,34 @@ describe("converting the code", () => {
     expect(await convert("spent")).toBeNull();
   });
 });
+
+describe("asking for the setup token", () => {
+  // The token is a secret and a URL is not a private channel: a query string
+  // is written to the access log of every hop, kept in browser history, and
+  // offered onward in a `Referer`. None of those copies go away when the
+  // token does. So the prompt has to collect it in a request BODY.
+  it("collects the token in a form body, not a URL", async () => {
+    const { setupTokenPrompt } = await registration();
+    const page = setupTokenPrompt(null);
+
+    expect(page).toMatch(/method="post"/i);
+    expect(/action="([^"]*)"/.exec(page)?.[1]).toBe("/setup/register");
+    expect(page).toMatch(/<input[^>]*name="token"/);
+    // Nothing on this page may carry the value itself.
+    expect(page).not.toContain(TOKEN);
+  });
+
+  it("escapes an organization it was handed", async () => {
+    const { setupTokenPrompt } = await registration();
+
+    expect(setupTokenPrompt('"><script>alert(1)</script>')).not.toContain("<script>");
+  });
+
+  it("is open only while the operator leaves the door open", async () => {
+    const { setupIsOpen } = await registration();
+    expect(setupIsOpen()).toBe(true);
+
+    delete process.env[SETUP_TOKEN_ENV];
+    expect(setupIsOpen()).toBe(false);
+  });
+});

@@ -339,7 +339,7 @@ export function startSync(): { stop: () => void } {
   if (!config.github.registered) {
     console.log(
       "not registered at GitHub yet — no syncing until it is. " +
-        "Set INITIATIVE_APP_SETUP_TOKEN and open /setup/register?token=…"
+        "Set INITIATIVE_APP_SETUP_TOKEN and open /setup/register"
     );
     return { stop: () => {} };
   }
