@@ -12,6 +12,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   beginDelivery,
   close,
+  DELIVERY_LEASE_SECONDS,
   DELIVERY_MEMORY_DAYS,
   migrate,
   pool,
@@ -74,6 +75,51 @@ describe("a webhook delivery", () => {
     ]);
     expect(results.filter((result) => result === "started")).toHaveLength(1);
     expect(results.filter((result) => result === "in_progress")).toHaveLength(2);
+  });
+
+  it("keeps a live attempt owned after its original lease expires", async () => {
+    vi.useFakeTimers();
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    let finishWork!: () => void;
+    const finish = new Promise<void>((resolve) => {
+      finishWork = resolve;
+    });
+    const firstWork = vi.fn(async () => {
+      markEntered();
+      await finish;
+      return "first finished";
+    });
+    const secondWork = vi.fn(async () => "second ran");
+
+    const first = runDeliveryOnce("delivery-long-running", firstWork);
+    await entered;
+    await pool.query(
+      `UPDATE webhook_deliveries
+          SET lease_until = TIMESTAMPTZ '2000-01-01 00:00:00+00'
+        WHERE delivery_id = 'delivery-long-running'`
+    );
+
+    let second: Awaited<ReturnType<typeof runDeliveryOnce<string>>> | undefined;
+    let firstOutcome: PromiseSettledResult<Awaited<typeof first>> | undefined;
+    try {
+      await vi.advanceTimersByTimeAsync((DELIVERY_LEASE_SECONDS * 1000) / 2);
+      second = await runDeliveryOnce("delivery-long-running", secondWork);
+      finishWork();
+      [firstOutcome] = await Promise.allSettled([first]);
+    } finally {
+      finishWork();
+      vi.useRealTimers();
+    }
+
+    expect(second).toEqual({ kind: "in_progress" });
+    expect(secondWork).not.toHaveBeenCalled();
+    expect(firstOutcome).toEqual({
+      status: "fulfilled",
+      value: { kind: "processed", result: "first finished" },
+    });
   });
 
   it("lets a new attempt take over an expired lease without losing first-seen audit", async () => {

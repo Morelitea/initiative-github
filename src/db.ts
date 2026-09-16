@@ -368,6 +368,7 @@ export const open = (value: string): string | null =>
  *  this window, so anything older is only taking up space. */
 export const DELIVERY_MEMORY_DAYS = 7;
 export const DELIVERY_LEASE_SECONDS = 300;
+const DELIVERY_HEARTBEAT_MILLISECONDS = (DELIVERY_LEASE_SECONDS * 1000) / 3;
 
 /**
  * Start one bounded attempt to process a delivery.
@@ -437,6 +438,21 @@ async function completeDelivery(deliveryId: string, leaseToken: string): Promise
   }
 }
 
+async function renewDelivery(deliveryId: string, leaseToken: string): Promise<void> {
+  const renewed = await pool.query(
+    `UPDATE webhook_deliveries
+        SET lease_until = now() + ($3 * interval '1 second')
+      WHERE delivery_id = $1
+        AND state = 'processing'
+        AND lease_token = $2
+      RETURNING delivery_id`,
+    [deliveryId, leaseToken, DELIVERY_LEASE_SECONDS]
+  );
+  if (renewed.rowCount !== 1) {
+    throw new Error("delivery processing lease was lost while work was still running");
+  }
+}
+
 async function releaseDelivery(deliveryId: string, leaseToken: string): Promise<void> {
   await pool.query(
     `UPDATE webhook_deliveries
@@ -463,8 +479,22 @@ export async function runDeliveryOnce<T>(
   if (start === "duplicate") return { kind: "duplicate" };
   if (start === "in_progress") return { kind: "in_progress" };
 
+  let heartbeatError: unknown;
+  let heartbeat = Promise.resolve();
+  const timer = setInterval(() => {
+    heartbeat = heartbeat
+      .then(() => renewDelivery(deliveryId, leaseToken))
+      .catch((error: unknown) => {
+        heartbeatError ??= error;
+      });
+  }, DELIVERY_HEARTBEAT_MILLISECONDS);
+  timer.unref();
+
   try {
     const result = await work();
+    clearInterval(timer);
+    await heartbeat;
+    if (heartbeatError !== undefined) throw heartbeatError;
     await completeDelivery(deliveryId, leaseToken);
     return { kind: "processed", result };
   } catch (error) {
@@ -474,5 +504,7 @@ export async function runDeliveryOnce<T>(
       console.error("could not release failed delivery attempt", releaseError);
     }
     throw error;
+  } finally {
+    clearInterval(timer);
   }
 }
