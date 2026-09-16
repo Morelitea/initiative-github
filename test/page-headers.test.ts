@@ -5,7 +5,7 @@
  * URL onward. Rationale: T98.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AddressInfo } from "node:net";
 
 import { SETUP_TOKEN_ENV } from "initiative-app-kit";
@@ -14,7 +14,7 @@ const TOKEN = "open-sesame";
 process.env[SETUP_TOKEN_ENV] = TOKEN;
 
 const { server } = await import("../src/server.js");
-const { REGISTER_PATH } = await import("../src/vocabulary.js");
+const { CONNECT_PATH, REGISTER_PATH } = await import("../src/vocabulary.js");
 
 let origin: string;
 
@@ -100,5 +100,37 @@ describe("HTML pages", () => {
     // The page that carries a registration is as uncacheable as the prompt.
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+  });
+
+  it("never directs an operator to put the setup token in a URL", async () => {
+    const names = [
+      "GITHUB_CLIENT_ID",
+      "GITHUB_CLIENT_SECRET",
+      "GITHUB_APP_PRIVATE_KEY",
+      "GITHUB_WEBHOOK_SECRET",
+    ] as const;
+    const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    for (const name of names) delete process.env[name];
+
+    let unregisteredServer: typeof server | undefined;
+    try {
+      vi.resetModules();
+      ({ server: unregisteredServer } = await import("../src/server.js"));
+      await new Promise<void>((resolve) =>
+        unregisteredServer!.listen(0, "127.0.0.1", resolve)
+      );
+      const { port } = unregisteredServer.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${port}${CONNECT_PATH}`);
+
+      expect(response.status).toBe(503);
+      const body = await response.text();
+      expect(body).toContain(REGISTER_PATH);
+      expect(body).not.toContain("?token");
+    } finally {
+      if (unregisteredServer?.listening) {
+        await new Promise<void>((resolve) => unregisteredServer!.close(() => resolve()));
+      }
+      for (const name of names) process.env[name] = saved[name];
+    }
   });
 });

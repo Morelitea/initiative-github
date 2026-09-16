@@ -461,7 +461,7 @@ export const server = createServer(async (req, res) => {
       return send(res, 503, {
         error:
           "this app is not registered at GitHub yet — set INITIATIVE_APP_SETUP_TOKEN " +
-          `and open ${config.publicUrl}${REGISTER_PATH}?token=…`,
+          `and open ${config.publicUrl}${REGISTER_PATH}`,
       });
     }
 
