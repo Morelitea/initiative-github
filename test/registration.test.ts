@@ -14,6 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SETUP_TOKEN_ENV } from "initiative-app-kit";
+import { restoreEnvironment } from "./support/environment.js";
 
 const TOKEN = "open-sesame";
 const registrationNames = [
@@ -33,7 +34,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env[SETUP_TOKEN_ENV];
-  for (const name of registrationNames) process.env[name] = savedRegistration[name];
+  restoreEnvironment(savedRegistration);
   vi.restoreAllMocks();
 });
 

@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AddressInfo } from "node:net";
 
 import { SETUP_TOKEN_ENV } from "initiative-app-kit";
+import { restoreEnvironment } from "./support/environment.js";
 
 const TOKEN = "open-sesame";
 process.env[SETUP_TOKEN_ENV] = TOKEN;
@@ -37,7 +38,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  for (const name of registrationNames) process.env[name] = savedRegistration[name];
+  restoreEnvironment(savedRegistration);
 });
 
 describe("HTML pages", () => {
