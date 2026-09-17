@@ -4,7 +4,7 @@
 # compiler, and the runtime needs neither — the smaller final image is a
 # smaller thing to keep patched, not just a faster pull.
 
-FROM node:26-alpine@sha256:ef24c5053d50fdc3e4e56eb4e7ddb7861874ab0fdc797046ba897581deb8e868 AS build
+FROM node:26-alpine@sha256:d1afba4b9c2edf2dcc56684c90e6c670309eecbc558b9d4bc7f530efb9934b43 AS build
 
 WORKDIR /app
 
@@ -23,7 +23,7 @@ RUN npm run build && npm run manifest
 RUN npm prune --omit=dev
 
 
-FROM node:26-alpine@sha256:ef24c5053d50fdc3e4e56eb4e7ddb7861874ab0fdc797046ba897581deb8e868 AS runtime
+FROM node:26-alpine@sha256:d1afba4b9c2edf2dcc56684c90e6c670309eecbc558b9d4bc7f530efb9934b43 AS runtime
 
 # Apply repository updates after the immutable base is selected. The runtime
 # invokes Node directly, so do not ship npm/npx or their unused package tree.
