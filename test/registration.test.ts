@@ -16,13 +16,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SETUP_TOKEN_ENV } from "initiative-app-kit";
 
 const TOKEN = "open-sesame";
+const registrationNames = [
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "GITHUB_APP_PRIVATE_KEY",
+  "GITHUB_WEBHOOK_SECRET",
+] as const;
+const savedRegistration = Object.fromEntries(
+  registrationNames.map((name) => [name, process.env[name]])
+);
 
 beforeEach(() => {
   process.env[SETUP_TOKEN_ENV] = TOKEN;
+  for (const name of registrationNames) delete process.env[name];
 });
 
 afterEach(() => {
   delete process.env[SETUP_TOKEN_ENV];
+  for (const name of registrationNames) process.env[name] = savedRegistration[name];
   vi.restoreAllMocks();
 });
 

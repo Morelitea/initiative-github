@@ -13,6 +13,17 @@ import { SETUP_TOKEN_ENV } from "initiative-app-kit";
 const TOKEN = "open-sesame";
 process.env[SETUP_TOKEN_ENV] = TOKEN;
 
+const registrationNames = [
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "GITHUB_APP_PRIVATE_KEY",
+  "GITHUB_WEBHOOK_SECRET",
+] as const;
+const savedRegistration = Object.fromEntries(
+  registrationNames.map((name) => [name, process.env[name]])
+);
+for (const name of registrationNames) delete process.env[name];
+
 const { server } = await import("../src/server.js");
 const { CONNECT_PATH, REGISTER_PATH } = await import("../src/vocabulary.js");
 
@@ -26,6 +37,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
+  for (const name of registrationNames) process.env[name] = savedRegistration[name];
 });
 
 describe("HTML pages", () => {
@@ -103,15 +115,6 @@ describe("HTML pages", () => {
   });
 
   it("never directs an operator to put the setup token in a URL", async () => {
-    const names = [
-      "GITHUB_CLIENT_ID",
-      "GITHUB_CLIENT_SECRET",
-      "GITHUB_APP_PRIVATE_KEY",
-      "GITHUB_WEBHOOK_SECRET",
-    ] as const;
-    const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
-    for (const name of names) delete process.env[name];
-
     let unregisteredServer: typeof server | undefined;
     try {
       vi.resetModules();
@@ -130,7 +133,6 @@ describe("HTML pages", () => {
       if (unregisteredServer?.listening) {
         await new Promise<void>((resolve) => unregisteredServer!.close(() => resolve()));
       }
-      for (const name of names) process.env[name] = saved[name];
     }
   });
 });

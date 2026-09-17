@@ -145,14 +145,14 @@ export async function convert(code: string): Promise<Registered | null> {
 }
 
 /**
- * Whether this deployment still has a setup token, and so a setup route at all.
+ * Whether this deployment still needs registration and has a setup token.
  *
  * Named rather than inferred from `registrationForm` returning null: that
  * function mints and signs a fresh state, which is a side effect nobody wants
  * from a question about configuration.
  */
 export function setupIsOpen(): boolean {
-  return signSetupState("probe") !== null;
+  return !config.github.registered && signSetupState("probe") !== null;
 }
 
 /**
@@ -167,9 +167,10 @@ export function setupIsOpen(): boolean {
  * Rendering this page does reveal that setup is pending, where the old route
  * answered 404 to anyone without the token. That is the trade: a fact that is
  * true for the few minutes between deploying and registering, against a secret
- * that is durable and written down in several places. The route still answers
- * 404 when no setup token is configured at all, so an app that has finished
- * registering gives nothing away.
+ * that is durable and written down in several places. The route answers 404
+ * once registration is complete or when no setup token is configured, so a
+ * registered app gives nothing away even before the operator removes the
+ * token.
  *
  * See T98.
  */
