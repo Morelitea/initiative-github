@@ -106,6 +106,14 @@ describe("a webhook delivery", () => {
     let firstOutcome: PromiseSettledResult<Awaited<typeof first>> | undefined;
     try {
       await vi.advanceTimersByTimeAsync((DELIVERY_LEASE_SECONDS * 1000) / 2);
+      await vi.waitFor(async () => {
+        const lease = await pool.query<{ live: boolean }>(
+          `SELECT lease_until > now() AS live
+             FROM webhook_deliveries
+            WHERE delivery_id = 'delivery-long-running'`
+        );
+        expect(lease.rows[0]?.live).toBe(true);
+      });
       second = await runDeliveryOnce("delivery-long-running", secondWork);
       finishWork();
       [firstOutcome] = await Promise.allSettled([first]);
