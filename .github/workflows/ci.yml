@@ -48,6 +48,7 @@ jobs:
           APP_PUBLIC_URL: https://github-app.example.com
 
   image:
+    # Keep this context stable: main requires the literal "Image builds" check.
     name: Image builds
     runs-on: ubuntu-latest
     steps:
@@ -58,3 +59,15 @@ jobs:
         with:
           context: .
           push: false
+          load: true
+          tags: initiative-github:scan
+      # Scan the image loaded by the build step above, so the verdict covers
+      # the exact runtime artifact this PR produces rather than its source tree.
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: initiative-github:scan
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
