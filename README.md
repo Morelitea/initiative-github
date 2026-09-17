@@ -153,10 +153,10 @@ The app starts with no GitHub credentials at all, refuses every GitHub-shaped
 route, and serves exactly one thing:
 
 ```
-https://github-app.example.com/setup/register?token=THE-TOKEN
+https://github-app.example.com/setup/register
 ```
 
-Add `&org=your-org` to register it in an organization instead of your own
+Add `?org=your-org` to register it in an organization instead of your own
 account. GitHub shows you the registration with every field already filled in;
 press **Create GitHub App**, and the four values appear on the page.
 

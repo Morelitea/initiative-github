@@ -53,6 +53,8 @@ import {
   escapeHtml,
   permitted,
   registrationForm,
+  setupIsOpen,
+  setupTokenPrompt,
   returnedFromUs,
 } from "./github/registration.js";
 import { beginOAuth, completeOAuth, landingFor } from "./github/oauth.js";
@@ -385,10 +387,23 @@ export const server = createServer(async (req, res) => {
     // Behind the setup token and nothing else: for as long as that is set,
     // whoever holds it can create a GitHub App in the account they are signed
     // into, which is why the README says to take it away afterwards.
-    if (req.method === "GET" && path === REGISTER_PATH) {
-      if (!permitted(url.searchParams.get("token"))) return send(res, 404, NO_ROUTE);
+    // Two steps, because the token is a secret and a URL is not a private
+    // channel: the GET asks for it, the POST carries it in the body. Neither
+    // the access log of a hop in between, nor browser history, nor a `Referer`
+    // header ends up holding it. See T98.
+    if (path === REGISTER_PATH && (req.method === "GET" || req.method === "POST")) {
+      // Unchanged for an app that has finished registering: with no setup
+      // token configured there is no route here at all.
+      if (!setupIsOpen()) return send(res, 404, NO_ROUTE);
 
-      const form = registrationForm(url.searchParams.get("org"));
+      if (req.method === "GET") {
+        return sendPage(res, setupTokenPrompt(url.searchParams.get("org")));
+      }
+
+      const submitted = new URLSearchParams((await readBody(req)).toString("utf-8"));
+      if (!permitted(submitted.get("token"))) return send(res, 404, NO_ROUTE);
+
+      const form = registrationForm(submitted.get("org"));
       if (!form) return send(res, 503, { error: "no setup token" });
       return sendPage(res, form);
     }
@@ -447,7 +462,7 @@ export const server = createServer(async (req, res) => {
       return send(res, 503, {
         error:
           "this app is not registered at GitHub yet — set INITIATIVE_APP_SETUP_TOKEN " +
-          `and open ${config.publicUrl}${REGISTER_PATH}?token=…`,
+          `and open ${config.publicUrl}${REGISTER_PATH}`,
       });
     }
 

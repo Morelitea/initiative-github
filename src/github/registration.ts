@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import { fetchJson, permitsSetup, signSetupState, verifySetupState } from "initiative-app-kit";
 
 import { config } from "../config.js";
-import { REGISTER_DONE_PATH } from "../vocabulary.js";
+import { REGISTER_DONE_PATH, REGISTER_PATH } from "../vocabulary.js";
 import { githubAppManifest } from "./app.js";
 
 /** What GitHub hands back once somebody presses Create. */
@@ -142,6 +142,55 @@ export async function convert(code: string): Promise<Registered | null> {
     // A PEM has newlines and a setting is one line.
     privateKey: Buffer.from(pem, "utf-8").toString("base64"),
   };
+}
+
+/**
+ * Whether this deployment still needs registration and has a setup token.
+ *
+ * Named rather than inferred from `registrationForm` returning null: that
+ * function mints and signs a fresh state, which is a side effect nobody wants
+ * from a question about configuration.
+ */
+export function setupIsOpen(): boolean {
+  return !config.github.registered && signSetupState("probe") !== null;
+}
+
+/**
+ * Asks for the setup token instead of reading it out of the URL.
+ *
+ * A query string is not a private channel. It is written to the access log of
+ * every hop that handles the request, kept in browser history, and offered to
+ * the next site in a `Referer` header unless something stops it -- and none of
+ * those copies are removed when the token is. A form field travels in the
+ * request body, which none of them record.
+ *
+ * Rendering this page does reveal that setup is pending, where the old route
+ * answered 404 to anyone without the token. That is the trade: a fact that is
+ * true for the few minutes between deploying and registering, against a secret
+ * that is durable and written down in several places. The route answers 404
+ * once registration is complete or when no setup token is configured, so a
+ * registered app gives nothing away even before the operator removes the
+ * token.
+ *
+ * See T98.
+ */
+export function setupTokenPrompt(owner: string | null): string {
+  const carried = owner
+    ? `<input type="hidden" name="org" value="${escapeHtml(owner)}">`
+    : "";
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Setup</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;margin:4rem auto;max-width:40rem;padding:0 1rem}
+input[type=password]{font:inherit;padding:.5rem;width:100%;box-sizing:border-box}
+button{font:inherit;margin-top:1rem;padding:.5rem 1rem}</style>
+</head><body>
+<h1>Register this app at GitHub</h1>
+<p>Paste the setup token this deployment was started with.</p>
+<form method="post" action="${REGISTER_PATH}" autocomplete="off">
+${carried}<label>Setup token<br><input type="password" name="token" required autofocus></label>
+<button type="submit">Continue</button>
+</form>
+</body></html>`;
 }
 
 /** Whether this request may reach any of it. */
