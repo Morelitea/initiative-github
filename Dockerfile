@@ -4,7 +4,7 @@
 # compiler, and the runtime needs neither — the smaller final image is a
 # smaller thing to keep patched, not just a faster pull.
 
-FROM node:26-alpine AS build
+FROM node:26-alpine@sha256:ef24c5053d50fdc3e4e56eb4e7ddb7861874ab0fdc797046ba897581deb8e868 AS build
 
 WORKDIR /app
 
@@ -23,7 +23,13 @@ RUN npm run build && npm run manifest
 RUN npm prune --omit=dev
 
 
-FROM node:26-alpine AS runtime
+FROM node:26-alpine@sha256:ef24c5053d50fdc3e4e56eb4e7ddb7861874ab0fdc797046ba897581deb8e868 AS runtime
+
+# Apply repository updates after the immutable base is selected. The runtime
+# invokes Node directly, so do not ship npm/npx or their unused package tree.
+RUN apk upgrade --no-cache \
+    && rm -rf /usr/local/lib/node_modules/npm \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx
 
 # A published image should say what it is and where it came from.
 ARG VERSION=0.0.0-dev

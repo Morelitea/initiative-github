@@ -21,6 +21,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # Keep the supported Node line stable; digest refreshes still arrive.
+      - dependency-name: node
+        update-types: [version-update:semver-major, version-update:semver-minor]
   # The workflows are a dependency too: an unpinned or outdated Action is a
   # supply-chain surface that no package manifest mentions.
   - package-ecosystem: github-actions
